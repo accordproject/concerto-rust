@@ -14,7 +14,7 @@ use serde_json::Value;
 // A decorator argument's value reads in the vocabulary YAML this module
 // hand-builds as JS template-literal interpolation writes it, `String(value)`:
 // [`to_js_string`], so a number is written the way
-// `Number.prototype.toString()` writes it (P5-98, C-11).
+// `Number.prototype.toString()` writes it.
 use crate::ecma::to_js_string;
 use crate::error::{ContractError, ErrorKind, Result};
 use crate::model_manager::ModelManager;
@@ -38,9 +38,9 @@ pub enum Action {
 /// One AST node's collected decorators, keyed in the extraction dictionary
 /// ([`ExtractionDictionary`]) by the namespace they were found in.
 /// `ExtractedDecorator` (`src/decoratorextractor.ts`), borrowed from the
-/// models being walked (P5-40): the names are the AST's own strings (empty
-/// where TS's field is unset) and `decorators` is the AST `decorators`
-/// array itself, read before any of it is stripped — TS's `dcs` field is a
+/// models being walked: the names are the AST's own strings (empty where
+/// TS's field is unset) and `decorators` is the AST `decorators` array
+/// itself, read before any of it is stripped — TS's `dcs` field is a
 /// `JSON.stringify`'d copy taken at the same point (`obj.dcs`, later
 /// `JSON.parse`'d back in `transformDecoratorsAndVocabularies`), which a
 /// borrow of the unchanged array reads the same as.
@@ -57,9 +57,9 @@ struct ExtractedDecorators<'a> {
 /// then walks it in.
 type ExtractionDictionary<'a> = Vec<(&'a str, Vec<ExtractedDecorators<'a>>)>;
 
-/// The result of [`DecoratorExtractor::extract`]: `ExtractDecoratorsResult`
+/// The result of `DecoratorExtractor::extract`: `ExtractDecoratorsResult`
 /// (`src/decoratormanager.ts`'s JSDoc typedef), with its command sets
-/// already encoded as JSON text (P5-57, T3, accordproject/concerto-rust#378).
+/// already encoded as JSON text.
 pub struct ExtractResult {
     /// A model manager over the (possibly decorator-stripped) models.
     pub model_manager: ModelManager,
@@ -69,10 +69,10 @@ pub struct ExtractResult {
     /// The extracted vocabulary (`Term`/`Term_*`) decorators, as vocabulary
     /// YAML strings (one per namespace that had any).
     pub vocabularies: Vec<String>,
-    /// A copy of the source models the walk read, taken before it, when
-    /// the extraction was asked to keep them (P5-56, T2, F-A2,
-    /// accordproject/concerto-rust#377): [`DecoratorExtractor::encode_source`]
-    /// over them gives exactly this result's command sets and vocabularies.
+    /// A copy of the source models the walk read, taken before it, when the
+    /// extraction was asked to keep them:
+    /// `DecoratorExtractor::encode_source` over them gives exactly this
+    /// result's command sets and vocabularies.
     pub source_models: Option<Vec<Value>>,
 }
 
@@ -86,9 +86,9 @@ struct CommandClasses {
 }
 
 /// `DecoratorExtractor` (`src/decoratorextractor.ts`): its configuration
-/// only. The models it walks are each call's input
-/// ([`Self::extract`], [`Self::encode_source`]), not part of it (P5-104,
-/// C-8), so an extractor borrows its locale rather than owning a copy.
+/// only. The models it walks are each call's input ([`Self::extract`],
+/// [`Self::encode_source`]), not part of it, so an extractor borrows its
+/// locale rather than owning a copy.
 pub(crate) struct DecoratorExtractor<'a> {
     remove_decorators_from_model: bool,
     locale: &'a str,
@@ -186,12 +186,11 @@ impl<'a> DecoratorExtractor<'a> {
 
     /// `DecoratorExtractor.transformDecoratorsAndVocabularies`
     /// (`src/decoratorextractor.ts`), over the borrowed dictionary
-    /// [`collect_models`] built, without any intermediate [`Value`] (P5-57,
-    /// T3, accordproject/concerto-rust#378): the command sets as the JSON
-    /// text of the `DecoratorCommandSet` array, serialised through borrowed
-    /// views of the AST nodes ([`CommandSetView`]), and the vocabularies
-    /// from a borrowed tree ([`VocabTree`]) in place of TS's `vocabObject`.
-    /// P5-103 (C-5) deleted the `Value` route this replaced.
+    /// [`collect_models`] built, without any intermediate [`Value`]: the
+    /// command sets as the JSON text of the `DecoratorCommandSet` array,
+    /// serialised through borrowed views of the AST nodes
+    /// ([`CommandSetView`]), and the vocabularies from a borrowed tree
+    /// ([`VocabTree`]) in place of TS's `vocabObject`.
     fn encode_decorators_and_vocabularies(
         &self,
         extraction_dictionary: &ExtractionDictionary<'_>,
@@ -320,9 +319,9 @@ impl<'a> DecoratorExtractor<'a> {
     }
 
     /// The command sets (as JSON text) and vocabularies that
-    /// [`Self::extract`] would return for `models` (P5-56): the same
-    /// walk and the same transform, with the same first error, but no
-    /// result manager. `models` are the source models of an earlier
+    /// [`Self::extract`] would return for `models`: the same walk and
+    /// the same transform, with the same first error, but no result
+    /// manager. `models` are the source models of an earlier
     /// extraction ([`ExtractResult::source_models`]); this
     /// extractor's own source AST is not read. The command sets and
     /// vocabularies are read before any decorator is stripped, so
@@ -338,14 +337,14 @@ impl<'a> DecoratorExtractor<'a> {
     /// nodes ([`Self::encode_decorators_and_vocabularies`]), and a copy of
     /// the source models kept in the result when `keep_source` is set.
     ///
-    /// P5-40 (F-B): the models are walked twice rather than once. The first
-    /// walk ([`collect_models`]) only borrows them, recording where each
+    /// The models are walked twice rather than once. The first walk
+    /// ([`collect_models`]) only borrows them, recording where each
     /// `decorators` array is; the command sets and vocabularies are built
-    /// from those borrows before the second walk
-    /// ([`Self::process_models`]) strips the decorators in place, and the
-    /// models are then moved, not copied, into the result manager. Errors
-    /// keep TS's order: a load or validation failure of the result models
-    /// is thrown ahead of a vocabulary-key error from the transform.
+    /// from those borrows before the second walk ([`Self::process_models`])
+    /// strips the decorators in place, and the models are then moved, not
+    /// copied, into the result manager. Errors keep TS's order: a load or
+    /// validation failure of the result models is thrown ahead of a
+    /// vocabulary-key error from the transform.
     ///
     /// `models` are the source models, the `models` of an `IModels`
     /// envelope (TS's `sourceModelAst.models`).
@@ -387,9 +386,9 @@ impl<'a> DecoratorExtractor<'a> {
 /// `null`, for a node's missing field, borrowed.
 static NULL: Value = Value::Null;
 
-/// P5-57: one `DecoratorCommandSet`, as TS's
-/// `transformNonVocabularyDecorators` builds it (same keys, same order),
-/// serialised from borrows.
+/// One `DecoratorCommandSet`, as TS's
+/// `transformNonVocabularyDecorators` builds it (same keys,
+/// same order), serialised from borrows.
 struct CommandSetView<'a> {
     class: &'a str,
     name: &'a str,
@@ -409,9 +408,9 @@ impl serde::Serialize for CommandSetView<'_> {
     }
 }
 
-/// P5-57: one `UPSERT` command, as TS's `parseNonVocabularyDecorators`
-/// builds it (with `constructTarget`'s target), serialised from the
-/// borrowed decorator node.
+/// One `UPSERT` command, as TS's `parseNonVocabularyDecorators` builds
+/// it (with `constructTarget`'s target), serialised from the borrowed
+/// decorator node.
 struct CommandView<'a> {
     classes: &'a CommandClasses,
     namespace: &'a str,
@@ -456,7 +455,7 @@ impl serde::Serialize for TargetView<'_> {
 }
 
 /// [`CommandView`]'s `decorator`: the decorator node's `name` and ported
-/// `arguments` ([`DecoratorExtractor::parse_non_vocabulary_decorators`]).
+/// `arguments` (TS `parseNonVocabularyDecorators`).
 struct DecoratorView<'a>(&'a CommandView<'a>);
 
 impl serde::Serialize for DecoratorView<'_> {
@@ -574,8 +573,8 @@ impl Default for DeclarationVocab<'_> {
     }
 }
 
-/// P5-57: `vocabObject` (`src/decoratorextractor.ts`) for one namespace,
-/// over borrowed keys, in place of the `Value` route's `serde_json::Value`
+/// `vocabObject` (`src/decoratorextractor.ts`) for one namespace, over
+/// borrowed keys, in place of the `Value` route's `serde_json::Value`
 /// object. `namespace` and `declarations` are `None` until a decorator
 /// creates them.
 #[derive(Default)]

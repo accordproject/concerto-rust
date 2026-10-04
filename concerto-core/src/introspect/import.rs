@@ -80,10 +80,7 @@ impl Import {
     /// one local name per imported type: the alias when the type has one, the
     /// declared name otherwise (`this.importShortNames.set(alias ?? type,
     /// ...)`). An aliased type's *declared* name is never also registered, so
-    /// it does not resolve under it — P2-08 review carry-over (a) from
-    /// P2-04's review (#48): this used to check `t.types` unconditionally
-    /// after the alias check, so an aliased import's original name still
-    /// resolved.
+    /// it does not resolve under it.
     pub fn resolve(&self, short: &str) -> Option<String> {
         match self {
             Self::Type(t) if t.name == short => Some(qualify(&t.namespace, &t.name)),

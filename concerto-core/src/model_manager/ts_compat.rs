@@ -4,8 +4,8 @@
 //! The members only the oracle harness and this crate's tests call (the
 //! `get<Kind>Declarations`, `getModels`, `getAssignableConcreteTypes`,
 //! `getSuperTypeDeclaration` and `filter_by_fqn`) exist only with the
-//! `js-compat` feature (A-11, accordproject/concerto-rust#458): no binding
-//! calls them, and the native API has its own forms.
+//! `js-compat` feature: no binding calls them, and the native API has its
+//! own forms.
 
 use super::*;
 #[cfg(feature = "js-compat")]
@@ -39,22 +39,13 @@ impl ModelManager {
         Ok(self.declaration_id(&super_fqn))
     }
 
-    /// TS `BaseModelManager.isAssignableTo(fqn, baseFqn)`
-    /// (basemodelmanager.ts). This is a different method from
-    /// [`ModelManager::is_assignable_to`] — TS itself gives `ModelManager`
-    /// two unrelated `isAssignableTo`s, `ModelUtil`'s own static
-    /// (`crate::model_util::is_assignable_to`) and this one: `fqn` must
-    /// resolve to a *concrete* (non-abstract) type before
-    /// [`ModelManager::derives_from`] is even asked — an abstract `fqn` is
-    /// `false` even against itself — and a lookup failure is caught, not
-    /// propagated.
-    ///
-    /// A scalar is abstract here, as TS 5.0.0's
-    /// `ScalarDeclaration.isAbstract()` answers `true`, so a scalar `fqn`
-    /// is `false` even against itself (P5-98). A map declaration answers
-    /// as [`ModelManager::derives_from`] does, where TS 5.0.0 throws a
-    /// `TypeError` (its `MapDeclaration` has no `isAbstract`): DV-022,
-    /// maintainer-accepted.
+    /// TS `BaseModelManager.isAssignableTo(fqn, baseFqn)`, not
+    /// [`ModelManager::is_assignable_to`]: `fqn` must resolve to a concrete
+    /// type before [`ModelManager::derives_from`] is asked (an abstract
+    /// `fqn`, a scalar included, is `false` even against itself), and a
+    /// lookup failure is caught. A map declaration answers as
+    /// [`ModelManager::derives_from`] does, where TS 5.0.0 throws a
+    /// `TypeError` (DV-022).
     #[cfg(feature = "js-compat")]
     pub fn is_type_assignable_to(&self, fqn: &str, base_fqn: &str) -> bool {
         let Ok(id) = self.get_type_declaration(fqn) else {
@@ -104,13 +95,9 @@ impl ModelManager {
             .unwrap_or_else(|| file_identifier.to_string())
     }
 
-    /// TS `BaseModelManager.getModels(options)` (basemodelmanager.ts): every
-    /// registered model file but the root and decorator models
-    /// (`this.getModelFiles()`'s default excludes `EXCLUDE_NS`), as a
-    /// `(name, content)` pair — `content` is `None` exactly where TS's
-    /// `file.definitions` is `undefined`. `include_external_models` is TS's
-    /// `options.includeExternalModels` (`true` by default there; the oracle
-    /// harness always passes it explicitly).
+    /// TS `BaseModelManager.getModels(options)`: every registered model file
+    /// but `EXCLUDE_NS`'s, as a `(name, content)` pair, `content` `None`
+    /// where TS's `file.definitions` is `undefined`.
     #[cfg(feature = "js-compat")]
     pub fn get_models(&self, include_external_models: bool) -> Vec<(String, Option<String>)> {
         self.user_model_files()
@@ -125,14 +112,9 @@ impl ModelManager {
             .collect()
     }
 
-    /// TS `BaseModelManager.get<Kind>Declarations()` (basemodelmanager.ts,
-    /// six near-identical methods, each `this.getModelFiles().reduce((prev,
-    /// cur) => prev.concat(cur.get<Kind>Declarations()), [])`): every
-    /// non-system, non-decorator model file's own declarations whose
-    /// constructor name is `ctor` — matched exactly on `$class`, never by
-    /// inheritance, the same way every other `{ctor, fqn}` summary in this
-    /// port already does (P2-08 review) — concatenated in registration
-    /// order.
+    /// TS `BaseModelManager.get<Kind>Declarations()`: the declarations of
+    /// every non-system model file whose `$class` is `ctor` exactly, in
+    /// registration order.
     #[cfg(feature = "js-compat")]
     pub(super) fn declarations_by_ctor(&self, ctor: &str) -> Vec<DeclId> {
         self.declarations_in(self.user_file_slots())
@@ -182,24 +164,12 @@ impl ModelManager {
         self.declarations_by_ctor("EnumDeclaration")
     }
 
-    /// TS `BaseModelManager.filter(predicate, options)` (basemodelmanager.ts):
-    /// a scratch manager holding every registered model file's declarations
-    /// for which `keep_fqn` is true, filtering each file's own imports the
-    /// same way ([`crate::introspect::model_file::ModelFile::filter`]'s
-    /// module doc); a file with nothing left is dropped. `predicate` is a
-    /// `Declaration -> bool` in TS, keyed here by fully-qualified name
-    /// instead, since that is all the oracle's own `predicate` encoding
-    /// carries (`tests/oracle/ops.rs`). Every file the fresh result already
-    /// holds from its constructor (the decorator and root models) is
-    /// skipped, so the result keeps its own copy whole whatever `keep_fqn`
-    /// says about its declarations (BC-53, P5-108,
-    /// accordproject/concerto-rust#466: TS 5.0.0 skipped only the root
-    /// model and threw re-adding the decorator model, so `filter(() =>
-    /// true)` failed). The result always starts from a fresh `BaseModelManager`
-    /// (TS: `new BaseModelManager({...this.options}, this.processFile)`),
-    /// never the receiver's own kind. `disable_validation` is TS's
-    /// `options?.disableValidation`; unless set, the filtered files are
-    /// validated once, together (TS: `modelManager.addModelFiles(...)`).
+    /// TS `BaseModelManager.filter(predicate, options)`, with the predicate
+    /// keyed by fully-qualified name (as the oracle encodes it): a new
+    /// manager holding every declaration `keep_fqn` keeps, each file's imports
+    /// filtered the same way; a file left empty is dropped. The decorator and
+    /// root models the fresh result holds from its constructor are kept whole
+    /// (BC-53). Unless `disable_validation`, the files are validated together.
     #[cfg(feature = "js-compat")]
     pub fn filter_by_fqn(
         &self,
@@ -209,20 +179,13 @@ impl ModelManager {
         self.filter_declarations(|fqn, _| keep_fqn(fqn), disable_validation)
     }
 
-    /// The Rust half of TS `BaseModelManager.updateExternalModels(options,
-    /// fileDownloader)` (basemodelmanager.ts; ledger: HYBRID, the download
-    /// stays in JS). `external_models` is what
-    /// `downloader.downloadExternalDependencies(...)` resolved to, in order:
-    /// each is built as `new ModelFile(this, ast, definitions, fileName)`,
-    /// then registered without validation — `updateModelFile(mf, name,
-    /// true)` when its namespace is already registered (by `self` or an
-    /// earlier download in the same batch), `addModelFile(mf, null, name,
-    /// true)` otherwise — and finally every registered model file is
-    /// validated (`validateModelFiles`). The model files are returned in the
-    /// same order, as TS's `externalModelFiles`.
-    ///
-    /// Any error leaves `self` exactly as it was, as TS's `catch` restores
-    /// `this.modelFiles` before rethrowing.
+    /// The engine half of TS `BaseModelManager.updateExternalModels`, after
+    /// the download: each external model is built as `new ModelFile(this,
+    /// ast, definitions, fileName)` and registered without validation (an
+    /// update when its namespace is already registered, by `self` or an
+    /// earlier download, an add otherwise), then every file is validated.
+    /// The model files are returned in order, as TS's `externalModelFiles`.
+    /// Any error leaves `self` as it was.
     #[cfg(feature = "js-compat")]
     pub fn update_external_models(
         &mut self,
@@ -233,10 +196,9 @@ impl ModelManager {
     }
 
     /// [`ModelManager::update_external_models`], with the namespace of
-    /// the model file whose validation failed, when that is the failure
-    /// (P5-11, accordproject/concerto-rust#287): TS's final
-    /// `validateModelFiles()` throws that file's own `validate()` error,
-    /// which names the file.
+    /// the model file whose validation failed, when that is the failure:
+    /// TS's final `validateModelFiles()` throws that file's own
+    /// `validate()` error, which names the file.
     #[cfg(feature = "js-compat")]
     pub fn update_external_models_naming_file(
         &mut self,
@@ -248,10 +210,8 @@ impl ModelManager {
         }))
     }
 
-    /// [`ModelManager::update_external_models_naming_file`] for model
-    /// files already built (P5-100, accordproject/concerto-rust#454): the
-    /// files the TS view staged when it built each downloaded
-    /// `ModelFile`, so their ASTs are not sent and parsed again.
+    /// [`ModelManager::update_external_models_naming_file`] for files the
+    /// view already staged, so their ASTs are not sent again.
     #[cfg(feature = "js-compat")]
     pub fn update_external_model_files_naming_file(
         &mut self,
@@ -270,12 +230,9 @@ impl ModelManager {
         external_model_files: impl IntoIterator<Item = Result<Arc<ModelFile>>>,
     ) -> std::result::Result<Vec<Arc<ModelFile>>, (Option<String>, Error)> {
         {
-            // A-4: each downloaded file is built once and shared (`Arc`)
-            // between the scratch manager and the list returned, and the
-            // scratch is rebuilt only for a file that replaces one; a new
-            // namespace is appended to the scratch this call already owns,
-            // which is the same arena `with_model_file_registered` would
-            // build, without copying it once per file.
+            // Each downloaded file is built once and shared between the
+            // scratch manager and the list returned; the scratch is rebuilt
+            // only for a file that replaces one.
             let mut updated: Option<Self> = None;
             let mut registered = Vec::new();
             for mf in external_model_files {
@@ -295,9 +252,8 @@ impl ModelManager {
                             .map_err(|err| (None, err))?;
                     }
                     _ => {
-                        // `addModelFile`'s already-exists check cannot fire
-                        // here; `updateModelFile` without validation is the
-                        // same scratch registration.
+                        // `addModelFile`'s already-exists check cannot fire;
+                        // `updateModelFile` is the same scratch registration.
                         let next = updated
                             .as_ref()
                             .unwrap_or(self)

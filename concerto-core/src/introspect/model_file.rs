@@ -25,12 +25,10 @@ use crate::introspect::shape;
 use crate::introspect::typed_ast::{self, ModelHeader, TypedDeclaration};
 use crate::model_util::{self, is_primitive_type, is_valid_identifier, qualify, short_name};
 
-/// The key of a declaration name in [`ModelFile`]'s `local_types`. The
-/// names come from user models, so the hash is seeded per process
-/// ([`FastSeededState`], foldhash; PORTING.md 3.7): with an unseeded hash
-/// crafted names could all share one hash ([`SHARED_HASH`]) and turn every
-/// lookup into a scan (P5-110, accordproject/concerto-rust#477; SipHash
-/// cost 20-60% on the introspection rows, so the maintainer chose foldhash).
+/// The key of a declaration name in [`ModelFile`]'s `local_types`, hashed
+/// with the per-process seeded foldhash ([`FastSeededState`], PORTING.md
+/// 3.7): the names come from user models, and with an unseeded hash crafted
+/// names could share one hash and turn every lookup into a scan.
 fn name_hash(name: &str) -> u64 {
     use std::hash::BuildHasher;
     FastSeededState::default().hash_one(name)
@@ -47,29 +45,23 @@ const LOCAL_SCAN_MAX: usize = 8;
 #[derive(Debug, Clone)]
 pub struct ModelFile {
     namespace: String,
-    /// Where the version starts in `namespace` (P5-93: the version is the
+    /// Where the version starts in `namespace` (the version is the
     /// namespace's own suffix, not a copy of it).
     version_start: usize,
-    /// P5-93: the one shared copy of the built-in import alone
-    /// ([`built_in_imports`]) for a file that imports nothing else (most
-    /// files), where every load used to append its own copy.
+    /// The imports; a file that imports nothing else shares one copy of the
+    /// built-in import alone ([`built_in_imports`]).
     imports: Cow<'static, [Import]>,
-    /// TS `ModelFile.importShortNames`: every name an import makes visible
-    /// here, to the import and the position in its `imported_names` it
-    /// names, built once at load with one forward pass over `imports`, so a
-    /// later import of the same local name replaces an earlier one, as
-    /// `Map.set` does (P5-98, A-2). Every import lookup reads it
-    /// ([`ModelFile::import_target`]). Shared, like `imports`, for a file
-    /// whose only import is the built-in one.
+    /// TS `ModelFile.importShortNames`: every name an import makes visible,
+    /// to the import and the position in its `imported_names`, built with one
+    /// forward pass over `imports` so a later import of a local name replaces
+    /// an earlier one, as `Map.set` does ([`ModelFile::import_target`]).
+    /// Shared like `imports` for a file whose only import is the built-in.
     import_short_names: Cow<'static, ImportShortNames>,
     declarations: Vec<Declaration>,
-    /// Declaration names to their index, for `getLocalType` (only ever
-    /// looked up, never iterated). P5-93: keyed by the name's seeded hash
-    /// ([`name_hash`]), not a copy of the name, so FxHash over that
-    /// already-secret `u64` is enough (P5-13, P5-110); a hash two
-    /// different names share maps to [`SHARED_HASH`]. Empty, and the
-    /// declarations scanned instead, for a file of at most
-    /// [`LOCAL_SCAN_MAX`] declarations ([`ModelFile::local_index`]).
+    /// Declaration names to their index, for `getLocalType`, keyed by the
+    /// name's seeded hash ([`name_hash`]); a hash two names share maps to
+    /// [`SHARED_HASH`]. Empty for a file of at most [`LOCAL_SCAN_MAX`]
+    /// declarations, which are scanned ([`ModelFile::local_index`]).
     local_types: rustc_hash::FxHashMap<u64, usize>,
     file_name: Option<String>,
     ast: Ast,
@@ -79,15 +71,11 @@ pub struct ModelFile {
     /// against this runtime, or `None` when the AST carries none at all
     /// (`this.concertoVersion` stays its constructor default, `null`).
     concerto_version: Option<String>,
-    /// TS `ModelFile.definitions`: the optional CTO source text a caller
-    /// supplied alongside the AST — kept verbatim, never parsed or produced
-    /// here (CTO parsing is `concerto-cto`, out of scope: PORTING.md 1.1).
-    /// [`ModelFile::from_json`] always leaves this `None`; use
-    /// [`ModelFile::from_json_with_definitions`] to set it.
+    /// TS `ModelFile.definitions`: the optional CTO source text a caller gave
+    /// with the AST, kept verbatim and never parsed here (PORTING.md 1.1).
     definitions: Option<String>,
-    /// TS `ModelFile.external`: `true` when [`ModelFile::file_name`] starts
-    /// with `@` — a model downloaded from an external URI rather than one
-    /// given directly (`fileName.startsWith('@')`, the constructor).
+    /// TS `ModelFile.external`: [`ModelFile::file_name`] starts with `@`, a
+    /// model downloaded from an external URI.
     external: bool,
 }
 
@@ -107,8 +95,7 @@ impl ModelFile {
     }
 
     /// [`ModelFile::from_json`], keeping the given CTO source text verbatim
-    /// for `ModelFile::get_definitions` — never parsed or checked against
-    /// `value` here (CTO parsing is `concerto-cto`, out of scope).
+    /// for `ModelFile::get_definitions`, never parsed.
     pub fn from_json_with_definitions(
         value: &serde_json::Value,
         definitions: Option<String>,
@@ -120,9 +107,7 @@ impl ModelFile {
     }
 
     /// [`ModelFile::from_json_with_definitions`], taking ownership of the
-    /// AST so it is kept without being copied (P5-06: a caller that has just
-    /// parsed the AST from JSON text, such as the WASM binding, has no other
-    /// use for it). Same result, same errors, in the same order.
+    /// AST so it is kept without being copied. Same result and errors.
     pub fn from_owned_json_with_definitions(
         value: serde_json::Value,
         definitions: Option<String>,
@@ -134,14 +119,9 @@ impl ModelFile {
     }
 
     /// [`ModelFile::from_json_with_definitions`] for an AST given as JSON
-    /// text (P5-06c): the same result, and the same errors, as parsing
-    /// `text` into a `serde_json::Value` and loading that. The outer `Err`
-    /// is the parse error for text that is not JSON; the inner result is
-    /// the load's.
-    ///
-    /// The text is read straight into the typed model, without a `Value`
-    /// for the whole document (module doc of `typed_ast`); [`ModelFile::ast`]
-    /// is then parsed from the kept text on first use.
+    /// text, with the same result and errors. The outer `Err` is the parse
+    /// error for text that is not JSON. The text is read straight into the
+    /// typed model; [`ModelFile::ast`] is parsed from it on first use.
     pub fn from_json_text(
         text: &str,
         definitions: Option<String>,
@@ -151,16 +131,9 @@ impl ModelFile {
             .map(|(model_file, _)| model_file))
     }
 
-    /// [`ModelFile::from_json_text`], also returning the AST's own
-    /// `imports` node exactly as the text holds it (`None` when the AST has
-    /// no `imports` key), so a caller that needs it has no second decode of
-    /// the text (P5-28, accordproject/concerto-rust#333: the WASM binding's
-    /// `stageModelFileBytes` reads the TS `ModelFile` header from it).
-    /// Same result, same errors in the same order.
-    ///
-    /// Behind `js-compat`, like the rest of the seam concerto-wasm builds
-    /// on, so it stays out of the default (D11) public surface
-    /// (docs/public-api.md sections 2.1 and 4.6).
+    /// [`ModelFile::from_json_text`], also returning the AST's own `imports`
+    /// node as the text holds it (`None` without an `imports` key), so the
+    /// binding reads the TS `ModelFile` header without a second decode.
     #[cfg(feature = "js-compat")]
     pub fn from_json_text_with_imports(
         text: &str,
@@ -171,19 +144,12 @@ impl ModelFile {
     }
 
     /// [`ModelFile::from_json_text_with_imports`] with BC-19's AST shape
-    /// check first (P5-69, BC-19-b, accordproject/concerto-rust#408): what
-    /// the TS `ModelFile` constructor runs, `instance::check_ast_shape` and
-    /// then the load, from one parse of `text` and one strict decode.
-    ///
-    /// An AST the check rejects is that check's error, with its code and
-    /// message, before any part of the load runs; any other error is the
-    /// load's, exactly as `from_json_text_with_imports` returns it. The
-    /// check is folded into the typed read (`introspect::shape`): only an
-    /// AST the read cannot vouch for is checked again, by the full check,
-    /// over a `Value` of `text`, so the verdict and the error are always
-    /// the full check's.
-    ///
-    /// Behind `js-compat`, like `from_json_text_with_imports`.
+    /// check first, as the TS `ModelFile` constructor runs it, from one parse
+    /// and one strict decode. A rejected AST is the check's error, before any
+    /// part of the load; any other error is the load's. The check is folded
+    /// into the typed read (`introspect::shape`): only an AST the read cannot
+    /// vouch for is checked again by the full check, so the verdict and the
+    /// error are always the full check's.
     #[cfg(feature = "js-compat")]
     pub fn from_json_text_checked_with_imports(
         text: &str,
@@ -194,18 +160,11 @@ impl ModelFile {
     }
 
     /// [`ModelFile::from_json_text_with_imports`] for the AST in the compact
-    /// binary layout (P5-92, accordproject/concerto-rust#438; the module doc
-    /// of `introspect::compact`), which the TS `ModelFile` constructor
-    /// writes straight from an AST that exists as a JS object, where it used
-    /// to `JSON.stringify` it for the engine to parse. The bytes are read
-    /// straight into the typed model, without JSON text or a `Value` of the
-    /// whole document. The result, and the error, are those of
-    /// `from_json_text_with_imports` for `JSON.stringify`'s text of the same
-    /// AST; the outer `Err` is for bytes not in the layout, which the TS
-    /// side never writes. [`ModelFile::ast`] is decoded from the kept bytes
-    /// on first use.
-    ///
-    /// Behind `js-compat`, like `from_json_text_with_imports`.
+    /// binary layout (`introspect::compact`), which the TS `ModelFile`
+    /// constructor writes from an AST object. The result and error are those
+    /// for `JSON.stringify`'s text of the same AST; the outer `Err` is for
+    /// bytes not in the layout. [`ModelFile::ast`] is decoded from the kept
+    /// bytes on first use.
     #[cfg(feature = "js-compat")]
     pub fn from_compact_with_imports(
         bytes: &[u8],
@@ -216,12 +175,8 @@ impl ModelFile {
     }
 
     /// [`ModelFile::from_compact_with_imports`] with BC-19's AST shape check
-    /// first, folded into the typed read exactly as
-    /// [`ModelFile::from_json_text_checked_with_imports`] folds it: the same
-    /// verdict, and the same error, as that function gives for
-    /// `JSON.stringify`'s text of the same AST (P5-92).
-    ///
-    /// Behind `js-compat`, like `from_json_text_with_imports`.
+    /// first, folded as [`ModelFile::from_json_text_checked_with_imports`]
+    /// folds it.
     #[cfg(feature = "js-compat")]
     pub fn from_compact_checked_with_imports(
         bytes: &[u8],
@@ -292,9 +247,8 @@ impl ModelFile {
         file_name: Option<String>,
         checked: bool,
     ) -> std::result::Result<Result<(Self, Option<serde_json::Value>)>, serde_json::Error> {
-        // P5-93: the copy of the text the file keeps (`ModelFile::ast`) is
-        // made first, and read, so the names the read reads share it
-        // (`concerto_metamodel::Name`) rather than each being copied.
+        // The kept copy of the text is made first, so the names the read
+        // reads share it rather than each being copied.
         let source: Arc<str> = Arc::from(text);
         let model = match concerto_metamodel::with_source(&source, || typed_ast::parse(&source)) {
             Ok(model) => model,
@@ -306,8 +260,8 @@ impl ModelFile {
                     return Err(err);
                 }
                 let value = serde_json::from_str::<serde_json::Value>(text)?;
-                // The check decides first: an AST it accepts but the read
-                // cannot read is the load's error, as before.
+                // The check decides first: an AST it accepts but the read cannot
+                // read is the load's error.
                 if checked
                     && let Err(shape) = crate::instance::metamodel::check_ast_shape_exact(&value)
                 {
@@ -360,16 +314,14 @@ impl ModelFile {
         file_name: Option<String>,
     ) -> Result<Self> {
         // The model's own keys, read as strictly as every other node's
-        // (`typed_ast`'s module doc, "Unknown keys"): only the generated
-        // `Model`'s, and its decorators decoded into the generated struct.
+        // (`typed_ast`'s module doc, "Unknown keys").
         if let Some(key) = &header.unknown {
             return Err(unreadable_ast(
                 &serde::de::Error::custom(format_args!("unknown field `{key}`")),
                 file_name.as_deref(),
             ));
         }
-        // P5-93: the decorators taken from the value as it is checked (as
-        // a declaration's are), where its `Value` used to be read twice.
+        // The decorators taken from the value as it is checked.
         let decorators = match header.decorators.take() {
             None => Vec::new(),
             Some(Ok(decorators)) => decorators.list,
@@ -382,7 +334,7 @@ impl ModelFile {
             }
         };
 
-        // P5-93: the header's own string, taken rather than copied.
+        // The header's own string, taken rather than copied.
         let namespace = match header.namespace.take() {
             Some(serde_json::Value::String(namespace)) => namespace,
             _ => {
@@ -394,10 +346,8 @@ impl ModelFile {
             }
         };
 
-        // TS: `ModelFile.fromAst`'s own namespace handling (modelfile.ts) —
-        // `ModelUtil.parseNamespace`, a check that every dot-separated part
-        // of the name is a valid identifier, and then a version requirement
-        // (P2-08), for every model file since BC-02 (R1, P5-50).
+        // TS: `ModelFile.fromAst`'s namespace handling: `parseNamespace`,
+        // valid identifiers, and a version for every model file (BC-02).
         let is_system_namespace = namespace.starts_with("concerto@") || namespace == "concerto";
         let version_start =
             namespace.len() - parse_namespace_version(&namespace, &file_name)?.len();
@@ -417,14 +367,11 @@ impl ModelFile {
             }
         };
 
-        // TS: `ModelFile.fromAst`'s `imports.forEach` loop (modelfile.ts)
-        // runs two checks over every import, including the built-in one
-        // appended below: an aliased type's alias may not itself name a
-        // primitive, and — `enforceImportVersioning` — the imported namespace
-        // must carry a version. Both throw a plain `Error`, not an
-        // `IllegalModelException`. The built-in import passes both (it has
-        // no alias, and is versioned), so P5-93 checks only the AST's own,
-        // before the built-in one is appended.
+        // TS: `ModelFile.fromAst`'s `imports.forEach` loop checks every
+        // import: an alias may not name a primitive, and the namespace must
+        // carry a version (`enforceImportVersioning`), each a plain `Error`.
+        // The built-in import passes both, so only the AST's own are
+        // checked, before it is appended.
         for imp in &imports {
             for alias in imp.aliased_types() {
                 if is_primitive_type(&alias.aliased_name) {
@@ -433,7 +380,7 @@ impl ModelFile {
                     ));
                 }
             }
-            // P5-48: `parseNamespace`'s checks, without its owned result.
+            // `parseNamespace`'s checks, without its owned result.
             let versioned = model_util::split_namespace(imp.namespace())?.1.is_some();
             if !versioned {
                 return Err(plain_error(format!(
@@ -443,10 +390,8 @@ impl ModelFile {
             }
         }
 
-        // Every non-system model file imports the system types implicitly.
-        // TS: ModelFile.fromAst (src/introspect/modelfile.ts), the built-in
-        // import; ported here because the trial's oracle fixtures load models
-        // that use them (P0-04b).
+        // Every non-system model file imports the system types implicitly
+        // (TS: `ModelFile.fromAst`).
         let is_system = is_system_namespace;
         let imports: Cow<'static, [Import]> = if is_system {
             Cow::Owned(imports)
@@ -461,12 +406,10 @@ impl ModelFile {
             Cow::Owned(imports) => Cow::Owned(import_short_names(imports)),
         };
 
-        // TS: the constructor's `localTypes` loop is a plain `Map.set` per
-        // declaration, so a second declaration of the same name is accepted
-        // here and simply replaces the first in the lookup (the last one
-        // wins), while `getAllDeclarations()` still lists both. Only
-        // `ModelFile.validate()`'s duplicate-name scan rejects it
-        // (`ModelManager::validate_model_file`, P2-08).
+        // TS: the constructor's `localTypes` loop is a plain `Map.set`, so a
+        // second declaration of a name replaces the first in the lookup,
+        // while `getAllDeclarations()` lists both; `ModelFile.validate()`'s
+        // duplicate-name scan rejects it.
         let mut declarations: Vec<Declaration> = Vec::with_capacity(typed.len());
         let mut local_types = rustc_hash::FxHashMap::default();
         let indexed = typed.len() > LOCAL_SCAN_MAX;
@@ -494,10 +437,8 @@ impl ModelFile {
         }
         typed_ast::recycle_declarations(typed);
 
-        // TS: `ModelFile.isCompatibleVersion`, run from the constructor right
-        // after `fromAst` has populated the imports and declarations, before
-        // `localTypes` is built — so a bad declaration is still reported
-        // ahead of an incompatible `concertoVersion` when a model has both.
+        // TS: `ModelFile.isCompatibleVersion` runs after `fromAst`, so a bad
+        // declaration is reported ahead of an incompatible `concertoVersion`.
         let concerto_version = check_compatible_version(header.concerto_version.as_ref())?;
 
         let external = file_name.as_deref().is_some_and(|n| n.starts_with('@'));
@@ -519,15 +460,12 @@ impl ModelFile {
     }
 
     js_compat_pub! {
-        /// TS: the argument checks `new ModelFile(modelManager, ast, definitions,
-        /// fileName)` runs before it reads the AST at all, for a caller that
-        /// holds arbitrary JS values rather than this crate's typed arguments (a
-        /// binding, or the oracle harness). Each argument is `None` for JS
-        /// `undefined`. In TS's order, each a plain `Error`:
-        /// `Decorated`'s constructor rejects a falsy `ast` (`ast not
-        /// specified`); `ModelFile`'s rejects an `ast` that is not an object,
-        /// then a truthy `definitions` that is not a string, then a truthy
-        /// `fileName` that is not a string (P2-08).
+        /// TS: the argument checks `new ModelFile(modelManager, ast,
+        /// definitions, fileName)` runs before it reads the AST, for a caller
+        /// holding arbitrary JS values (`None` is `undefined`). In order, each
+        /// a plain `Error`: a falsy `ast` (`ast not specified`), an `ast` that
+        /// is not an object, a truthy non-string `definitions`, a truthy
+        /// non-string `fileName`.
         #[cfg_attr(not(feature = "js-compat"), expect(dead_code, reason = "js-compat seam only"))]
         pub fn check_constructor_arguments(
             ast: Option<&serde_json::Value>,
@@ -577,15 +515,10 @@ impl ModelFile {
         self.ast.get()
     }
 
-    /// P5-77 (accordproject/concerto-rust#419): [`ModelFile::ast`]'s
-    /// compact JSON text (`serde_json::to_string`). A file built from a
-    /// parsed AST then keeps that text in place of the parsed AST, which
-    /// is parsed again from it on first use, as for a file read from text
-    /// (P5-06c); with `float_roundtrip` and `preserve_order` that gives
-    /// an AST equal to the one it replaces (P5-92: so does a file read
-    /// from the compact layout, in place of its bytes). A file read from
-    /// text is left as it is (its own text is the caller's, not this
-    /// one).
+    /// [`ModelFile::ast`]'s compact JSON text (`serde_json::to_string`). A
+    /// file built from a parsed AST then keeps that text in its place,
+    /// parsed again on first use into an equal AST (`float_roundtrip`,
+    /// `preserve_order`); a file read from text is left as it is.
     #[cfg(feature = "js-compat")]
     pub fn compact_ast(&mut self) -> serde_json::Result<Arc<str>> {
         let text: Arc<str> = Arc::from(serde_json::to_string(self.ast())?);
@@ -660,18 +593,11 @@ impl ModelFile {
     /// primitives, its named imports, and its own declarations. Returns
     /// `None` if the name is none of those.
     ///
-    /// Imports are checked before local declarations, matching TS
-    /// `ModelFile.getType`/`resolveType`'s own `isImportedType(type) ? … :
-    /// isLocalType(type) ? … : null` order (modelfile.ts). A name is
-    /// normally never both — the "clashes with an imported type" check
-    /// (`Declaration.validate`) rejects a local declaration that shares a
-    /// name with an import — except when
-    /// `dangerouslyAllowReservedSystemTypeNamesInUserModels` waives that
-    /// check for a name that also matches a reserved system declaration
-    /// (P2-08): a local `Asset` importing the system `Asset` implicitly
-    /// (every non-system file's built-in import) must still resolve its own
-    /// implicit `superType` of `Asset` to the *system* declaration, not to
-    /// itself, or loading it would see circular inheritance.
+    /// Imports are checked before local declarations, as TS
+    /// `ModelFile.getType`/`resolveType` do. A name is both only when
+    /// `dangerouslyAllowReservedSystemTypeNamesInUserModels` waives the
+    /// import-clash check: a local `Asset` must still resolve its implicit
+    /// `Asset` super type to the system declaration, not to itself.
     pub fn resolve_local_type(&self, short: &str) -> Option<String> {
         if is_primitive_type(short) {
             return Some(short.to_string());
@@ -705,11 +631,10 @@ impl ModelFile {
         self.external
     }
 
-    /// TS: `ModelFile.getImportURI` — the URI an import was given (`import
-    /// ns.Name from 'uri'`), keyed the same odd way TS's own `importUriMap`
-    /// is: by the *first* fully-qualified name the owning import brings in,
-    /// not by its bare namespace (`ModelUtil.importFullyQualifiedNames(imp)[0]`,
-    /// modelfile.ts). `None` if no import with that key carries a URI.
+    /// TS: `ModelFile.getImportURI`: the URI an import was given (`import
+    /// ns.Name from 'uri'`), keyed as TS's `importUriMap` is, by the first
+    /// fully-qualified name the import brings in
+    /// (`ModelUtil.importFullyQualifiedNames(imp)[0]`).
     pub fn import_uri(&self, key: &str) -> Option<&str> {
         self.imports.iter().find_map(|imp| {
             let uri = imp.uri()?;
@@ -727,11 +652,8 @@ impl ModelFile {
     /// TS: `ModelFile.getExternalImports` — every import-URI pair
     /// [`ModelFile::get_import_uri`] can answer, keyed the same way.
     ///
-    /// Returned in import order, matching TS's `importUriMap`: a plain
-    /// object built by assigning `importUriMap[key] = uri` for each import
-    /// in file order, so JS keeps insertion order and a later duplicate key
-    /// overwrites the value in place without moving it (PORTING.md 3.7 —
-    /// no `HashMap` iteration on an observable path).
+    /// In import order, as TS's `importUriMap` keeps insertion order with a
+    /// later duplicate key overwriting in place (PORTING.md 3.7).
     pub fn external_imports(&self) -> IndexMap<String, String> {
         let mut out = IndexMap::new();
         for imp in self.imports.iter() {
@@ -750,9 +672,8 @@ impl ModelFile {
         self.external_imports()
     }
 
-    /// TS: `ModelFile.getImports` — the fully-qualified names this file
-    /// imports (the declared name of each, never an alias, matching
-    /// `ModelUtil.importFullyQualifiedNames`), including the built-in system
+    /// TS: `ModelFile.getImports`: the fully-qualified names this file
+    /// imports (declared names, never aliases), with the built-in system
     /// import for a non-system file.
     pub fn imported_type_names(&self) -> Vec<String> {
         self.imports
@@ -799,14 +720,10 @@ impl ModelFile {
         !type_name.is_empty() && self.local_type(type_name).is_some()
     }
 
-    /// The namespace and declared name a locally-visible import name
-    /// resolves to (an alias counts under its alias only, not its declared
-    /// name — P2-08 review carry-over (a) from P2-04's review, #48), read
-    /// from the `importShortNames` map built at load: a later import of the
-    /// same local name replaces an earlier one, as `Map.set` does (TS builds
-    /// `importShortNames` with one forward pass over `this.imports`). That
-    /// holds for a user import of a system type name too: the built-in
-    /// import `fromAst` appends last wins (P5-98, A-2).
+    /// The namespace and declared name a locally visible import name (an
+    /// alias only under its alias) resolves to, from `importShortNames`: a
+    /// later import of a local name replaces an earlier one, so the built-in
+    /// import `fromAst` appends last wins.
     pub(crate) fn import_target(&self, type_name: &str) -> Option<(&str, &str)> {
         let &(import, position) = self.import_short_names.get(type_name)?;
         let import = &self.imports[import as usize];
@@ -827,11 +744,8 @@ impl ModelFile {
         self.find_import(type_name).is_some()
     }
 
-    /// TS: `ModelFile.resolveImport`. The error, when `type_name` is not
-    /// visible under any import, carries this file's own name for the
-    /// `IllegalModelException` message's `File '…':` decoration, the same as
-    /// every check in [`crate::validation`] does; its `imports` parameter is
-    /// TS's `JSON.stringify(this.imports)` (`ModelFile::imports_json`).
+    /// TS: `ModelFile.resolveImport`. The error names this file, and its
+    /// `imports` parameter is TS's `JSON.stringify(this.imports)`.
     pub fn resolve_import(&self, type_name: &str) -> Result<String> {
         self.find_import(type_name).ok_or_else(|| {
             let mut err = ContractError::new(
@@ -867,13 +781,9 @@ impl ModelFile {
         is_primitive_type(type_name) || self.local_type(type_name).is_some()
     }
 
-    /// TS: `ModelFile.getFullyQualifiedTypeName` — entirely local: a
-    /// primitive's own name, an imported name's target FQN, or a locally
-    /// declared type's FQN; `None` (TS `null`) when `type_name` is none of
-    /// those. [`crate::model_manager::ModelManager`]'s `ResolutionContext`
-    /// implementation already serves `ModelFile.getType` and
-    /// `Property.getFullyQualifiedTypeName`, the two members that need the
-    /// owning `ModelManager` to chase into another file; this one never does.
+    /// TS: `ModelFile.getFullyQualifiedTypeName`, entirely local: a
+    /// primitive's own name, an imported name's target FQN, or a local
+    /// type's FQN; `None` (TS `null`) otherwise.
     pub fn fully_qualified_type_name(&self, type_name: &str) -> Option<String> {
         if is_primitive_type(type_name) {
             return Some(type_name.to_string());
@@ -1003,12 +913,8 @@ impl ModelFile {
             .filter(move |d| d.as_class().is_some_and(matches_kind))
     }
 
-    /// TS: `ModelFile.getClassDeclarations` — `instanceof ClassDeclaration`,
-    /// which `EnumDeclaration` also satisfies (it extends `ClassDeclaration`
-    /// in TS, module doc on [`crate::introspect::declaration::EnumDeclaration`]);
-    /// only a map or scalar declaration is left out. The same predicate
-    /// `crate::model_manager::ModelManager::class_declarations`
-    /// (`Introspector.getClassDeclarations`) uses.
+    /// TS: `ModelFile.getClassDeclarations`: `instanceof ClassDeclaration`,
+    /// which an enum satisfies too; only a map or scalar is left out.
     pub fn class_declarations(&self) -> impl Iterator<Item = &Declaration> {
         self.declarations
             .iter()
@@ -1056,17 +962,12 @@ impl ModelFile {
         self.scalar_declarations().collect()
     }
 
-    /// TS: `ModelFile.filter` — a new model file with only the declarations
-    /// `predicate` accepts, or `None` (TS `null`) if that leaves none. The
-    /// predicate also decides which of this file's imports survive: an
-    /// import is dropped only when every declaration it would have brought
-    /// in is rejected (an `ImportType`) or all of its named types are (an
-    /// `ImportTypes`, whose surviving `types`/`aliasedTypes` are pruned the
-    /// same way TS's own `imp.types.filter`/`imp.aliasedTypes.filter` are);
-    /// the built-in `concerto` import always survives. `source_manager` is
-    /// the manager this file is currently loaded into — TS reads each
-    /// import's source file through `this.getModelManager()` — and need not
-    /// be the same manager the filtered file is later added to.
+    /// TS: `ModelFile.filter`: a new model file with only the declarations
+    /// `predicate` accepts, or `None` (TS `null`) if none is left. An import
+    /// is dropped when every declaration it brings in is rejected, an
+    /// `ImportTypes`' `types`/`aliasedTypes` pruned as TS prunes them; the
+    /// built-in import always survives. `source_manager` is the manager the
+    /// file is loaded into, through which each import's source file is read.
     pub fn filter(
         &self,
         predicate: impl Fn(&Declaration) -> bool,
@@ -1085,14 +986,10 @@ impl ModelFile {
     }
 
     js_compat_pub! {
-        /// P5-97 (accordproject/concerto-rust#448): [`ModelFile::filter`],
-        /// telling apart a filter that keeps the file exactly as it is: every
-        /// declaration kept and every import unchanged
-        /// ([`FilterOutcome::Unchanged`]). The model file `filter` would then
-        /// build is this one, rebuilt from the same AST, definitions and file
-        /// name, so a caller may keep this file (shared) instead. The
-        /// predicate is called on the same declarations, in the same order,
-        /// as `filter` calls it, and the same errors are returned.
+        /// [`ModelFile::filter`], telling apart a filter that keeps the file
+        /// exactly as it is ([`FilterOutcome::Unchanged`]), so a caller may
+        /// keep this file, shared. The predicate is called as `filter` calls
+        /// it, and the same errors are returned.
         pub fn filter_outcome(
             &self,
             predicate: impl Fn(&Declaration) -> bool,
@@ -1102,11 +999,9 @@ impl ModelFile {
         }
     }
 
-    /// [`ModelFile::filter_outcome`], with a predicate that is also handed
-    /// where the declaration is: the namespace of the file that declares it
-    /// (this file's, or an imported file's in `source_manager`) and its
-    /// position in that file's [`ModelFile::declarations`]. The model
-    /// manager keys its kept set by that position (A-16g).
+    /// [`ModelFile::filter_outcome`], with a predicate also handed the
+    /// declaring file's namespace and the declaration's position there, by
+    /// which the model manager keys its kept set.
     pub(crate) fn filter_outcome_at(
         &self,
         predicate: impl Fn(&str, usize, &Declaration) -> bool,
@@ -1168,7 +1063,7 @@ impl ModelFile {
 }
 
 js_compat_pub! {
-    /// What [`ModelFile::filter_outcome`] found (P5-97).
+    /// What [`ModelFile::filter_outcome`] found.
     #[derive(Debug)]
     pub enum FilterOutcome {
         /// No declaration was kept: `filter` returns `None` (TS `null`).
@@ -1259,10 +1154,8 @@ fn keeps(
 
 /// The error for an AST the typed read cannot read
 /// (`modelfile-load-unreadable`): an `IllegalModelException` naming the
-/// file. With BC-19's shape check on (the default on the JS API), a model
-/// whose AST is not in the metamodel's shape is rejected before it is read,
-/// so only a caller that skips the check (`metamodelValidation: false`, or
-/// a native caller) can meet it (P5-61).
+/// file. With BC-19's shape check on such an AST is rejected first, so
+/// only a caller that skips the check meets it.
 pub(crate) fn unreadable_ast(err: &serde_json::Error, file_name: Option<&str>) -> Error {
     let mut contract = ContractError::new(
         ErrorKind::IllegalModel,
@@ -1275,13 +1168,12 @@ pub(crate) fn unreadable_ast(err: &serde_json::Error, file_name: Option<&str>) -
 
 /// [`ModelFile::ast`]: the AST as a `serde_json::Value`, either given
 /// directly or parsed on first use from the source the typed AST path
-/// read (P5-06c, [`ModelFile::from_json_text`]).
+/// read ([`ModelFile::from_json_text`]).
 #[derive(Clone)]
 struct Ast {
     value: OnceLock<serde_json::Value>,
     /// What `value` is parsed from on first use, when it was not given
-    /// (A-13, accordproject/concerto-rust#458: one sum type where three
-    /// independent fields could disagree).
+    /// (one sum type where three independent fields could disagree).
     source: AstSource,
 }
 
@@ -1290,9 +1182,9 @@ struct Ast {
 enum AstSource {
     /// The value was given (or nothing else is kept).
     None,
-    /// The JSON text the typed AST path read (P5-06c).
+    /// The JSON text the typed AST path read.
     Text(Arc<str>),
-    /// P5-92: the AST in the compact binary layout
+    /// The AST in the compact binary layout
     /// ([`ModelFile::from_compact_with_imports`]).
     #[cfg_attr(not(feature = "js-compat"), allow(dead_code))]
     Compact(Arc<[u8]>),
@@ -1334,8 +1226,8 @@ impl Ast {
         self.value.get_or_init(|| match &self.source {
             #[cfg(feature = "js-compat")]
             AstSource::Compact(bytes) => crate::introspect::compact::to_value(bytes)
-                // P5-95: the typed read checks every byte as `to_value`
-                // does, a value it skips included (`Compact::skip`).
+                // The typed read checks every byte as `to_value` does,
+                // a value it skips included (`Compact::skip`).
                 .expect("the typed read accepted these bytes, so they are in the layout"),
             // The typed path only accepts text that also parses as a `Value`
             // (typed_ast's module doc, "JSON syntax").
@@ -1350,7 +1242,7 @@ impl Ast {
 
 /// The value when it has been parsed; otherwise only the source's kind and
 /// length, so that `{:?}` on a model file (or a manager) never parses and
-/// keeps a lazily kept AST (A-13).
+/// keeps a lazily kept AST.
 impl std::fmt::Debug for Ast {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match (self.value.get(), &self.source) {
@@ -1375,9 +1267,8 @@ fn built_in_import() -> serde_json::Value {
     })
 }
 
-/// [`built_in_import`], read once (P5-48: every non-system model load
-/// appends it), as the whole import list of a file that imports nothing
-/// else.
+/// [`built_in_import`], read once (every non-system model load appends
+/// it), as the whole import list of a file that imports nothing else.
 static BUILT_IN_IMPORTS: LazyLock<Option<[Import; 1]>> = LazyLock::new(|| {
     Import::try_from(&built_in_import())
         .ok()
@@ -1398,7 +1289,7 @@ fn built_in_import_typed() -> Result<Import> {
 /// `imported_names` it stands for.
 ///
 /// Keyed by names from user models, so hashed with the per-process seeded
-/// foldhash ([`FastSeededState`], P5-110; see [`name_hash`]).
+/// foldhash ([`FastSeededState`]; see [`name_hash`]).
 type ImportShortNames = FastSeededHashMap<Box<str>, (u32, u32)>;
 
 /// TS `ModelFile.fromAst`'s `importShortNames.set` loop: one forward pass
@@ -1422,8 +1313,8 @@ static BUILT_IN_SHORT_NAMES: LazyLock<ImportShortNames> = LazyLock::new(|| {
 });
 
 /// The imports of a non-system file that imports nothing else: the cached
-/// built-in import alone, shared (P5-93), or, if it could not be read (it
-/// always can), the error reading it gives.
+/// built-in import alone, shared, or, if it could not be read (it always
+/// can), the error reading it gives.
 fn built_in_imports() -> Result<Cow<'static, [Import]>> {
     match &*BUILT_IN_IMPORTS {
         Some(imports) => Ok(Cow::Borrowed(imports)),
@@ -1433,10 +1324,8 @@ fn built_in_imports() -> Result<Cow<'static, [Import]>> {
 
 impl ModelFile {
     /// TS `JSON.stringify(this.imports)`: the AST's own import nodes,
-    /// verbatim and in their own key order (the AST is kept unchanged,
-    /// module doc), followed by the built-in system import `fromAst` appends
-    /// for a non-system file (P2-08 review: this used to re-encode the typed
-    /// imports, which carry no `$class`).
+    /// verbatim, then the built-in import `fromAst` appends for a non-system
+    /// file.
     fn imports_json(&self) -> String {
         let mut values = match self.ast().get("imports") {
             Some(serde_json::Value::Array(imports)) => imports.clone(),
@@ -1449,20 +1338,13 @@ impl ModelFile {
     }
 }
 
-/// TS `ModelFile.isCompatibleVersion` (modelfile.ts): if the AST declares a
-/// `concertoVersion` range, this runtime's own version (D10: the frozen TS
-/// 5.0.0 reference) must satisfy it (`semver.satisfies(…, {includePrerelease:
-/// true})`); failing that, a model still targeting v3.0.0 or later is
-/// accepted for backward compatibility (`semver.minSatisfying(['3.0.0'],
-/// range)`, no options); anything else is a plain `Error`, not an
-/// `IllegalModelException`. `None` (not an error) when the AST carries no
-/// `concertoVersion` at all.
-///
-/// The range check is [`crate::semver_range::satisfies`], a port of
-/// node-semver's own range grammar (module doc there), not the Cargo
-/// `semver` crate's requirement syntax: the two disagree on space-separated
-/// AND comparators (`>=3.0.0 <6.0.0`), hyphen ranges (`1.2.3 - 2.3.4`) and
-/// what a bare version means (exact in node-semver, caret in Cargo).
+/// TS `ModelFile.isCompatibleVersion`: a declared `concertoVersion` range
+/// must admit this runtime's version (`semver.satisfies(…,
+/// {includePrerelease: true})`) or a v3 model (`semver.minSatisfying(['3.0.0'],
+/// range)`); anything else is a plain `Error`. `None` when the AST has no
+/// `concertoVersion`. The range check is node-semver's grammar
+/// ([`crate::semver_range::satisfies`]), not Cargo's: they disagree on
+/// space-separated comparators, hyphen ranges and a bare version.
 fn check_compatible_version(value: Option<&serde_json::Value>) -> Result<Option<String>> {
     let Some(range) = value.and_then(|v| v.as_str()).filter(|s| !s.is_empty()) else {
         return Ok(None);
@@ -1472,9 +1354,9 @@ fn check_compatible_version(value: Option<&serde_json::Value>) -> Result<Option<
 
 js_compat_pub! {
     /// TS `ModelFile.isCompatibleVersion` for a non-empty `concertoVersion`
-    /// range (P5-11, accordproject/concerto-rust#287): the range, when this
-    /// runtime's version satisfies it (prereleases included) or it admits
-    /// a v3 model, otherwise the plain `Error` TS throws.
+    /// range: the range, when this runtime's version satisfies it
+    /// (prereleases included) or it admits a v3 model, otherwise the plain
+    /// `Error` TS throws.
     pub fn compatible_concerto_version(range: &str) -> Result<String> {
         if crate::semver_range::satisfies(CONCERTO_CORE_VERSION, range, true)
             || crate::semver_range::satisfies("3.0.0", range, false)
@@ -1496,8 +1378,8 @@ js_compat_pub! {
     }
 }
 
-/// TS `packageJson.version`: the frozen TS 5.0.0 reference's own version
-/// (D10), which `ModelFile.isCompatibleVersion` checks a model's
+/// TS `packageJson.version`: the frozen TS 5.0.0 reference's own
+/// version, which `ModelFile.isCompatibleVersion` checks a model's
 /// `concertoVersion` range against.
 const CONCERTO_CORE_VERSION: &str = "5.0.0";
 
@@ -1508,28 +1390,19 @@ fn plain_error(message: String) -> Error {
     ContractError::pre_port(ErrorKind::InvalidArgument, message, None).into()
 }
 
-/// `ModelFile.fromAst`'s own namespace handling (modelfile.ts, P2-08): parses
-/// `namespace` as `ModelUtil.parseNamespace` does, except that an unversioned
-/// namespace gets this function's own errors, in TS 5.0.0's order
-/// (`model_util::split_namespace`), rejects a namespace whose name has a part
-/// that is not a valid identifier (`IllegalModelException`, `this` and
-/// `this.ast.location` in TS — no oracle fixture reaches this branch, and
-/// `ModelFile` keeps no AST `location` in this port (validation.rs review
-/// comment), so only the file name is attached here), then requires a
-/// version, with the same plain `Error` TS's own hardcoded message uses.
-/// TS 5.0.0 exempted a system model file (a bare `concerto` namespace) from
-/// that last check; since BC-02 (R1, P5-50; DV-003 closed) every model file
-/// needs a version. Returns the version.
+/// `ModelFile.fromAst`'s namespace handling: parses `namespace` as
+/// `ModelUtil.parseNamespace` does (an unversioned namespace gets this
+/// function's errors, in TS 5.0.0's order), rejects a part that is not a
+/// valid identifier (`IllegalModelException`, naming the file only: a
+/// `ModelFile` keeps no AST `location`), then requires a version, for
+/// every model file (BC-02). Returns the version.
 fn parse_namespace_version<'a>(namespace: &'a str, file_name: &Option<String>) -> Result<&'a str> {
     let (name, version) = model_util::split_namespace(namespace)?;
     for part in name.split('.') {
         if !is_valid_identifier(part) {
-            // `ContractError` (not the pre-port `Error::illegal_model`
-            // shape), so the oracle harness's `final_message`
-            // decorates it exactly as `IllegalModelException`'s constructor
-            // does (`to_oracle_error`'s doc comment): a trailing space always,
-            // and `File '<name>': ` when TS's `this` (passed here, unlike
-            // `plain_error`, below) has one.
+            // A `ContractError`, so `final_message` decorates it as
+            // `IllegalModelException`'s constructor does, with
+            // `File '<name>': ` when the file has a name.
             let mut err = ContractError::pre_port(
                 ErrorKind::IllegalModel,
                 format!("Invalid namespace part '{part}'"),

@@ -2,14 +2,13 @@
 //! `packages/concerto-core`): the `#decorateModels` tests that target a
 //! `MapDeclaration`, and the `#extractDecorators` group.
 //!
-//! Every model is the one the TS test loads with `addCTOModel`: CTO stays in
-//! JS (PORTING.md OD-9), so `testdata/decoratorcommands/<name>.ast.json` is
+//! Every model is the one the TS test loads with `addCTOModel`: the CTO
+//! parser stays in JS, so `testdata/decoratorcommands/<name>.ast.json` is
 //! the AST concerto-cto 5.0.0 parses `test/data/decoratorcommands/<name>.cto`
-//! to, taken from the oracle corpus's CTO -> AST cache (P1-07a), under the
-//! same file name and `skipLocationNodes` option the test passes
-//! (`.skiplocation.` in the name when it passes `true`). The command-set and
-//! expected-output JSON files are copied verbatim from
-//! `test/data/decoratorcommands/`.
+//! to, taken from the oracle corpus's CTO -> AST cache, under the same file
+//! name and `skipLocationNodes` option the test passes (`.skiplocation.` in
+//! the name when it passes `true`). The command-set and expected-output JSON
+//! files are copied verbatim from `test/data/decoratorcommands/`.
 //!
 //! Where TS reads a map's key or value decorators through
 //! `MapDeclaration.key`/`.value` (`MapKeyType`/`MapValueType`, which have no

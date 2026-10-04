@@ -2,15 +2,10 @@
 //! `numbervalidator.ts`, `stringvalidator.ts` and
 //! `collectionsizevalidator.ts` from the TypeScript reference.
 //!
-//! P0-04b trial ported `NumberValidator`, with the part of
-//! `Validator.reportError` it needs. P2-02 ports `StringValidator` (with the
-//! `regress` crate for ECMAScript-compatible regex semantics, PORTING.md
-//! section 3 and OD-4) and `CollectionSizeValidator`, plus every validator's
-//! `compatibleWith`. `ScalarDeclaration` and `Property` build these instead
-//! of running their own ad hoc checks: `Property` was wired in by P2-04/P2-05
-//! (`check_bound_validators`), and `ScalarDeclaration` (`process`, for its
-//! `StringValidator`) last, by P2-09c/F5 — `introspect::check_pattern` and
-//! `check_length`, the ad hoc checks this replaced, are gone.
+//! The port includes the part of `Validator.reportError` they need, and
+//! every validator's `compatibleWith`. Regexes use the `regress` crate for
+//! ECMAScript semantics (PORTING.md section 3). `ScalarDeclaration` and
+//! `Property` (`check_bound_validators`) build these.
 
 use crate::hash::SeededHashMap;
 use std::cell::RefCell;
@@ -66,9 +61,8 @@ impl Validator {
 /// instance identifier and the element's fully qualified name in front. The
 /// name is read only here, as TS reads it only when it reports.
 ///
-/// `kind` is the exception class (BC-39, R1; maintainer decision Q-15 on
-/// accordproject/concerto-rust#249): [`ErrorKind::IllegalModel`] for a
-/// check the constructor makes while the model loads (bad bounds, an invalid
+/// `kind` is the exception class (BC-39): [`ErrorKind::IllegalModel`] for a check
+/// the constructor makes while the model loads (bad bounds, an invalid
 /// regex, a default value outside the validator), and
 /// [`ErrorKind::Validation`] for an instance value that fails the validator.
 /// Both keep the `errorType` and the `Validator error for field …` message.
@@ -97,20 +91,11 @@ fn report_error<F: ValidatedElement>(
     err.into()
 }
 
-/// A validator sub-object's `key`, read the way TS's own `CollectionSizeValidator`/
-/// `StringValidator` constructors read `minSize`/`maxSize`/`minLength`/
-/// `maxLength` — a plain, untyped property read, never a parse — coerced
-/// through ECMAScript `ToNumber` ([`ecma::to_number`]) exactly as every use
-/// of the bound (a `< 0`/`>` comparison, `??`/`===null` checks) already
-/// coerces it. `None` for a missing key or an explicit JSON `null` alike
-/// (OD-3, the same collapse [`CollectionSizeValidator::new`]/[`StringValidator::new`]'s
-/// own doc comments already accept for this pair of fields), `Some` for
-/// anything else — including a fuzz-mutated non-number (a string, a bool, an
-/// array, an object), which `to_number` turns into a real `f64` (`NaN` when
-/// there is no sensible numeric reading), never a decode failure
-/// (accordproject/concerto-rust#217): every comparison downstream already
-/// treats `NaN` as "never crossed", the same outcome TS's own comparison
-/// against the untouched mutated value gives.
+/// A validator sub-object's `key`, read as TS's `CollectionSizeValidator`/
+/// `StringValidator` constructors read their bounds (an untyped property
+/// read) and coerced with ECMAScript `ToNumber` ([`ecma::to_number`]).
+/// `None` for a missing key or JSON `null`; any other value is `Some`, a
+/// non-number becoming `NaN`, which never crosses a bound, as in TS.
 #[cfg(feature = "js-compat")]
 fn validator_number_field(ast: &Value, key: &str) -> Option<f64> {
     match ast.get(key) {
@@ -119,21 +104,11 @@ fn validator_number_field(ast: &Value, key: &str) -> Option<f64> {
     }
 }
 
-/// Whether `min > max` by JS's abstract relational comparison applied to the
-/// *raw* AST values (`ecma::greater_than`), not to values already coerced to
-/// `f64` (accordproject/concerto-rust#219): TS's own `this.minSize >
-/// this.maxSize` (and `this.minLength > this.maxLength`) compares whatever
-/// `minSize`/`maxSize` are on the AST completely untouched, so a
-/// fuzz-mutated bound that is itself a non-numeric string can make this a
-/// *string* comparison (lexicographic, e.g. `'aaaa' > '1'` is `true`, char
-/// code `'a'` > `'1'`), not the `NaN`-producing numeric one converting each
-/// side to a number first would give. `min`/`max` are the already-coerced
-/// `f64` readings ([`validator_number_field`]/[`length_bound_field`]); `raw`
-/// is the validator's own AST sub-node (`sizeValidator`/`lengthValidator`),
-/// when the caller has it: `None` — every call site but the two that build a
-/// validator straight from a fuzzed `ModelManager.fromAst`/`addModelFile`
-/// AST — falls back to the plain `f64` comparison, exactly the question this
-/// asks for data a prior, successful model construction already normalised.
+/// Whether `min > max` by JS's abstract relational comparison over the raw
+/// AST values (`ecma::greater_than`), as TS compares them untouched: two
+/// non-numeric strings compare lexicographically. `min`/`max` are the
+/// coerced readings; without `raw` (the validator's AST sub-node) this is
+/// the plain `f64` comparison.
 fn bounds_out_of_order(
     raw: Option<&Value>,
     min_key: &str,
@@ -142,30 +117,19 @@ fn bounds_out_of_order(
     max: f64,
 ) -> bool {
     match raw.and_then(|raw| raw.get(min_key).zip(raw.get(max_key))) {
-        // A present, non-null pair on the raw AST: TS's own untouched
-        // comparison, which this mirrors exactly. `min`/`max` being `f64`
-        // here already means neither raw side was an absent key or an
-        // explicit `null` ([`validator_number_field`] returns `None` for
-        // either, never reaching this branch's `Some`/`Some` zip's only
-        // callers, [`CollectionSizeValidator::new`]'s `min_size.zip(max_size)`
-        // and [`StringValidator::new`]'s `min_length.zip(max_length)`;
-        // [`length_bound_field`] reads the length bounds the same way).
+        // A present, non-null pair on the raw AST: TS's own comparison.
         Some((min_raw, max_raw)) if !min_raw.is_null() && !max_raw.is_null() => {
             ecma::greater_than(min_raw, max_raw)
         }
-        // No raw AST: the pre-existing `f64` comparison, unchanged.
+        // No raw AST: the `f64` comparison.
         _ => min > max,
     }
 }
 
-/// A validator sub-object's string field (`StringRegexValidator`'s `pattern`/
-/// `flags`), read the way `new RegExp(validator.pattern, validator.flags)`
-/// reads them: a missing key is `undefined`, which the `RegExp` constructor
-/// special-cases to the empty string (never the literal text `"undefined"`
-/// `ToString` would give); anything else — a present `null`, a number, an
-/// array, an object, or a fuzz-mutated non-string of any kind
-/// (accordproject/concerto-rust#217) — goes through the same
-/// [`ecma::to_js_string`] coercion `ToString` gives it.
+/// A validator sub-object's string field (`pattern`/`flags`), read as
+/// `new RegExp(validator.pattern, validator.flags)` reads it: a missing key
+/// is the empty string, anything else goes through `ToString`
+/// ([`ecma::to_js_string`]).
 #[cfg(feature = "js-compat")]
 fn validator_string_field(ast: &Value, key: &str) -> String {
     match ast.get(key) {
@@ -174,28 +138,12 @@ fn validator_string_field(ast: &Value, key: &str) -> String {
     }
 }
 
-/// Builds a [`mm::CollectionSizeValidator`] straight from the raw
-/// `sizeValidator` AST node, bypassing `serde`'s strict decode of its
-/// `minSize`/`maxSize` fields (which requires an actual JSON number) the way
-/// `validator_number_field`'s doc comment describes. `$class` is never read
-/// by any behaviour this crate ports (only kept for a faithful struct), so a
-/// non-string or absent one is coerced/defaulted the same permissive way.
-/// `raw` is `ast.get("sizeValidator")`; `None` (the key absent) and an
-/// explicit JSON `null` both give `None`, matching `serde`'s own
-/// `Option<T>` field semantics for the well-formed AST this replaces.
-///
-/// TS: this is `ClassDeclaration.process`'s properties loop constructing a
-/// `Field`/`Property`, whose own `sizeValidator` is a
-/// `new CollectionSizeValidator(this, this.ast.sizeValidator)`
-/// (property.ts/field.ts) — the AST node itself, read with no type check.
-/// `pub`, not `pub(crate)`: concerto-wasm's own `collectionSizeValidatorNew`
-/// binding is TS's *other* call site for this exact constructor (`Property.process`
-/// builds the view directly, per this module's own doc comment on
-/// `CollectionSizeValidator::new`) and needs the same leniency
-/// (accordproject/concerto-rust#217) — a fuzz-mutated `minSize`/`maxSize`
-/// there hits `serde`'s strict decode just as surely as it did here, since
-/// that binding decoded the raw AST the same strict way before calling
-/// through to `CollectionSizeValidator::new`.
+/// Builds a [`mm::CollectionSizeValidator`] from the raw `sizeValidator` AST
+/// node with `validator_number_field`'s coercion instead of `serde`'s
+/// strict decode, as TS's `new CollectionSizeValidator(this,
+/// this.ast.sizeValidator)` reads the node with no type check. `None` for an
+/// absent or `null` node. `pub` for concerto-wasm's
+/// `collectionSizeValidatorNew`, TS's other call site for the constructor.
 #[cfg(feature = "js-compat")]
 pub fn size_validator_from_ast(raw: Option<&Value>) -> Option<mm::CollectionSizeValidator> {
     let raw = raw.filter(|value| !value.is_null())?;
@@ -221,30 +169,18 @@ pub fn length_validator_from_ast(raw: Option<&Value>) -> Option<mm::StringLength
     })
 }
 
-/// [`validator_number_field`], for `StringLengthValidator`'s own
-/// `minLength`/`maxLength`. TS 5.0.0 read these with a plain optional chain
-/// (`lengthValidator?.minLength`) and a strict `=== null` test, so only an
-/// explicit `null` on *both* bounds tripped `StringValidator::new`'s "must
-/// be specified" check, and an absent key (`length=[,]`, or a
-/// `lengthValidator` that is not even an object, accordproject/concerto-rust#217)
-/// slipped past it. BC-40 (R1; maintainer decision D2 on
-/// accordproject/concerto-rust#249) rejects a length validator with neither
-/// bound, as `NumberValidator` rejects `range=[,]`, so an absent key and an
-/// explicit `null` are the same "no bound" here, as they are for
-/// `CollectionSizeValidator`: `None` for both. Anything else is coerced
-/// through `ToNumber`, so a fuzz-mutated non-number becomes `NaN`, whose
-/// comparisons are always false.
+/// [`validator_number_field`], for `StringLengthValidator`'s
+/// `minLength`/`maxLength`. BC-40: an absent key and an explicit `null` are
+/// both "no bound", so a length validator with neither bound is rejected
+/// (TS 5.0.0 rejected only two explicit `null`s).
 #[cfg(feature = "js-compat")]
 fn length_bound_field(ast: &Value, key: &str) -> Option<f64> {
     validator_number_field(ast, key)
 }
 
 /// [`size_validator_from_ast`], for a `StringProperty`/`StringScalar`'s own
-/// `validator` (`mm::StringRegexValidator`, `{pattern, flags}`) —
-/// `validator_string_field`'s doc comment covers the `pattern`/`flags`
-/// coercion, which mirrors `new RegExp(validator.pattern, validator.flags)`
-/// rather than a plain `ToString`. `pub` for the same reason as
-/// [`size_validator_from_ast`].
+/// `validator` (`{pattern, flags}`, coerced by `validator_string_field`).
+/// `pub` for the same reason as [`size_validator_from_ast`].
 #[cfg(feature = "js-compat")]
 pub fn regex_validator_from_ast(raw: Option<&Value>) -> Option<mm::StringRegexValidator> {
     let raw = raw.filter(|value| !value.is_null())?;
@@ -291,10 +227,10 @@ impl NumberValidator {
         Self::checked(field, bound(ast, "lower"), bound(ast, "upper"))
     }
 
-    /// [`NumberValidator::new`] from typed bounds (A-9, P5-99): a property's
-    /// or a scalar's `{lower, upper}` as the strict read gives them, with
-    /// the same checks and errors. `new` stays for the AST a caller hands
-    /// in as JSON (the WASM binding's standalone validator).
+    /// [`NumberValidator::new`] from typed bounds: a property's or a
+    /// scalar's `{lower, upper}` as the strict read gives them, with the
+    /// same checks and errors. `new` stays for the AST a caller hands in as
+    /// JSON (the WASM binding's standalone validator).
     pub(crate) fn from_bounds<F: ValidatedElement>(
         field: &F,
         lower: Option<f64>,
@@ -492,12 +428,8 @@ impl CollectionSizeValidator {
     js_compat_pub! {
         /// Builds the validator from its AST (`{minSize, maxSize}`).
         ///
-        /// The metamodel's `min_size`/`max_size` already collapse an absent bound
-        /// and an explicit `null` one into `None` alike (OD-3), which matches TS
-        /// `validator.minSize ?? null` exactly: unlike `StringValidator`'s length
-        /// bounds (below), `CollectionSizeValidator` reads its AST with `??`, not
-        /// a strict `=== null` check, so there is no absent/null distinction to
-        /// lose here.
+        /// An absent bound and an explicit `null` are both `None`, as TS's
+        /// `validator.minSize ?? null` reads them.
         ///
         /// TS: CollectionSizeValidator.constructor
         /// (src/introspect/collectionsizevalidator.ts)
@@ -625,16 +557,11 @@ impl CollectionSizeValidator {
 }
 
 /// A compiled string-regex validator: the pattern and flags as given, plus
-/// the `regress` engine built from them (PORTING.md section 3, OD-4).
+/// the `regress` engine built from them (PORTING.md section 3).
 ///
-/// `regress::Regex` has no `PartialEq`, so equality and `Display` are defined
-/// over the source pattern and flags only, which is everything TS's
-/// `RegExp.toString()` (and so `compatibleWith`, which compares `pattern` and
-/// `flags` directly) ever observes.
-///
-/// The pattern, flags and engine are shared (P5-13): a validator is rebuilt
-/// for every string field an instance check visits, and every rebuild of the
-/// same `(pattern, flags)` reuses the one cached compilation
+/// Equality and `Display` cover the source pattern and flags only, all
+/// that TS's `RegExp.toString()` and `compatibleWith` observe. The parts
+/// are shared, so a rebuild reuses the cached compilation
 /// ([`compile_regex`]) without copying either string.
 #[derive(Debug, Clone)]
 struct CompiledRegex {
@@ -657,12 +584,9 @@ impl fmt::Display for CompiledRegex {
 }
 
 thread_local! {
-    /// Compiled `StringValidator` regexes by flags, then pattern (P5-06;
-    /// nested in P5-13 so that a lookup borrows both strings): a validator
-    /// is rebuilt for every string field an instance check visits, and
-    /// `regress` compilation dominated that. Only successful compilations
-    /// are kept, so an error is always produced (and worded) by a fresh
-    /// compile, exactly as without the cache.
+    /// Compiled `StringValidator` regexes by flags, then pattern (nested so
+    /// that a lookup borrows both strings). Only successful compilations are
+    /// kept, so an error is always worded by a fresh compile.
     static REGEX_CACHE: RefCell<RegexCache> =
         RefCell::new(RegexCache::default());
 }
@@ -710,16 +634,10 @@ fn compile_regex(pattern: &str, flags: &str) -> std::result::Result<CompiledRege
 }
 
 impl CompiledRegex {
-    /// `regex.lastIndex = 0; regex.test(value)` (then implicitly reset
-    /// again): `regress` is stateless, so there is no `lastIndex` to leak
-    /// between calls, and a `g` flag behaves exactly like a fresh, unanchored
-    /// search every time, matching TS's reset-before-and-after discipline
-    /// (`StringValidator.matchesRegex`).
-    ///
-    /// `regress` silently ignores `y` (sticky), which it does not implement,
-    /// so sticky matching is done here: the leftmost match (if any) must
-    /// start at offset 0, exactly what a sticky match at `lastIndex = 0`
-    /// requires.
+    /// `regex.lastIndex = 0; regex.test(value)`: `regress` is stateless, so
+    /// a `g` flag behaves like a fresh search every time, as TS's reset
+    /// gives. `regress` ignores `y` (sticky), so a sticky match is checked
+    /// here: the leftmost match must start at offset 0.
     fn matches(&self, value: &str) -> bool {
         match self.regex.find(value) {
             Some(found) => !self.flags.contains('y') || found.range.start == 0,
@@ -728,12 +646,10 @@ impl CompiledRegex {
     }
 }
 
-/// OD-4: maps a `regress` compile-error reason to V8's own wording, where
-/// known — `regress` and V8 both implement ECMAScript regex syntax, but
-/// describe the same syntax error in their own words. Any reason not in this
-/// table is `regress`'s own text, an `engine` divergence (OD-4;
-/// PORTING.md 3.2) rather than a faithful port until it is recorded and
-/// added here.
+/// Maps a `regress` compile-error reason to V8's own wording, where known:
+/// both implement ECMAScript regex syntax but word the same syntax error
+/// differently. Any reason not in this table keeps `regress`'s own text,
+/// an `engine` divergence (PORTING.md 3.2).
 fn v8_regex_reason(regress_reason: &str) -> &str {
     match regress_reason {
         // `(` with no closing `)`. Checked against the frozen TS 5.0.0
@@ -774,11 +690,7 @@ fn valid_js_regex_flags(flags: &str) -> bool {
 /// TS: StringValidator (src/introspect/stringvalidator.ts)
 #[derive(Debug, Clone, PartialEq)]
 pub struct StringValidator {
-    // The metamodel's `min_length`/`max_length` collapse an absent bound and
-    // an explicit `null` one into `None` alike (OD-3), and so does
-    // [`length_bound_field`]: since BC-40 (R1) a length validator with
-    // neither bound, absent or `null`, fails the "must be specified" check.
-    // TS 5.0.0 rejected only two explicit `null`s.
+    // An absent bound and an explicit `null` are both `None` (BC-40).
     min_length: Option<f64>,
     max_length: Option<f64>,
     regex: Option<CompiledRegex>,
@@ -842,14 +754,10 @@ impl StringValidator {
             let regex = match validator {
                 None => None,
                 Some(v) => {
-                    // PORTING.md section 3.2 ("Flags"): `new RegExp(pattern,
-                    // flags)` validates `flags` itself before ever touching
-                    // `pattern`, throwing `Invalid flags supplied to RegExp
-                    // constructor '<flags>'` for a duplicate, unrecognised, or
-                    // mutually-exclusive (`u` with `v`) flag. `regress::Flags`
-                    // (and so `regress::Regex::with_flags`) silently ignores
-                    // anything it does not recognise instead of rejecting it, so
-                    // that check has to happen here.
+                    // PORTING.md 3.2 ("Flags"): `new RegExp` rejects a
+                    // duplicate, unrecognised or `u`-with-`v` flag before
+                    // reading `pattern`; `regress` ignores unknown flags, so
+                    // the check is made here.
                     if !valid_js_regex_flags(v.flags.as_str()) {
                         let message =
                             format!("Invalid flags supplied to RegExp constructor '{}'", v.flags);
@@ -865,13 +773,8 @@ impl StringValidator {
                     match compile_regex(v.pattern.as_str(), v.flags.as_str()) {
                         Ok(regex) => Some(regex),
                         Err(error) => {
-                            // OD-4: V8's wording for the reasons `regress` can
-                            // map (P2-08c review: this was reached only by
-                            // `ScalarDeclaration`'s own regex before a Field's
-                            // own `StringValidator` construction was wired in
-                            // here, so no fixture observed an unmapped reason
-                            // until then); any other reason is an `engine`
-                            // divergence.
+                            // V8's wording for the reasons `regress` can map;
+                            // any other reason is an `engine` divergence.
                             let message = format!(
                                 "Invalid regular expression: /{}/{}: {}",
                                 v.pattern,
@@ -916,13 +819,10 @@ impl StringValidator {
     /// The end of [`StringValidator::new`]: the element's own default value
     /// checked against this validator.
     fn check_default<F: ValidatedElement>(&self, field: &F) -> Result<(), F::Error> {
-        // `if(this.field?.ast?.defaultValue) { this.validate(field.getName(), this.field.ast.defaultValue); }`:
-        // a plain JS truthy check, so a `null`, `false`, `0` or `""` default
-        // skips the check, and only a string default reaches `.length`/regex
-        // logic below (a non-string default is a model TS itself does not
-        // guard against; this port skips the check for one rather than
-        // guessing at JS's coercions). A default outside the validator is
-        // a model error (BC-39), so it is reported as one.
+        // `if(this.field?.ast?.defaultValue) { this.validate(...) }`: a JS
+        // truthy check, and only a string default is checked (TS does not
+        // guard a non-string one). A default outside the validator is a
+        // model error (BC-39).
         if let Some(value) = field.default_value()?
             && ecma::is_truthy(&value)
             && let Some(text) = value.as_str()
@@ -965,7 +865,7 @@ impl StringValidator {
     ///
     /// TS: StringValidator.matchesRegex (src/introspect/stringvalidator.ts),
     /// ported as a helper for `Factory.newResource`'s identifier check
-    /// (PORTING.md 7.2, #32 point 4).
+    /// (PORTING.md 7.2).
     pub fn matches_regex(&self, value: &str) -> bool {
         self.regex.as_ref().is_none_or(|regex| regex.matches(value))
     }
@@ -1075,9 +975,7 @@ impl StringValidator {
         // TS: `isNull(thisMinLength)` (`NullUtil.isNull`, which is true for
         // both `undefined` and `null`). An absent or `null` bound is `None`
         // ([`length_bound_field`]); a `NaN` bound (a non-numeric AST value)
-        // takes the same "no bound" branch, as it did before BC-40 (P5-05-T2a
-        // review: oracle `StringValidator.compatibleWith` fixtures
-        // `0a5c036e…`, `9741b5ff…`, `acec2eb1…`, `b95d5042…`).
+        // takes the same "no bound" branch.
         fn bound(bound: Option<f64>) -> Option<f64> {
             bound.filter(|b| !b.is_nan())
         }

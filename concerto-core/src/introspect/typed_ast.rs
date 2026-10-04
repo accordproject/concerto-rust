@@ -1,97 +1,60 @@
-//! Reading a model's JSON AST into the typed model: the only model loader
-//! (P5-06c spike, accordproject/concerto-rust#234; adopted in P5-06d,
-//! accordproject/concerto-rust#239; made the only loader by P5-61,
-//! accordproject/concerto-rust#393, BR-09).
+//! Reading a model's JSON AST into the typed model: the only model loader.
 //!
 //! [`parse`] reads JSON text without building a [`serde_json::Value`] for
-//! the whole document first (when the caller holds JSON text, as the WASM
-//! bindings do, that parse was about half of the load); [`from_value`]
-//! reads a `Value` the caller has already parsed, through the very same
-//! readers. Each class-like declaration (concept, asset, participant,
-//! transaction, event) and enum declaration, and each of their properties,
-//! is deserialized straight into its generated `mm::*` struct. The rest of
-//! the document stays as small `Value` subtrees: the model's own header keys
-//! (`namespace`, `imports`, `decorators`, and so on), every decorator list
-//! (which the generated structs also decode, strictly), and every scalar
-//! and map declaration, each of which its own loader decodes into its
-//! generated struct ([`crate::introspect::Declaration`]).
+//! the whole document; [`from_value`] reads a `Value` the caller already
+//! parsed, through the same readers. Each class-like and enum declaration,
+//! and each of their properties, is deserialized straight into its
+//! generated `mm::*` struct. The model's header keys stay small `Value`
+//! subtrees, and scalar and map declarations are kept for their own loaders
+//! ([`crate::introspect::Declaration`]).
 //!
-//! Since P5-93 (accordproject/concerto-rust#443) the read allocates as
-//! little as it can: a node's `$class` is interned
-//! (`concerto_metamodel::ClassName`); a `name` read from JSON text shares
-//! the copy of the text the model file keeps (`concerto_metamodel::Name`,
-//! [`parse`] is run inside `concerto_metamodel::with_source`); a decorator
-//! list is read straight into its generated and processed decorators
-//! (`kept::DecoratorsSeed`); and a property node's own keys are read by
-//! [`read_property`] itself, the generated struct reading only what else a
-//! node has. Each reads exactly what the generated structs read, and fails
-//! as they fail.
+//! The read allocates as little as it can: a node's `$class` is interned
+//! (`concerto_metamodel::ClassName`); a `name` read from text shares the
+//! model file's copy of the text (`concerto_metamodel::Name`, [`parse`]
+//! runs inside `concerto_metamodel::with_source`); a decorator list is read
+//! straight into its generated and processed decorators
+//! (`kept::DecoratorsSeed`); and [`read_property`] reads a property node's
+//! own keys itself. Each reads and fails exactly as the generated structs.
 //!
 //! # Strictness (BC-19, BR-09)
 //!
-//! Since BC-19 (P5-49) a model loaded through the JS API has its shape
-//! checked against the metamodel first (`instance::check_ast_shape`, unless
-//! the manager opts out with `metamodelValidation: false`), so a malformed
-//! AST never reaches this reader there. The reader is therefore strict: a
-//! node that does not decode into its generated struct is an error (the
-//! caller's `modelfile-load-unreadable` `IllegalModelException`), never a
-//! TS-style coercion. Before P5-61, a failure here fell back to an untyped
-//! walk over the whole `Value` that reproduced TS 5.0.0's handling of
-//! malformed nodes (#217, #230); that path is gone. Every semantic check
-//! (identifiers, reserved names, validators, and everything
-//! `ModelFile.validate` does) runs after the read, on the typed result.
+//! A model loaded through the JS API has its shape checked against the
+//! metamodel (`instance::check_ast_shape`) unless the manager sets
+//! `metamodelValidation: false`, so the reader is strict: a node that does
+//! not decode into its generated struct is an error (the caller's
+//! `modelfile-load-unreadable` `IllegalModelException`), never a coercion.
+//! Every semantic check runs after the read, on the typed result. The shape
+//! check is folded into this read: `crate::introspect::shape` decides it
+//! from what was decoded, and only an AST it cannot vouch for is checked
+//! again in full. For that, the read keeps what the generated structs drop:
+//! a class's `identified` verdict, each property's `decorators`, and a
+//! `DateTimeProperty`'s `defaultValue`. A class's `identified` and a
+//! property's `sizeValidator`, `lengthValidator` and `validator` must be a
+//! node (an object with a `$class`) or `null`.
 //!
-//! Since P5-69 (BC-19-b, accordproject/concerto-rust#408) that shape check
-//! is folded into this read: `crate::introspect::shape` decides it from
-//! what the read has decoded, and only an AST it cannot vouch for is checked
-//! again in full (`ModelFile::from_json_text_checked_with_imports`, and
-//! `instance::check_ast_shape` itself). For that, the read keeps the
-//! `Value`s the check needs that the generated structs drop: a class's
-//! `identified`, each property's `decorators`, and the `defaultValue` of a
-//! `DateTimeProperty`.
+//! With the shape check off (an escape hatch for trusted input), this read
+//! is the only check: a malformed AST it cannot read is an error, never a
+//! trap or a panic, but it is not a full metamodel check.
 //!
-//! Since P5-61 (accordproject/concerto-rust#393) there is no exception:
-//! a class's `identified` and a property's `sizeValidator`,
-//! `lengthValidator` and `validator` are decoded as strictly as every other
-//! field. BC-19's shape check requires a node there (an object with a
-//! `$class`, or `null`; `modelfile-load-nodenotobject`), where the
-//! metamodel check alone accepts any value with no own keys (a number, a
-//! boolean, `""`, `[]`, `{}`) and an object without a `$class`.
-//!
-//! With the shape check off (`metamodelValidation: false`, an escape hatch
-//! for trusted input), this read is the only check. A malformed AST it
-//! cannot read is an error, never a trap or a panic; the read is not a full
-//! metamodel check, though (see "Not checked" below).
-//!
-//! - **Unknown keys.** A key the generated struct for a node does not
-//!   declare is an error (`Strict`), on every node decoded into a
-//!   generated struct: declarations, properties, the structs under them,
-//!   decorators, locations, scalar and map declarations, and the model's
-//!   own header. The one exception is BC-19's tolerance: the
-//!   `defaultValue` the reference parser writes on a `DateTimeProperty`
-//!   (read, as before, by BC-45's check when it is applied).
+//! - **Unknown keys.** A key a node's generated struct does not declare is
+//!   an error (`Strict`), but for BC-19's one tolerance: the `defaultValue`
+//!   the reference parser writes on a `DateTimeProperty` (BC-45 checks it
+//!   when it is applied).
 //! - **Key order.** A node's `$class` is read first when it is the first
-//!   key (as every AST that `concerto-cto` or `JSON.stringify` writes has
-//!   it); otherwise the node is buffered and read again with `$class` in
-//!   front, so key order never changes the result.
-//! - **JSON syntax.** `serde_json` checks less when it skips a value
-//!   (`deserialize_ignored_any`) than when it builds one: a skipped `1e400`,
-//!   lone surrogate escape or over-deep array is accepted where a `Value`
-//!   parse rejects it. The generated structs never skip a value: [`Strict`]
-//!   refuses one (an unknown key), so text is read as JSON exactly when it
-//!   parses as a `Value`.
-//! - **Duplicate keys.** A `Value` keeps the last of two equal keys. This
-//!   reader refuses a duplicate `$class`, `properties`, `decorators` or
-//!   `location` key, or a duplicate struct field, in JSON text
-//!   (`JSON.stringify` never writes one).
-//! - **Not checked.** With the shape check off, the read still accepts some
-//!   ASTs the metamodel check rejects: an unknown key inside a node of a
-//!   polymorphic type that `serde` buffers before it picks the variant (an
-//!   `IdentifiedBy`, a decorator argument, a map key or value type), an
-//!   import node (read untyped by `Import::try_from`), a `$class` naming
-//!   the wrong type on a node whose type has no subtypes, a model `$class`
-//!   of another metamodel version, and a fraction in an `Integer` field
-//!   (the generated structs read every number as `f64`).
+//!   key (as `concerto-cto` and `JSON.stringify` write it); otherwise the
+//!   node is buffered and read again with `$class` in front.
+//! - **JSON syntax.** `serde_json` checks less when it skips a value than
+//!   when it builds one; [`Strict`] never skips one, so text is read as JSON
+//!   exactly when it parses as a `Value`.
+//! - **Duplicate keys.** This reader refuses a duplicate `$class`,
+//!   `properties`, `decorators` or `location` key, or a duplicate struct
+//!   field, in JSON text, where a `Value` keeps the last.
+//! - **Not checked.** With the shape check off, the read accepts some ASTs
+//!   the metamodel check rejects: an unknown key inside a polymorphic node
+//!   `serde` buffers (an `IdentifiedBy`, a decorator argument, a map key or
+//!   value type), an import node (read untyped), a `$class` naming the wrong
+//!   type on a node with no subtypes, a model `$class` of another metamodel
+//!   version, and a fraction in an `Integer` field.
 
 use std::borrow::Cow;
 use std::cell::Cell;
@@ -129,9 +92,7 @@ pub(crate) struct TypedModel {
 
 /// A model's own keys (every top-level key but `declarations`), each the
 /// `Value` a `Value` parse builds for it, or `None` when the AST has no
-/// such key (a repeated key's last value, as in a `Value`). P5-93: read
-/// into its own fields, where a `Map` of every key (each key an owned
-/// `String`) used to be built.
+/// such key (a repeated key's last value, as in a `Value`).
 #[derive(Default)]
 pub(crate) struct ModelHeader {
     pub(crate) class: Option<ModelClass>,
@@ -139,9 +100,9 @@ pub(crate) struct ModelHeader {
     pub(crate) source_uri: Option<Value>,
     pub(crate) concerto_version: Option<Value>,
     pub(crate) imports: Option<Value>,
-    /// The model's `decorators`, as a declaration's are read (P5-93;
-    /// before, a `Value`): its decorators ([`DecoratorsSeed`]), or else the
-    /// value as a [`Kept`], decoded by the loader.
+    /// The model's `decorators`, read as a declaration's are
+    /// ([`DecoratorsSeed`]), or else the value as a [`Kept`], decoded by the
+    /// loader.
     pub(crate) decorators: Option<Result<Decorators, Kept>>,
     /// The first key the metamodel's `Model` does not declare, if any (its
     /// value is read as JSON, and dropped).
@@ -149,7 +110,7 @@ pub(crate) struct ModelHeader {
 }
 
 /// A model's `$class` value, as the read keeps it for BC-19's shape check
-/// (P5-93: the metamodel's own without an allocation).
+/// (the metamodel's own without an allocation).
 pub(crate) enum ModelClass {
     /// The string `concerto.metamodel@1.0.0.Model`.
     Model,
@@ -234,13 +195,10 @@ impl<'de> Visitor<'de> for ModelClassSeed {
     }
 }
 
-/// One declaration read by [`parse`] or [`from_value`]. P5-93: the
-/// generated nodes are held inline (boxed from P5-76): the declarations
-/// are read into a per-thread buffer the loader hands back once it has
-/// taken them ([`recycle_declarations`]), and each declaration's
-/// properties are collected into a `Vec` of exactly their number
-/// ([`exact`]), not one that grows (and moves every element) as they are
-/// read.
+/// One declaration read by [`parse`] or [`from_value`]. The declarations
+/// are read into a per-thread buffer the loader hands back
+/// ([`recycle_declarations`]), and each declaration's properties into a
+/// `Vec` of exactly their number ([`exact`]).
 pub(crate) enum TypedDeclaration {
     /// A class-like declaration, read straight into its generated struct.
     /// The node's own `properties` is left empty; they are in `properties`.
@@ -253,8 +211,7 @@ pub(crate) enum TypedDeclaration {
         /// The node's `location` value, as given (for an error).
         location: Option<Location>,
         /// Whether BC-19's shape check certainly accepts the node's
-        /// `identified` value ([`crate::introspect::shape`]; P5-93: decided
-        /// as it is read, where the value used to be kept for it).
+        /// `identified` value ([`crate::introspect::shape`]).
         identified_conforms: bool,
     },
     /// An enum declaration, read straight into its generated struct, whose
@@ -268,13 +225,10 @@ pub(crate) enum TypedDeclaration {
         /// The node's `location` value, as given (for an error).
         location: Option<Location>,
     },
-    /// A map declaration, as its JSON node (P5-93: a [`Kept`], whose
-    /// objects are each one list of entries where a `Value`'s are each a
-    /// hash map, every key an owned `String`; before, an `Ast` `Value`).
+    /// A map declaration, as its JSON node (a [`Kept`]).
     Map(Kept),
     /// A scalar declaration of one of the six metamodel scalar kinds, as
-    /// its JSON node, read the way a map declaration is (A-10,
-    /// accordproject/concerto-rust#458; before, an `Ast` `Value`).
+    /// its JSON node.
     Scalar(Kept),
     /// Any other declaration (anything unrecognised), as its JSON subtree.
     Ast(Value),
@@ -286,8 +240,8 @@ pub(crate) enum TypedDeclaration {
 pub(crate) struct TypedProperties {
     pub(crate) properties: Vec<Property>,
     /// In step with `properties`, or empty when the read kept nothing of
-    /// any of them (P5-93: no allocation for a declaration whose
-    /// properties have no `location`, `decorators` or `defaultValue`).
+    /// any of them (no allocation for a declaration whose properties
+    /// have no `location`, `decorators` or `defaultValue`).
     kept: Vec<PropertyKept>,
 }
 
@@ -306,11 +260,10 @@ impl TypedProperties {
     }
 }
 
-/// A node's `decorators` value, as the read keeps it (P5-93; the value
-/// itself, as a [`Kept`], from P5-76): the decorators it gives
-/// ([`crate::introspect::decorator::parse_decorator_list`]), and whether
-/// BC-19's shape check certainly
-/// accepts it ([`crate::introspect::shape`]).
+/// A node's `decorators` value, as the read keeps it: the decorators it
+/// gives ([`crate::introspect::decorator::parse_decorator_list`]), and
+/// whether BC-19's shape check certainly accepts it
+/// ([`crate::introspect::shape`]).
 pub(crate) struct ReadDecorators {
     pub(crate) list: Vec<Decorator>,
     pub(crate) conforms: bool,
@@ -339,8 +292,7 @@ impl ReadDecorators {
 pub(crate) struct PropertyKept {
     pub(crate) location: Option<Location>,
     /// Whether the node has a `decorators` value BC-19's shape check may
-    /// reject (P5-93: decided as it is read, where the value used to be
-    /// kept for it).
+    /// reject.
     pub(crate) unusual_decorators: bool,
     /// The `defaultValue` the reference parser writes on a
     /// `DateTimeProperty`, which the generated struct does not declare.
@@ -363,10 +315,10 @@ pub(crate) fn parse(text: &str) -> Result<TypedModel, Error> {
     Ok(model)
 }
 
-/// Reads a model AST from the compact binary layout (P5-92,
-/// `introspect::compact`), as [`from_value`] reads the document the bytes
-/// hold. An error for bytes not in the layout too, which the caller tells
-/// apart with `compact::to_value`.
+/// Reads a model AST from the compact binary layout
+/// (`introspect::compact`), as [`from_value`] reads the document the
+/// bytes hold. An error for bytes not in the layout too, which the caller
+/// tells apart with `compact::to_value`.
 #[cfg(feature = "js-compat")]
 pub(crate) fn from_compact(bytes: &[u8]) -> Result<TypedModel, Error> {
     let mut deserializer = crate::introspect::compact::Compact::new(bytes);
@@ -468,11 +420,9 @@ impl<'de> Visitor<'de> for ModelSeed {
     }
 }
 
-/// A model's declarations, once the loader has taken them all: the
-/// (empty) per-thread buffer [`DeclarationsSeed`] read them into, kept for
-/// the next read unless it has grown past [`BUFFER_BYTES`] (P5-93: the
-/// declarations are only ever moved out of it one by one, so they are
-/// never copied into a `Vec` of their own).
+/// A model's declarations, once the loader has taken them all: the empty
+/// per-thread buffer [`DeclarationsSeed`] read them into, kept for the next
+/// read unless it has grown past [`BUFFER_BYTES`].
 pub(crate) fn recycle_declarations(mut items: Vec<TypedDeclaration>) {
     items.clear();
     if items.capacity() * std::mem::size_of::<TypedDeclaration>() <= BUFFER_BYTES {
@@ -622,9 +572,8 @@ fn read_class<'de, A: MapAccess<'de, Error = Error>>(map: &mut A) -> Result<Clas
     }
 }
 
-/// Reads one declaration onto `out` (P5-93: pushed where it is read, not
-/// returned through each layer of the read, a move of the whole node at
-/// each).
+/// Reads one declaration onto `out`, pushed where it is read rather than
+/// moved through each layer.
 struct DeclarationSeed<'a> {
     out: &'a mut Vec<TypedDeclaration>,
 }
@@ -684,10 +633,8 @@ fn read_declaration<'de, A: MapAccess<'de, Error = Error>>(
         return read_enum(map, out);
     }
     let Some(kind) = short.and_then(ClassKind::from_short) else {
-        // Neither class-like nor an enum: the subtree, `$class` first, for
-        // `Declaration::from_model_json`; a map or scalar declaration's as a
-        // `Kept` (P5-93, A-10; before, a `Value`), for
-        // `Declaration::from_typed`.
+        // Neither class-like nor an enum: the subtree, `$class` first; a
+        // map or scalar declaration's as a `Kept`.
         let is_map = short == Some("MapDeclaration");
         let is_scalar = short.is_some_and(is_scalar_kind);
         let replay = MapAccessDeserializer::new(Replay {
@@ -785,9 +732,8 @@ fn read_enum<'de, A: MapAccess<'de, Error = Error>>(
         properties.ok_or_else(|| refuse("missing field `properties`"))?,
         0,
     );
-    // The values' nodes are each `Property::Enum`'s, which `read_property`
-    // read; the generated struct's own `properties` is left empty (P5-93:
-    // it used to hold a copy of each, which nothing read).
+    // The values' nodes are `read_property`'s; the generated struct's own
+    // `properties` is left empty.
     if values
         .properties
         .iter()
@@ -814,9 +760,8 @@ fn read_location(location: Option<&Location>) -> Result<Option<mm::Range>, Error
 }
 
 /// Decodes `value` into a generated struct as the typed read decodes a node:
-/// through [`Strict`], so a key the struct does not declare is an error.
-/// (P5-93: only the tests' reference since the model's own decorators are
-/// read as a [`Kept`].)
+/// through [`Strict`], so a key the struct does not declare is an error. A
+/// test reference.
 #[cfg(test)]
 pub(crate) fn strict_from_value<'de, T: Deserialize<'de>>(value: &'de Value) -> Result<T, Error> {
     T::deserialize(Strict(value))
@@ -826,14 +771,13 @@ pub(crate) fn strict_from_value<'de, T: Deserialize<'de>>(value: &'de Value) -> 
 /// polymorphic type (a scalar or map declaration), which has no `$class`
 /// field of its own: `value`'s `$class` (which picked the variant) is left
 /// out. A test helper: the loader decodes the node as a [`Kept`]
-/// (`Kept::strict_variant_decode`, A-10).
+/// (`Kept::strict_variant_decode`).
 #[cfg(test)]
 pub(crate) fn strict_variant_from_value<T: de::DeserializeOwned>(
     value: &Value,
 ) -> Result<T, Error> {
     match value {
-        // P5-76: the object's other entries, read in place, where a copy of
-        // the object without `$class` used to be built and read.
+        // The object's other entries, read in place.
         Value::Object(map) => T::deserialize(Strict(serde::de::value::MapDeserializer::new(
             map.iter()
                 .filter(|(key, _)| *key != "$class")
@@ -844,10 +788,9 @@ pub(crate) fn strict_variant_from_value<T: de::DeserializeOwned>(
 }
 
 /// Reads one property onto `properties`, and what the read keeps of its
-/// node onto `kept` (P5-93: pushed where they are read, as
-/// [`DeclarationSeed`] pushes a declaration). `kept` is in step with
-/// `properties` from the first property that has anything kept, and empty
-/// until then.
+/// node onto `kept` (pushed where they are read, as [`DeclarationSeed`]
+/// pushes a declaration). `kept` is in step with `properties` from the
+/// first property that has anything kept, and empty until then.
 struct PropertySeed<'a> {
     properties: &'a mut Vec<Property>,
     kept: &'a mut Vec<PropertyKept>,
@@ -891,15 +834,13 @@ impl<'de> Visitor<'de> for PropertySeed<'_> {
 /// (identifier, reserved system name) are the loader's, after the read
 /// ([`crate::introspect::Declaration`]).
 ///
-/// P5-93: the keys almost every property node has (`name`, `isArray`,
+/// The keys almost every property node has (`name`, `isArray`,
 /// `isOptional`, an object or relationship property's `type`, `decorators`
-/// and `location`) are read here, each value through the very call the
-/// generated struct would make for it (so with the same result, and the
-/// same error), and the struct is built from them. From the first other
-/// key (a validator, a `defaultValue`, a key the struct does not declare),
-/// the node is read on by the generated struct, as before, with the
-/// values read so far handed back to it first ([`Resume`]), so it
-/// accepts and rejects exactly what it always has.
+/// and `location`) are read here, each through the call the generated
+/// struct would make (so with the same result and error). From the first
+/// other key, the generated struct reads on, with the values read so far
+/// handed back first ([`Resume`]), so it accepts and rejects what it always
+/// does.
 fn read_property<'de, A: MapAccess<'de, Error = Error>>(
     mut map: A,
     out: PropertySeed<'_>,
@@ -908,7 +849,7 @@ fn read_property<'de, A: MapAccess<'de, Error = Error>>(
         Class::First(class) => class,
         Class::Reordered(node) => return out.deserialize(&node),
     };
-    // TS matches the full metamodel `$class` (accordproject/concerto-rust#285).
+    // TS matches the full metamodel `$class`.
     let Some(kind) = property_kind(&class) else {
         return Err(de::Error::custom(format_args!(
             "unrecognised property $class {class}"
@@ -1026,10 +967,9 @@ fn read_decorators<'de, A: MapAccess<'de, Error = Error>>(
     }
 }
 
-/// The rest of a property node after the keys [`read_property`] read,
-/// read by its generated struct through [`Intercept`], as every property
-/// node was before P5-93: the property and the `defaultValue` the read
-/// keeps of a `DateTimeProperty`.
+/// The rest of a property node after the keys [`read_property`] read, read
+/// by its generated struct through [`Intercept`]: the property and the
+/// `defaultValue` the read keeps of a `DateTimeProperty`.
 // `class` is the `Cow` the read gave, which `Replay` hands back as it is
 // (borrowed from the text, or owned).
 #[allow(clippy::ptr_arg)]
@@ -1053,8 +993,8 @@ fn read_property_struct<'de, A: MapAccess<'de, Error = Error>>(
         identified_conforms: None,
         // The reference parser writes a `defaultValue` on a
         // `DateTimeProperty`, which the metamodel does not declare (BC-19's
-        // one tolerance, `instance::check_ast_shape`). It is kept out of the
-        // struct, as before P5-61; BC-45 checks it when it is applied.
+        // tolerance). It is kept out of the struct; BC-45 checks it when it
+        // is applied.
         take: if kind == "DateTimeProperty" {
             &["defaultValue"]
         } else {
@@ -1341,24 +1281,17 @@ enum Pending {
 }
 
 /// The entries of a node after its `$class`, handed to a generated struct,
-/// with some keys intercepted on the way:
-/// - `properties`, when `properties` is set: read as [`Property`]s (the
-///   struct sees `[]`);
-/// - `decorators`: read by [`DecoratorsSeed`] (P5-93; a [`Kept`] from P5-76,
-///   a `Value` before), decoded strictly once for the caller to set on the
-///   node (the struct is handed `null` for it; before P5-76 it decoded a
-///   copy of the value again), with its processed decorators and BC-19's
-///   verdict on it;
-/// - `location`: read as a [`Location`] (P5-76; before, a `Value`), kept as
-///   given for an error's location; the struct is handed `null` for it, and
-///   [`read_location`] reads it;
-/// - `identified`, when `identified` is set: read as a [`Kept`] (P5-76;
-///   before, a `Value`), kept as given for BC-19's shape check, and decoded
-///   strictly (through [`Strict`]) once, for the caller to set on the node
-///   (the struct is handed `null` for it);
+/// with some keys intercepted on the way (the struct is handed `null` or
+/// `[]` for each, and the caller sets the node's):
+/// - `properties`, when `properties` is set: read as [`Property`]s;
+/// - `decorators`: read by [`DecoratorsSeed`] into its generated and
+///   processed decorators and BC-19's verdict;
+/// - `location`: kept as a [`Location`], for an error's location, and
+///   decoded by [`read_location`];
+/// - `identified`, when `identified` is set: decoded strictly once, with
+///   BC-19's verdict;
 /// - every key in `take`: read as a `Value` into `taken` (a repeated key
-///   replaces the earlier value, as in a `Value`), and kept from the struct,
-///   for the loader to read as TS does (the module doc, "Strictness").
+///   replaces the earlier value), kept from the struct for the loader.
 ///
 /// Every other value goes through [`Strict`].
 struct Intercept<'a, A> {
@@ -1429,20 +1362,13 @@ impl<'de, A: MapAccess<'de, Error = Error>> MapAccess<'de> for Intercept<'_, A> 
             Pending::Decorators => {
                 // The generated struct's own error for a repeated key, which
                 // it raises first, unless `read_property` read the first
-                // one (P5-93).
+                // one.
                 if self.decorators.is_some() {
                     return Err(de::Error::duplicate_field("decorators"));
                 }
-                // P5-76: read as a [`Kept`], not a `Value` (the `kept`
-                // module doc), and decoded strictly (as the model's own
-                // decorators are) once, for the caller to set on the node,
-                // where the struct used to decode a copy of the value again
-                // (it is handed `null`, as for `location`). P5-93: the
-                // decorators and the shape check's verdict are taken from
-                // it here, and the decode moves its strings out.
-                // From P5-93, an array of plain decorator nodes is read
-                // field by field into both, each string once
-                // (`DecoratorsSeed`), with no `Kept` of it.
+                // Decoded once (each string once, `DecoratorsSeed`) into
+                // the decorators and the shape check's verdict, for the
+                // caller to set on the node.
                 let decoded = match self.inner.next_value_seed(DecoratorsSeed)? {
                     Ok(decoded) => decoded,
                     Err(value) => Decorators::from_kept(value)?,
@@ -1459,20 +1385,14 @@ impl<'de, A: MapAccess<'de, Error = Error>> MapAccess<'de> for Intercept<'_, A> 
                 if self.location.is_some() {
                     return Err(de::Error::duplicate_field("location"));
                 }
-                // The struct is handed `null`, and its `location` is read
-                // from this value once it has been read ([`read_location`]),
-                // so the value is kept without a copy. P5-76: kept as a
-                // [`Location`], not a `Value` (the `kept` module doc).
+                // The struct is handed `null`; the kept value is read by
+                // [`read_location`].
                 *self.location = Some(self.inner.next_value_seed(LocationSeed)?);
                 seed.deserialize(Value::Null)
             }
             Pending::Identified => {
-                // P5-76: decoded strictly once, for the caller to set on the
-                // node, where the struct used to decode a copy of the value
-                // (it is handed `null`, as for `location`). P5-93: the
-                // metamodel's own two nodes are read field by field
-                // ([`IdentifiedSeed`]), and the shape check's verdict is
-                // taken here, where the value used to be kept for it.
+                // Decoded strictly once ([`IdentifiedSeed`]), with the shape
+                // check's verdict, for the caller to set on the node.
                 let (identified, kept) = self.inner.next_value_seed(IdentifiedSeed)?.decode()?;
                 *self.node_identified = identified;
                 if let Some(slot) = self.identified_conforms.as_deref_mut() {
@@ -1509,8 +1429,8 @@ impl<'de, A: MapAccess<'de, Error = Error>> MapAccess<'de> for Replay<'de, A> {
 
     fn next_value_seed<V: DeserializeSeed<'de>>(&mut self, seed: V) -> Result<V::Value, Error> {
         match self.class.take() {
-            // P5-93: a `$class` borrowed from the text is replayed as it
-            // is (a generated struct interns it), not copied.
+            // A `$class` borrowed from the text is replayed as it is (a
+            // generated struct interns it), not copied.
             Some(Cow::Borrowed(class)) => seed.deserialize(BorrowedStrDeserializer::new(class)),
             Some(Cow::Owned(class)) => seed.deserialize(StringDeserializer::new(class)),
             None => self.inner.next_value_seed(seed),

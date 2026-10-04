@@ -1,5 +1,5 @@
-//! The seeded hasher of the maps keyed by untrusted input (P5-110,
-//! accordproject/concerto-rust#477; PORTING.md 3.7).
+//! The seeded hasher of the maps keyed by untrusted input
+//! (PORTING.md 3.7).
 //!
 //! Instance keys, and the model names and regex patterns a multi-tenant
 //! server takes from its users, must not be hashed with an unseeded or
@@ -15,7 +15,7 @@
 //! process-wide keys: near-FxHash speed, for the per-lookup tables keyed by
 //! user model names (the manager's namespaces, a model file's local types
 //! and import short names), where SipHash cost 20-60% on the introspection
-//! rows (maintainer decision on #477, 2026-10-03).
+//! rows.
 //!
 //! FxHash stays for the internal tables keyed by identifiers.
 
@@ -102,10 +102,10 @@ static FOLD_SEED: OnceLock<SharedSeed> = OnceLock::new();
 /// on `wasm32-unknown-unknown` its global seed has no entropy source.
 ///
 /// For the per-lookup tables keyed by user model names, where SipHash is
-/// too slow (maintainer decision, accordproject/concerto-rust#477).
-/// foldhash's seeding gives HashDoS resistance against keys chosen without
-/// knowledge of the seed; it is not a keyed PRF like SipHash, so instance
-/// keys ([`SeededState`]) keep SipHash.
+/// too slow (maintainer decision). foldhash's seeding gives HashDoS
+/// resistance against keys chosen without knowledge of the seed; it is not
+/// a keyed PRF like SipHash, so instance keys ([`SeededState`]) keep
+/// SipHash.
 #[derive(Debug, Clone, Copy)]
 pub struct FastSeededState(SeedableRandomState);
 

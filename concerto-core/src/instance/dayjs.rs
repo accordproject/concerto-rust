@@ -10,22 +10,18 @@
 //! `Factory.newResource`, the WASM wire codec and the oracle's `codec.js`
 //! records). Every output is what dayjs 1.11.10 with its `utc` plugin
 //! (`dayjs-setup.ts`) gives under `TZ=UTC` (3.3: every test runs with it,
-//! and Rust never consults the system time zone). P5-66
-//! (accordproject/concerto-rust#403) replaced the emulation of dayjs's
-//! internal state (`$d` shifting, `$u`, `$offset`, `$x.$localOffset`)
-//! with this value, with no change in behaviour.
+//! and Rust never consults the system time zone).
 //!
 //! The instant is an ECMAScript time value (whole milliseconds since the
 //! epoch, at most 8.64e15 either way). That range runs to the year
 //! 275760, past chrono's (262142), so the instant is held as milliseconds
 //! and chrono does the calendar work on the same day of a 400-year
-//! Gregorian cycle ([`Fields::of`]).
+//! Gregorian cycle (`Fields::of`).
 //!
-//! Parsing is *not* dayjs's (P5-24, accordproject/concerto-rust#328): a
-//! `DateTime` string is accepted only in the strict ISO 8601 / RFC 3339
-//! form (the `strictQualifiedDateTimes` regex, then chrono's calendar
-//! checks, BC-07 and BC-42 in R1), on every path that reads one: fields,
-//! map values and model defaults.
+//! Parsing is *not* dayjs's: a `DateTime` string is accepted only in the
+//! strict ISO 8601 / RFC 3339 form (the `strictQualifiedDateTimes`
+//! regex, then chrono's calendar checks; BC-07, BC-42), on
+//! every path that reads one: fields, map values and model defaults.
 
 use std::sync::LazyLock;
 
@@ -96,17 +92,16 @@ impl Dayjs {
     }
 
     /// `dayjs.utc()` at the time value `now_ms` (TS reads the clock; the
-    /// caller supplies it, D7): `Date.now()`, a whole number of
+    /// caller supplies it): `Date.now()`, a whole number of
     /// milliseconds.
     pub fn utc_now(now_ms: f64) -> Self {
         Self::utc_from_number(now_ms)
     }
 
-    /// A `DateTime` string read with the strict rule (P5-24, BC-07,
-    /// accordproject/concerto-rust#328): the `strictQualifiedDateTimes`
-    /// format, naming a real calendar instant (`strict_instant`). Anything
-    /// else is an invalid date, where TS's `dayjs.utc(date)` used to parse
-    /// leniently (DIVERGENCES.md DV-009).
+    /// A `DateTime` string read with the strict rule (BC-07): the
+    /// `strictQualifiedDateTimes` format, naming a real calendar instant
+    /// (`strict_instant`). Anything else is an invalid date, where TS 5.0.0's
+    /// `dayjs.utc(date)` parses leniently (DIVERGENCES.md DV-009).
     pub fn utc_parse(s: &str) -> Self {
         Self::utc_at(strict_instant(s))
     }
@@ -212,10 +207,10 @@ impl Dayjs {
 
     /// `.utcOffset(input)` (the `utc` plugin's setter) on a date in UTC or
     /// local time, the only ones the callers set an offset on: a number
-    /// `|n| <= 16` is hours, others minutes (until BC-44); a string is
-    /// read for its first `±HH:mm`, and one without any leaves the date as
-    /// it is; an offset of 0 is `.utc()`. The date is invalid when the
-    /// offset is not a number or its local time is not a time value.
+    /// `|n| <= 16` is hours, others minutes; a string is read for its first
+    /// `±HH:mm`, and one without any leaves the date as it is; an offset of 0
+    /// is `.utc()`. The date is invalid when the offset is not a number or
+    /// its local time is not a time value.
     ///
     /// (dayjs, on a date that already has an offset, shifts the local time
     /// by the difference of the two offsets; this sets the offset on the
@@ -372,9 +367,9 @@ fn offset_from_string(value: &str) -> Option<f64> {
 }
 
 /// The `strictQualifiedDateTimes` format, the only `DateTime` string form
-/// accepted (P5-24, BC-07, accordproject/concerto-rust#328):
-/// `YYYY-MM-DDTHH:mm:ss`, an optional fraction of any length, then `Z` or
-/// `±HH:mm`. TS: `/^((?:(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2}(?:\.\d+)?))(Z|[+-]\d{2}:\d{2}))$/`.
+/// accepted (BC-07): `YYYY-MM-DDTHH:mm:ss`, an optional fraction of any
+/// length, then `Z` or `±HH:mm`. TS:
+/// `/^((?:(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2}(?:\.\d+)?))(Z|[+-]\d{2}:\d{2}))$/`.
 static STRICT_DATE_TIME: LazyLock<regress::Regex> = LazyLock::new(|| {
     regress::Regex::new(
         r"^((?:(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2}(?:\.\d+)?))(Z|[+-]\d{2}:\d{2}))$",
@@ -391,8 +386,8 @@ pub(crate) fn is_strict_date_time_format(s: &str) -> bool {
 
 /// The time value (ms since the epoch) of a strict `DateTime` string, or
 /// `None` when `s` is not one: it must have the strict format, and name a
-/// real calendar instant (no `2024-02-30`, no `T24:00:00`, no leap second
-/// `:60`, offsets up to `±23:59`; BC-42). The fraction is truncated to
+/// real calendar instant (no `2024-02-30`; no `T24:00:00`; no leap second
+/// `:60`; offsets up to `±23:59`; BC-42). The fraction is truncated to
 /// milliseconds, as `Date` does. chrono's RFC 3339 parser does the
 /// calendar checks; the regex keeps out the forms RFC 3339 allows and the
 /// strict format does not (a lower-case `t`/`z`, a space separator).
@@ -497,8 +492,8 @@ mod tests {
     }
 
     /// `epoch_ms()` round-trips through `utc_from_number`/`utc_offset_set`,
-    /// the pair the Serializer fast path's wire codec (P4-10) crosses the
-    /// WASM boundary with, and is `NaN` for an invalid date.
+    /// the pair the Serializer fast path's wire codec crosses the WASM
+    /// boundary with, and is `NaN` for an invalid date.
     #[test]
     fn epoch_ms_round_trips_with_an_offset() {
         let utc = Dayjs::utc_parse("2021-01-01T10:00:00Z");
@@ -549,8 +544,7 @@ mod tests {
         assert!(Dayjs::utc_parse("2021-01-01T00:00:00Z").is_utc());
     }
 
-    /// BC-07 (R1): every lenient form dayjs and V8 used to accept is
-    /// invalid now.
+    /// BC-07: every lenient form dayjs and V8 accept is invalid.
     #[test]
     fn lenient_forms_are_invalid() {
         for s in [
@@ -580,7 +574,7 @@ mod tests {
         }
     }
 
-    /// BC-42 (R1): the fields must name a real calendar instant. No
+    /// BC-42: the fields must name a real calendar instant. No
     /// roll-over of impossible days or `24:00`, no leap seconds, no
     /// out-of-range months, hours, minutes or offsets.
     #[test]
@@ -667,10 +661,10 @@ mod tests {
     }
 }
 
-/// P5-66 (accordproject/concerto-rust#403): every output of every date
-/// the callers can build, against a digest of the same transcript from the
-/// dayjs state emulation this value replaced (compared line for line with
-/// it, 1,292,044 lines, before it was deleted), and a table of cases.
+/// Every output of every date the callers can build, against a digest of
+/// the same transcript from the dayjs state emulation this value replaced
+/// (compared line for line with it, 1,292,044 lines, before it was
+/// deleted), and a table of cases.
 #[cfg(test)]
 mod golden {
     use sha2::{Digest, Sha256};

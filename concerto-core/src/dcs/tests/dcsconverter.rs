@@ -229,9 +229,9 @@ fn round_trips_a_command_with_string_number_and_boolean_arguments() {
     assert_eq!(yaml_to_json(&yaml).unwrap(), dcs_json);
 }
 
-/// P5-98 (C-11): a `DecoratorNumber` value is written as JS `String(value)`
-/// writes it — TS 5.0.0 `jsonToYaml` gives `0.000001` and `1e+21`, where
-/// serde_json's own `Display` gave `1e-6` and `1e21`.
+/// A `DecoratorNumber` value is written as JS `String(value)` writes it —
+/// TS 5.0.0 `jsonToYaml` gives `0.000001` and `1e+21`, where serde_json's
+/// own `Display` gave `1e-6` and `1e21`.
 #[test]
 fn json_to_yaml_writes_a_number_argument_as_js_string_does() {
     let dcs_json = serde_json::json!({

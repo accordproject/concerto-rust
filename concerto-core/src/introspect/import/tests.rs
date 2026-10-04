@@ -161,7 +161,6 @@ fn types_or_aliases_that_are_not_arrays_are_empty() {
 
 #[test]
 fn an_aliased_type_no_longer_resolves_under_its_declared_name() {
-    // P2-08 review carry-over (a) from P2-04's review (#48).
     let imp = Import::try_from(&serde_json::json!({
         "$class": "concerto.metamodel@1.0.0.ImportTypes",
         "namespace": "org.acme@1.0.0",

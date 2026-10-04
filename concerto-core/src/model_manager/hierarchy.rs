@@ -4,10 +4,10 @@
 use super::*;
 
 /// The inheritance facts of one class-like or enum declaration, from its
-/// declaration handle up to its root (P5-13): what `class_info`,
-/// `getProperties`, `getProperty` and `getIdentifierFieldName` walk on every
-/// call. It depends only on the registered files, so it is cached per
-/// declaration until they change ([`ModelManager::invalidate_caches`]).
+/// declaration handle up to its root: what `class_info`, `getProperties`,
+/// `getProperty` and `getIdentifierFieldName` walk on every call. It depends
+/// only on the registered files, so it is cached per declaration until they
+/// change ([`ModelManager::invalidate_caches`]).
 #[derive(Debug)]
 pub(super) struct ClassInfo {
     /// The declaration itself, then each super type up to the root.
@@ -20,7 +20,7 @@ js_compat_pub! {
     /// A borrowed view of every property of a class-like or enum
     /// declaration, own and inherited (TS `getProperties()`), each with the
     /// fully-qualified name of the declaration that declares it: the
-    /// allocation-free form of [`ModelManager::properties`] (P5-13).
+    /// allocation-free form of [`ModelManager::properties`].
     #[derive(Clone)]
     pub struct ClassProperties<'a> {
         mm: &'a ModelManager,
@@ -39,7 +39,7 @@ impl<'a> ClassProperties<'a> {
         })
     }
 
-    /// Each property's handle, in `getProperties()` order (P5-106).
+    /// Each property's handle, in `getProperties()` order.
     #[cfg(feature = "js-compat")]
     pub fn ids(&self) -> impl Iterator<Item = PropId> + '_ {
         self.info.properties.iter().copied()
@@ -50,7 +50,7 @@ impl<'a> ClassProperties<'a> {
         self.iter().find(|(_, p)| p.name() == name)
     }
 
-    /// [`ClassProperties::find`], with the property's handle (A-14).
+    /// [`ClassProperties::find`], with the property's handle.
     pub(super) fn find_with_id(&self, name: &str) -> Option<(PropId, &'a Property)> {
         let mm = self.mm;
         self.info.properties.iter().find_map(|id| {
@@ -61,13 +61,10 @@ impl<'a> ClassProperties<'a> {
 }
 
 /// The class-like facts a `ClassDeclaration` or an `EnumDeclaration` carries,
-/// unified for the members TS defines once on `ClassDeclaration` and
-/// `EnumDeclaration` inherits unchanged (enumdeclaration.ts overrides only
-/// `toString` and `declarationKind`, PORTING.md 1.1 rule 2). The manager's
-/// inheritance-walking members (`class_info` and everything built on it)
-/// read a declaration through this instead of `Declaration::as_class`, so
-/// that an enum's implicit `Concept` super type, own properties and identity
-/// are seen the same way a concept-like declaration's are.
+/// for the members TS defines on `ClassDeclaration` and `EnumDeclaration`
+/// inherits unchanged. The inheritance walks read a declaration through this,
+/// so an enum's implicit `Concept` super type, own properties and identity
+/// are seen as a concept-like declaration's are.
 #[derive(Clone, Copy)]
 pub(super) enum ClassLike<'a> {
     Class(&'a ClassDeclaration),
@@ -115,12 +112,9 @@ impl<'a> ClassLike<'a> {
     }
 }
 
-/// TS: `ClassDeclaration._resolveSuperType`/`getProperty`/… all reached
-/// through a receiver whose prototype chain includes `ClassDeclaration`;
-/// reaching one of these members on a scalar or map declaration is not a TS
-/// shape at all (neither extends `ClassDeclaration`), so no fixture or TS
-/// class corresponds to it (PORTING.md 2.3), the same as [`unknown`] and
-/// [`not_a_function`] above.
+/// One of the `ClassDeclaration` members reached on a scalar or map
+/// declaration, which is not a TS shape at all (neither extends
+/// `ClassDeclaration`).
 pub(super) fn not_a_class_like(fqn: &str) -> Error {
     Error::illegal_model(
         format!("{fqn} is not a concept-like or enum declaration"),
@@ -207,8 +201,8 @@ impl ModelManager {
             .collect())
     }
 
-    /// [`ModelManager::properties`], borrowed from the model (P5-13): the
-    /// same properties, owners, order and errors, with nothing copied.
+    /// [`ModelManager::properties`], borrowed from the model: the same
+    /// properties, owners, order and errors, with nothing copied.
     pub(crate) fn class_properties(&self, fqn: &str) -> Result<ClassProperties<'_>> {
         Ok(ClassProperties {
             mm: self,
@@ -218,7 +212,7 @@ impl ModelManager {
 
     js_compat_pub! {
         /// [`ModelManager::properties`], borrowed from the model, for a
-        /// declaration handle (P5-13).
+        /// declaration handle.
         pub fn class_properties_of(&self, id: DeclId) -> Result<ClassProperties<'_>> {
             Ok(ClassProperties {
                 mm: self,
@@ -269,7 +263,7 @@ impl ModelManager {
     }
 
     js_compat_pub! {
-        /// [`ModelManager::identifier_field`] for a declaration handle (P5-13).
+        /// [`ModelManager::identifier_field`] for a declaration handle.
         pub fn identifier_field_of(&self, id: DeclId) -> Result<Option<&str>> {
             let info = self.class_info_of(id)?;
             Ok(self.chain_identifier_field(&info))
@@ -304,9 +298,9 @@ impl ModelManager {
 
     /// Every property of a type, own and inherited: the type's own first,
     /// then each super type's up to the root ([`ModelManager::properties`]
-    /// gives each with the name of the declaration that declares it). It is
-    /// an error when `fqn` is not a concept-like or enum type, a super type
-    /// cannot be resolved, or the chain is cyclic (`RecursionLimit`).
+    /// gives each with its declaring type). It is an error when `fqn` is not
+    /// a concept-like or enum type, a super type cannot be resolved, or the
+    /// chain is cyclic (`IllegalModel`, BC-11).
     ///
     /// TS: `ClassDeclaration.getProperties`.
     pub fn get_all_properties(&self, fqn: &str) -> Result<Vec<&Property>> {
@@ -320,7 +314,7 @@ impl ModelManager {
     /// The handle of the property at a dotted `path` (`a.b.c`), following
     /// the declared types of each element but the last: the walk
     /// [`ModelManager::property_path`] and the deprecated
-    /// [`ModelManager::get_nested_property`] both map from (A-14).
+    /// [`ModelManager::get_nested_property`] both map from.
     ///
     /// TS: `ClassDeclaration.getNestedProperty` (src/introspect/classdeclaration.ts),
     /// inherited unchanged by `EnumDeclaration`.
@@ -340,14 +334,9 @@ impl ModelManager {
             };
             let is_last = n == names.len() - 1;
             if !is_last {
-                // TS: `Property.isTypeEnum` (src/introspect/property.ts):
-                // `this.isPrimitive() ? false : this.getParent().getModelFile()
-                // .getType(this.getType()).isEnum()`. Reached here only for an
-                // object/relationship field (the walk's own `getProperty`
-                // already ruled out a missing property, and an intermediate
-                // step is never itself an enum *value* — the field whose
-                // declared type is an enum trips this same check one level
-                // higher, before the walk ever reaches the value).
+                // TS: `Property.isTypeEnum`: `this.isPrimitive() ? false :
+                // this.getParent().getModelFile().getType(this.getType())
+                // .isEnum()`, for an object or relationship field here.
                 let is_enum = !property.is_primitive()
                     && model_util::is_enum(self, &Node::Property(id))?.unwrap_or(false);
                 if property.is_primitive() || is_enum {
@@ -385,7 +374,7 @@ impl ModelManager {
     }
 
     /// The body of the deprecated [`ModelManager::get_super_type`], whose
-    /// docs say what it returns (A-11).
+    /// docs say what it returns.
     pub(super) fn super_type_name(&self, fqn: &str) -> Result<Option<String>> {
         let class = ClassLike::from_declaration(self.get_declaration(fqn)?)
             .ok_or_else(|| not_a_class_like(fqn))?;
@@ -393,7 +382,7 @@ impl ModelManager {
     }
 
     /// The body of the deprecated [`ModelManager::get_all_super_type_names`],
-    /// whose docs say what it returns (A-11).
+    /// whose docs say what it returns.
     pub(super) fn super_type_names(&self, fqn: &str) -> Result<Vec<String>> {
         // The chain starts with the type itself.
         let info = self.class_info(fqn)?;
@@ -403,19 +392,12 @@ impl ModelManager {
             .collect()
     }
 
-    /// Every class-like or enum declaration loaded, across every model file
-    /// whose namespace is not in [`EXCLUDE_NS`], in registration order — the
-    /// population `getAssignableClassDeclarations` and `getDirectSubclasses`
-    /// search (TS: `new Introspector(modelManager).getClassDeclarations()`,
-    /// src/introspect/introspector.ts, which reads
-    /// `modelManager.getModelFiles()` with no argument, so the system and
-    /// decorator models are left out by their namespace string, not by
-    /// `ModelFile.isSystemModelFile`; then every declaration that is not a
-    /// map or a scalar, which leaves the class-like kinds and
-    /// `EnumDeclaration`).
-    ///
-    /// Each comes with its handle and its fully-qualified name, borrowed
-    /// from the arena (A-8).
+    /// Every class-like or enum declaration of a model file whose namespace
+    /// is not in [`EXCLUDE_NS`], in registration order, with its handle and
+    /// fully-qualified name: the population `getAssignableClassDeclarations`
+    /// and `getDirectSubclasses` search (TS: `new
+    /// Introspector(modelManager).getClassDeclarations()`, which excludes the
+    /// system models by namespace string, then maps and scalars).
     pub(super) fn all_class_like(&self) -> impl Iterator<Item = (DeclId, &str, ClassLike<'_>)> {
         self.declarations_in(self.user_file_slots())
             .filter_map(|(id, fqn, declaration)| {
@@ -428,9 +410,8 @@ impl ModelManager {
     /// subclasses, which come in load order.
     ///
     /// A declaration met again below itself is a cyclic inheritance chain:
-    /// the BC-11 `IllegalModelException` naming the cycle (R1; TS 5.0.0
-    /// recursed until V8's stack overflowed, DV-013). Only a model loaded
-    /// with validation disabled has one.
+    /// the BC-11 `IllegalModelException` naming the cycle. Only a model
+    /// loaded with validation disabled has one.
     ///
     /// TS: `ClassDeclaration.getAssignableClassDeclarations`, inherited
     /// unchanged by `EnumDeclaration`.
@@ -453,8 +434,8 @@ impl ModelManager {
     js_compat_pub! {
         /// The handles of the declaration `id` and of every declaration that
         /// (transitively) extends it: [`ModelManager::assignable_types`] by
-        /// handle (P5-106, BC-52), answered from the cached direct
-        /// subclasses ([`ModelManager::direct_subclass_ids`]).
+        /// handle (BC-52), answered from the cached direct subclasses
+        /// (`ModelManager::direct_subclass_ids`).
         ///
         /// TS: `ClassDeclaration.getAssignableClassDeclarations`.
         pub fn assignable_ids(&self, id: DeclId) -> Result<Vec<DeclId>> {
@@ -503,7 +484,7 @@ impl ModelManager {
 
     /// The handles of the declarations that directly extend the
     /// declaration `id`, in load order: [`ModelManager::subclasses`] by
-    /// handle (P5-106, BC-52).
+    /// handle (BC-52).
     ///
     /// TS: `ClassDeclaration.getDirectSubclasses`.
     #[cfg(feature = "js-compat")]
@@ -531,10 +512,8 @@ impl ModelManager {
         }
         let mut buckets: Vec<Vec<DeclId>> = vec![Vec::new(); self.declarations.len()];
         for (child, child_fqn, class) in self.all_class_like() {
-            // A cached chain already holds the declaration the direct super
-            // type resolved to (A-8): its second entry is exactly what
-            // resolving the name again finds, and it was cached only once
-            // that resolution succeeded.
+            // A cached chain's second entry is the declaration the direct
+            // super type resolved to.
             let parent = match self.decl_cache.get(child, |facts| &facts.class) {
                 Some(info) => info.chain.get(1).copied(),
                 None => self
@@ -563,7 +542,7 @@ impl ModelManager {
     }
 
     /// The body of the deprecated [`ModelManager::get_direct_subclasses`],
-    /// whose docs say what it returns (A-11).
+    /// whose docs say what it returns.
     pub(super) fn direct_subclass_names(&self, fqn: &str) -> Result<Vec<String>> {
         let id = self.declaration_id(fqn);
         let Some(children) = self.direct_subclass_ids(id)? else {
@@ -578,19 +557,14 @@ impl ModelManager {
     /// Returns `true` if a value of `sub_fqn` is also a valid `super_fqn`: the
     /// two are the same type, or `sub_fqn` transitively extends `super_fqn`.
     ///
-    /// On a cyclic inheritance chain this walks `class_info`, so it returns
-    /// the same `IllegalModelException` naming the cycle as
-    /// `getProperties`/`getProperty`/`getIdentifierFieldName` (BC-11, R1;
-    /// TS 5.0.0 returns `true` when the target is in the cycle and otherwise
-    /// loops until it runs out of memory, DV-013).
+    /// On a cyclic inheritance chain this returns the BC-11
+    /// `IllegalModelException` naming the cycle, as `getProperties` does.
     pub fn is_assignable_to(&self, sub_fqn: &str, super_fqn: &str) -> Result<bool> {
         if sub_fqn == super_fqn {
             return Ok(true);
         }
-        // Every class-like declaration walks its chain, an enum included:
-        // TS `EnumDeclaration extends ClassDeclaration`, so its implicit
-        // `Concept` super type is on `getSuperTypeDeclaration()`'s chain too
-        // (P5-98, A-1). Only a scalar or map declaration has no chain.
+        // Every class-like declaration walks its chain, an enum included
+        // (implicit `Concept` super type); a scalar or map has none.
         match ClassLike::from_declaration(self.get_declaration(sub_fqn)?) {
             None => Ok(false),
             Some(_) => {
@@ -609,10 +583,10 @@ impl ModelManager {
         self.class_info_of(self.type_declaration_impl(fqn)?)
     }
 
-    /// BC-11 (R1): the `IllegalModelException` for a cyclic inheritance
-    /// chain. `cycle` is the loop from `repeated` round to the declaration
-    /// whose super type is `repeated` again; the error carries `repeated`'s
-    /// model file (TS 5.0.0 overflowed V8's stack instead, DV-013).
+    /// BC-11: the `IllegalModelException` for a cyclic inheritance chain.
+    /// `cycle` is the loop from `repeated` round to the declaration whose
+    /// super type is `repeated` again; the error carries `repeated`'s model
+    /// file.
     pub(super) fn circular_inheritance(&self, cycle: &[DeclId], repeated: DeclId) -> Error {
         let name = |id: DeclId| self.decl_fqn(id).unwrap_or_default().to_string();
         let path = cycle
@@ -637,13 +611,10 @@ impl ModelManager {
 
     /// The cached [`ClassInfo`] of a declaration, computed on first use.
     ///
-    /// TS walks the chain by recursion (`ClassDeclaration.getProperties`,
-    /// `getProperty`, `getIdentifierFieldName`), with no cycle check, so in
-    /// TS 5.0.0 a cyclic chain overflowed V8's stack (DV-013). This walk is
-    /// a loop with a visited set (PORTING.md 2.5 rule 1) and, when it meets
-    /// a declaration again, returns an `IllegalModelException` naming the
-    /// cycle (BC-11, R1), after the same earlier checks: a missing or
-    /// non-class super type still fails first.
+    /// A loop with a visited set (PORTING.md 2.5): meeting a declaration
+    /// again returns the BC-11 `IllegalModelException` naming the cycle,
+    /// after the same earlier checks (a missing or non-class super type
+    /// fails first).
     pub(super) fn class_info_of(&self, id: DeclId) -> Result<Arc<ClassInfo>> {
         self.decl_cache.get_or_try_insert_with(
             id,
@@ -672,12 +643,8 @@ impl ModelManager {
             chain.push(current);
             properties.extend(self.property_ids(current));
             match next {
-                // TS resolves each step of the chain the same way `getType`
-                // does (`this.modelManager.getType(this.superType)`,
-                // `ClassDeclaration.getSuperTypeDeclaration`), so an
-                // unregistered super-type namespace raises `getType`'s own
-                // `TypeNotFoundException` ("Namespace is not defined for type
-                // ...").
+                // TS resolves each step as `getType` does, so an
+                // unregistered namespace raises its `TypeNotFoundException`.
                 Some(parent) => current = self.type_declaration_impl(&parent)?,
                 None => break,
             }
@@ -719,19 +686,11 @@ impl ModelManager {
     /// Works out the full name of a class's direct super type, resolved in the
     /// namespace where the class is declared.
     ///
-    /// TS: `this.superType = this.ast.superType.name` (`ClassDeclaration.process`)
-    /// keeps only the AST `TypeIdentifier`'s `name`, discarding `namespace`
-    /// and `resolvedName` — an aliased import's `TypeIdentifier` carries the
-    /// *target* declaration's namespace in `namespace` (with the alias, not
-    /// the target's own name, in `name`), which `resolveImport`'s alias
-    /// lookup needs the whole import list to untangle correctly
-    /// (`this.getModelFile().isImportedType(this.superType)` /
-    /// `resolveImport`, `_resolveSuperType`); qualifying `name` directly with
-    /// `namespace` would build the alias's name in the target namespace,
-    /// which does not exist there. So this always resolves through
-    /// [`ModelManager::resolve_type_name`] (`ModelFile.getType`'s own path,
-    /// PORTING.md 6.2), over `ti.name` alone, the same as the implicit
-    /// `Concept`/`Asset`/… super type already does.
+    /// TS keeps only the super type `TypeIdentifier`'s `name` and resolves it
+    /// through the declaring file's imports (an aliased import's
+    /// `TypeIdentifier` holds the target's namespace with the alias as
+    /// `name`), so this resolves `ti.name` through
+    /// [`ModelManager::resolve_type_name`].
     pub(super) fn super_type_fqn(
         &self,
         class: &ClassLike<'_>,
@@ -740,22 +699,13 @@ impl ModelManager {
         let Some(ti) = class.super_type() else {
             return Ok(None);
         };
-        // TS: ClassDeclaration._resolveSuperType passes `this.ast.location`
-        // to every error it raises (src/introspect/classdeclaration.ts); the
-        // class whose super type is being resolved is the AST node in scope
-        // here, so its `location` is passed on, re-serialised from the typed
-        // `mm::Range` by `location_value` (PORTING.md 2.1).
-        // P5-48: the location is re-serialised only on an error path, not
-        // on every (successful) step of a super-type walk.
+        // TS: `_resolveSuperType` passes `this.ast.location` to every error
+        // it raises; it is re-serialised only on an error path.
         let location = || class.location().and_then(crate::error::location_value);
         match self.resolve_type_name_lazy(in_namespace, &ti.name, location) {
             Ok(fqn) => Ok(Some(fqn)),
-            // TS: `_resolveSuperType`'s own hardcoded `IllegalModelException`
-            // (src/introspect/classdeclaration.ts) — `resolve_type_name`'s
-            // own failure is `TypeNotFound` (`ModelManager.getType`'s shape,
-            // a different TS throw site), so it is remapped here, the same
-            // way `validation.rs`'s `check_super_type` already raises this
-            // exact message for the same TS call.
+            // TS: `_resolveSuperType`'s own `IllegalModelException`, where
+            // `resolve_type_name` fails with `getType`'s `TypeNotFound`.
             Err(err) if err.is_pre_port_type_not_found() => Err(ContractError::pre_port(
                 ErrorKind::IllegalModel,
                 format!("Could not find super type {}", ti.name),
@@ -766,22 +716,13 @@ impl ModelManager {
         }
     }
 
-    /// TS `BaseModelManager.derivesFrom(fqt1, fqt2)` (basemodelmanager.ts):
-    /// `fqt1` must resolve (`this.getType(fqt1)`, propagated verbatim —
-    /// `ModelManager::get_type_declaration` is the same lookup `getType`
-    /// dispatches to); then true when `fqt1` and `fqt2` are the same type, or
-    /// `fqt1` transitively extends it. [`ModelManager::is_assignable_to`]
-    /// already walks exactly this chain (including the implicit `Concept`
-    /// super type, P2-03), so this reuses it once `fqt1`'s own resolution is
-    /// confirmed with `getType`'s error surface — `is_assignable_to`'s own
-    /// lookup raises a different one (the pre-port `TypeNotFound` of `Error::type_not_found`, not
-    /// the catalogued `IllegalModelException` `getType` raises).
+    /// TS `BaseModelManager.derivesFrom(fqt1, fqt2)`: `fqt1` must resolve,
+    /// with `getType`'s error; then true when `fqt1` is `fqt2` or
+    /// transitively extends it ([`ModelManager::is_assignable_to`]).
     ///
     /// For a map declaration `fqt1` this is `true` against itself and
-    /// otherwise `false`, where TS 5.0.0 throws a `TypeError` (its
-    /// `MapDeclaration` has no `getSuperTypeDeclaration`): DV-022,
-    /// maintainer-accepted. A scalar matches TS (its
-    /// `getSuperTypeDeclaration()` is `null`).
+    /// otherwise `false`, where TS 5.0.0 throws a `TypeError` (DV-022). A
+    /// scalar matches TS.
     pub fn derives_from(&self, fqt1: &str, fqt2: &str) -> Result<bool> {
         self.get_type_declaration(fqt1)?;
         self.is_assignable_to(fqt1, fqt2)

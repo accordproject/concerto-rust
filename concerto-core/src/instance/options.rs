@@ -9,7 +9,7 @@ use super::validate::ValidateOptions;
 /// and its siblings check an instance.
 ///
 /// Every option is off by default. [`ValidationOptions::STRICT`] turns on
-/// the two #1273 checks. The struct is `#[non_exhaustive]`, so a caller
+/// the two accordproject/concerto#1273 checks. The struct is `#[non_exhaustive]`, so a caller
 /// starts from a preset and sets fields:
 ///
 /// ```

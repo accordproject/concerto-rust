@@ -7,11 +7,10 @@ use crate::validation::{attach_model_file, validate_map_key, validate_map_value}
 fn validate(declarations: serde_json::Value) -> crate::error::Result<()> {
     let mut manager = ModelManager::new().unwrap();
     // A malformed `MapDeclaration` (an out-of-set key/value kind, a
-    // missing key or value node, ...) is now rejected at construction
-    // time (`Declaration::try_from`, TS `MapDeclaration.process`), the
-    // same as TS — before `validate_models` below ever runs — so this
-    // no longer `.unwrap()`s: a caller whose declarations are malformed
-    // that way sees the `add_model` error itself, not a panic.
+    // missing key or value node, ...) is rejected at construction time
+    // (`Declaration::try_from`, TS `MapDeclaration.process`), before
+    // `validate_models` runs, so the caller sees the `add_model` error
+    // itself, not a panic.
     manager.load_model(
         &serde_json::json!({
             "$class": "concerto.metamodel@1.0.0.Model",
@@ -23,7 +22,7 @@ fn validate(declarations: serde_json::Value) -> crate::error::Result<()> {
     manager.validate_models()
 }
 
-/// P5-61: a map, key or value node the typed read cannot read is a
+/// A map, key or value node the typed read cannot read is a
 /// `modelfile-load-unreadable` `IllegalModelException` at load (BC-19's
 /// shape check rejects it first), where TS 5.0.0's per-site guards gave
 /// their own `IllegalModelException` messages.
@@ -67,12 +66,11 @@ fn super_type_that_is_missing_fails() {
     assert!(err.unwrap_err().to_string().contains("super type"));
 }
 
-/// accordproject/concerto-rust#217 review finding 2, on the same
-/// validating `addModelFile` path: an empty `identified.name` validates
+/// On the validating `addModelFile` path: an empty `identified.name` validates
 /// cleanly, with no id field. TS's `this.idField` is read everywhere
 /// downstream (including the "does not contain this property" check
 /// `check_identifier` ports) with a plain truthiness test. The falsy
-/// non-strings (`0`, `false`) are the loader's error since P5-61.
+/// non-strings (`0`, `false`) are the loader's error.
 #[test]
 fn identified_by_an_empty_name_has_no_id_field_and_validates() {
     let err = validate(serde_json::json!([concept(serde_json::json!({
@@ -83,8 +81,7 @@ fn identified_by_an_empty_name_has_no_id_field_and_validates() {
 }
 
 /// PORTING.md 2.1: `failed`'s `location` is the failing class's own AST
-/// `location`, copied verbatim, not hard-coded to `None` (P1-05 exit
-/// condition).
+/// `location`, copied verbatim, not hard-coded to `None`.
 #[test]
 fn super_type_that_is_missing_carries_the_class_ast_location() {
     let location = serde_json::json!({
@@ -104,11 +101,11 @@ fn super_type_that_is_missing_carries_the_class_ast_location() {
     }
 }
 
-/// [`property_location`] (P5-06: cargo-mutants found this return value
-/// was never asserted, only that *some* error was raised): a property's
-/// own AST `location` is copied verbatim into the error, exactly like a
-/// class's ([`super_type_that_is_missing_carries_the_class_ast_location`]),
-/// not read from the owning class or hard-coded to `None`/`Default`.
+/// [`property_location`] (cargo-mutants found this return value was never
+/// asserted, only that *some* error was raised): a property's own AST
+/// `location` is copied verbatim into the error, exactly like a class's
+/// ([`super_type_that_is_missing_carries_the_class_ast_location`]), not
+/// read from the owning class or hard-coded to `None`/`Default`.
 #[test]
 fn relationship_to_primitive_carries_the_property_ast_location() {
     let location = serde_json::json!({
@@ -131,9 +128,9 @@ fn relationship_to_primitive_carries_the_property_ast_location() {
     }
 }
 
-/// [`enum_location`] (P5-06): an enum's own AST `location` is copied
-/// verbatim into an import-clash error raised on the enum itself, the
-/// same way a class's is.
+/// [`enum_location`]: an enum's own AST `location` is copied verbatim
+/// into an import-clash error raised on the enum itself, the same way
+/// a class's is.
 #[test]
 fn an_enum_clashing_with_an_imported_name_carries_the_enum_ast_location() {
     let location = serde_json::json!({
@@ -166,7 +163,7 @@ fn an_enum_clashing_with_an_imported_name_carries_the_enum_ast_location() {
     }
 }
 
-/// [`attach_model_file`]'s guard (P5-06: cargo-mutants found both the
+/// [`attach_model_file`]'s guard (cargo-mutants found both the
 /// `&&`/`||` swap and a hard-coded `true` survived): it stamps a file
 /// name only onto an `IllegalModel`-kind contract error that has no
 /// file yet, and leaves every other error exactly as it was passed in —
@@ -306,9 +303,9 @@ fn relationship_to_identified_class_passes() {
     // A concept (not an asset/participant/transaction/event): the
     // implicit super type here is `Concept` itself (no properties of its
     // own to collide with), unlike the four identified kinds, which
-    // implicitly extend their own system kind (P2-03) and so would
-    // already carry a `$identifier` of their own — this test is about
-    // the relationship check, not that.
+    // implicitly extend their own system kind and so would already carry
+    // a `$identifier` of their own — this test is about the relationship
+    // check, not that.
     let err = validate(serde_json::json!([
         concept(serde_json::json!({
             "name": "Vehicle",
@@ -338,8 +335,7 @@ fn relationship_to_identified_class_passes() {
 /// runs. Evidence: conformance fixture
 /// `concepts/models/RELATIONSHIP_002/relationship_002_type_not_exist.cto`
 /// (oracle id `0708cadc678cefd55e7c5e12`, `ModelManager.addCTOModel`) —
-/// this was a P2-04 review blocker: the branch below used to fire the
-/// relationship-specific message for this unresolvable case too.
+/// not the relationship-specific message.
 #[test]
 fn relationship_to_unresolvable_type_fails_with_the_undeclared_type_message() {
     let err = validate(serde_json::json!([concept(serde_json::json!({
@@ -391,9 +387,9 @@ fn object_property_of_declared_type_passes() {
     assert!(err.is_ok());
 }
 
-/// P5-61 (was DV-018): a `null` element in any `decorators` array — or
-/// a string `decorators` value (BC-17's shape), or a decorator node with
-/// no `name` — is not a decorator the typed read can read, so the load
+/// was DV-018: a `null` element in any `decorators` array — or a string
+/// `decorators` value (BC-17's shape), or a decorator node with no
+/// `name` — is not a decorator the typed read can read, so the load
 /// fails with a `modelfile-load-unreadable` `IllegalModelException`
 /// naming the file. BC-19's shape check rejects each of these first.
 /// Covers every decorated element: the model file, a class, a property,
@@ -466,9 +462,9 @@ fn a_malformed_decorator_is_rejected_at_load_wherever_it_sits() {
                 Some(file_name.map(String::from)),
                 "{pointer}"
             );
-            // The owned load path (P5-06, used by the WASM binding)
-            // shares `ModelFile::load`, so it rejects the same node with
-            // the same error.
+            // The owned load path (used by the WASM binding) shares
+            // `ModelFile::load`, so it rejects the same node with the
+            // same error.
             let owned = ModelManager::new()
                 .unwrap()
                 .add_owned_model_with_definitions(model.clone(), None, file_name.map(String::from))
@@ -479,7 +475,7 @@ fn a_malformed_decorator_is_rejected_at_load_wherever_it_sits() {
     }
 }
 
-/// #218 cluster #6: a class whose super type name is `""`. TS's
+/// A class whose super type name is `""`. TS's
 /// `getProperties` tests `this.superType !== null`, so `""` is still
 /// resolved, is not found, and `validate` throws "Could not find super
 /// type " (with the empty name). The native path already agrees; the
@@ -552,8 +548,8 @@ fn distinct_decorators_are_accepted() {
     assert!(err.is_ok());
 }
 
-/// P2-07: duplicate decorators are now caught on an enum declaration too,
-/// not only on class-like declarations and their properties.
+/// Duplicate decorators are caught on an enum declaration too, not
+/// only on class-like declarations and their properties.
 #[test]
 fn duplicate_decorator_on_an_enum_declaration_is_rejected() {
     let err = validate(serde_json::json!([{
@@ -570,7 +566,7 @@ fn duplicate_decorator_on_an_enum_declaration_is_rejected() {
     assert!(err.unwrap_err().to_string().contains("Duplicate decorator"));
 }
 
-/// P2-07: a scalar's own decorators are checked too, matching TS
+/// A scalar's own decorators are checked too, matching TS
 /// `ScalarDeclaration.validate` running `Decorated.validate` via
 /// `super.validate()`.
 #[test]
@@ -586,7 +582,7 @@ fn duplicate_decorator_on_a_scalar_declaration_is_rejected() {
     assert!(err.unwrap_err().to_string().contains("Duplicate decorator"));
 }
 
-/// P2-07: a map's own decorators are checked too, matching TS
+/// A map's own decorators are checked too, matching TS
 /// `MapDeclaration.validate` running `Decorated.validate` via
 /// `super.validate()`.
 #[test]
@@ -604,11 +600,10 @@ fn duplicate_decorator_on_a_map_declaration_is_rejected() {
     assert!(err.unwrap_err().to_string().contains("Duplicate decorator"));
 }
 
-/// F2 (#152): TS `MapDeclaration.validate` is `super.validate(); this.key
+/// TS `MapDeclaration.validate` is `super.validate(); this.key
 /// .validate(); this.value.validate()`, and `super.validate()`
-/// (`Declaration.validate`) runs the import-clash check — which the Rust
-/// engine never ran for a map at all before this fix. A map named like
-/// an imported type must be rejected, the same as any other declaration
+/// (`Declaration.validate`) runs the import-clash check, so a map named
+/// like an imported type is rejected, the same as any other declaration
 /// (`declaration_clashing_with_an_imported_name_is_rejected`).
 #[test]
 fn a_map_declaration_clashing_with_an_imported_name_is_rejected() {
@@ -630,10 +625,9 @@ fn a_map_declaration_clashing_with_an_imported_name_is_rejected() {
     );
 }
 
-/// F3 (#152): TS checks a map's own decorators (as part of `super
-/// .validate()`) before its key and its value; the Rust engine used to
-/// check the key and value first. A map with both a duplicate decorator
-/// and an illegal key must report the duplicate decorator.
+/// TS checks a map's own decorators (as part of `super.validate()`)
+/// before its key and its value, so a map with both a duplicate decorator
+/// and an illegal key reports the duplicate decorator.
 #[test]
 fn duplicate_decorator_is_reported_before_the_key_and_value_checks() {
     let err = validate(serde_json::json!([{
@@ -652,10 +646,10 @@ fn duplicate_decorator_is_reported_before_the_key_and_value_checks() {
     assert!(err.unwrap_err().to_string().contains("Duplicate decorator"));
 }
 
-/// F2/F3 (#152), combined: a map whose name clashes with an import and
-/// which also has an illegal key must report the import clash, not the
-/// key error — matching TS's `super.validate()` (decorators, then
-/// import clash) running fully before `this.key.validate()`.
+/// Both orderings combined: a map whose name clashes with an import and which
+/// also has an illegal key must report the import clash, not the key
+/// error — matching TS's `super.validate()` (decorators, then import
+/// clash) running fully before `this.key.validate()`.
 #[test]
 fn map_import_clash_is_reported_before_the_key_check() {
     let err = validate_with_imports(
@@ -677,7 +671,7 @@ fn map_import_clash_is_reported_before_the_key_check() {
     );
 }
 
-/// P2-07: an enum value's own decorators are checked, matching the doc
+/// An enum value's own decorators are checked, matching the doc
 /// comment on `impl Validate for Declaration` that an enum's checks
 /// include "those of its values".
 #[test]
@@ -696,8 +690,8 @@ fn duplicate_decorator_on_an_enum_value_is_rejected() {
     assert!(err.unwrap_err().to_string().contains("Duplicate decorator"));
 }
 
-/// P2-07: a model file's own decorators (on its `namespace`) are checked
-/// too, matching TS `ModelFile.validate` running `Decorated.validate` via
+/// A model file's own decorators (on its `namespace`) are checked too,
+/// matching TS `ModelFile.validate` running `Decorated.validate` via
 /// `super.validate()` (modelfile.ts).
 #[test]
 fn duplicate_decorator_on_a_namespace_is_rejected() {
@@ -991,8 +985,7 @@ fn importing_from_the_files_own_namespace_is_not_yet_defined_before_it_is_regist
     // namespace yet: `this.getModelManager().getModelFile(importNamespace)`
     // cannot find it, so a self-import fails "namespace is not defined"
     // here, unlike the already-registered case above, which reaches the
-    // declarations loop and clashes instead (P2-08d,
-    // accordproject/concerto-rust#151, oracle fixture
+    // declarations loop and clashes instead (oracle fixture
     // `conformance/ModelManager.addCTOModel/c1b2125619408b3b8b968ce8`).
     let manager = ModelManager::new().unwrap();
     let mf = ModelFile::from_json(
@@ -1098,23 +1091,21 @@ fn importing_two_versions_of_one_namespace_is_rejected() {
     assert!(err.unwrap_err().to_string().contains("different versions"));
 }
 
-/// accordproject/concerto-rust#241 (the `../` loose end off #219): a
-/// fuzz-mutated import `name` makes `ModelUtil.importFullyQualifiedNames`'s
-/// synthesised `namespace + '.' + name` FQN carry an extra `.` segment
-/// after the `@`, so the `importNamespace` `check_imports` derives from it
-/// (`getNamespace`, up to the *last* dot) is `"org.a@1.0.0.X../."` — a
-/// namespace that is both unregistered and, split on `@`, has a second
-/// segment (`"1.0.0.X../."`) that fails `semver.valid`. TS's
-/// `ModelFile.validate` calls `ModelUtil.parseNamespace(importNamespace)`
-/// *unconditionally*, before it ever checks whether that namespace is
-/// registered, so this raises `parseNamespace`'s own plain
-/// `Error("Invalid namespace ...")` — never
+/// A fuzz-mutated import `name` makes
+/// `ModelUtil.importFullyQualifiedNames`'s synthesised `namespace + '.' +
+/// name` FQN carry an extra `.` segment after the `@`, so the
+/// `importNamespace` `check_imports` derives from it (`getNamespace`, up to
+/// the *last* dot) is `"org.a@1.0.0.X../."` — a namespace that is both
+/// unregistered and, split on `@`, has a second segment (`"1.0.0.X../."`)
+/// that fails `semver.valid`. TS's `ModelFile.validate` calls
+/// `ModelUtil.parseNamespace(importNamespace)` *unconditionally*, before it
+/// ever checks whether that namespace is registered, so this raises
+/// `parseNamespace`'s own plain `Error("Invalid namespace ...")` — never
 /// `modelmanager-gettype-noregisteredns`'s `IllegalModelException`, even
-/// though the namespace is also unregistered. Coordinator decision
-/// 2026-09-27 on #241: Rust matches TS's ordering and message exactly,
-/// even though a plain `Error` escaping past `IllegalModelException` here
-/// is itself arguably a TS bug (recorded as a `ts-bug` DIVERGENCES.md row,
-/// not fixed).
+/// though the namespace is also unregistered. Rust matches TS's ordering
+/// and message exactly, even though a plain `Error` escaping past `IllegalModelException` here is
+/// itself arguably a TS bug (recorded as a `ts-bug` DIVERGENCES.md row, not
+/// fixed).
 #[test]
 fn an_import_name_that_makes_the_synthesised_namespace_fail_parse_first() {
     let err = validate_importing(serde_json::json!([import_of("org.a@1.0.0", "X../../etc")]))
@@ -1156,8 +1147,8 @@ fn a_system_identifier_may_not_extend_an_explicit_one() {
 /// (test/data/parser/classdeclaration.identifierextendsfromsupertype.cto)
 /// and introspect/identifieddeclaration.js, "#identified should not
 /// allow overriding explicit identifier with an explicit identifier":
-/// two classes each explicitly `identified by` their own field is the
-/// "explicit-over-explicit identity" gap this task closes.
+/// two classes each explicitly `identified by` their own field is
+/// rejected.
 #[test]
 fn an_explicit_identifier_may_not_extend_an_explicit_one() {
     let err = validate(serde_json::json!([
@@ -1190,10 +1181,10 @@ fn an_explicit_identifier_may_not_extend_an_explicit_one() {
 /// TS: introspect/identifieddeclaration.js, "#identified should not
 /// allow overriding system identifier": both `FancyOrder` and the
 /// `Asset` it implicitly extends declare a bare `identified` (system),
-/// so each contributes its own synthesised `$identifier` field
-/// (P2-03, the class declaration's loader) and the two collide as a
-/// duplicate field name — not the identity-redeclare check, which
-/// allows a system identifier over a system identifier.
+/// so each contributes its own synthesised `$identifier` field (the
+/// class declaration's loader) and the two collide as a duplicate
+/// field name — not the identity-redeclare check, which allows a
+/// system identifier over a system identifier.
 #[test]
 fn a_system_identifier_over_a_system_identifier_collides_as_a_duplicate_field() {
     let err = validate(serde_json::json!([{
@@ -1217,12 +1208,12 @@ fn a_system_identifier_over_a_system_identifier_collides_as_a_duplicate_field() 
     );
 }
 
-/// P2-04 (plan §1.2's "enum duplicate ... values" gap; issue #48):
 /// `EnumDeclaration` inherits `ClassDeclaration.validate` unchanged, so
 /// two values of the same name in one enum are rejected exactly like two
-/// same-named fields on a class — same catalogue code, same message.
-/// Checked against the frozen TS 5.0.0 reference
-/// (`migration/oracle/reference`): `ModelManager.addCTOModel` on
+/// same-named fields on a class, with the same catalogue code and
+/// message. Checked against the
+/// frozen TS 5.0.0 reference (`migration/oracle/reference`):
+/// `ModelManager.addCTOModel` on
 ///
 /// ```cto
 /// namespace org.acme.enumdup@1.0.0
@@ -1266,8 +1257,7 @@ fn distinct_enum_value_names_pass() {
 /// TS: introspect/classdeclaration.js "#validation validation of super
 /// types" (test/data/parser/validation.cto): a `participant` cannot
 /// extend an `asset`, even though neither names a super type explicitly
-/// incompatible on its face — the kind-compatibility gap this task
-/// closes.
+/// incompatible on its face.
 #[test]
 fn a_participant_cannot_extend_an_asset() {
     let err = validate(serde_json::json!([
@@ -1342,12 +1332,10 @@ fn a_class_extending_itself_is_rejected() {
     );
 }
 
-/// F1 (#152): TS `ClassDeclaration.validate`'s `super.validate()` reaches
+/// TS `ClassDeclaration.validate`'s `super.validate()` reaches
 /// `Decorated.validate`'s duplicate-decorator scan before this method's
-/// own self-extend check. A class with both faults must report the
-/// duplicate decorator, not the self-extending super type — pinning the
-/// order so a future change can't quietly move the decorator checks back
-/// to the end, as they used to run before this fix.
+/// own self-extend check, so a class with both faults reports the
+/// duplicate decorator, not the self-extending super type.
 #[test]
 fn duplicate_decorator_is_reported_before_a_self_extending_super_type() {
     let err = validate(serde_json::json!([concept(serde_json::json!({
@@ -1361,11 +1349,10 @@ fn duplicate_decorator_is_reported_before_a_self_extending_super_type() {
     assert!(err.unwrap_err().to_string().contains("Duplicate decorator"));
 }
 
-/// F1 (#152): the same ordering, against `check_import_clash` rather
-/// than the self-extend check — a class named like an imported type
-/// (see `declaration_clashing_with_an_imported_name_is_rejected`
-/// below), with a duplicate decorator, must report the duplicate
-/// decorator.
+/// The same ordering, against `check_import_clash` rather than
+/// the self-extend check — a class named like an imported type (see
+/// `declaration_clashing_with_an_imported_name_is_rejected` below),
+/// with a duplicate decorator, must report the duplicate decorator.
 #[test]
 fn duplicate_decorator_is_reported_before_an_import_clash() {
     let err = validate_with_imports(
@@ -1384,16 +1371,11 @@ fn duplicate_decorator_is_reported_before_an_import_clash() {
     assert!(err.unwrap_err().to_string().contains("Duplicate decorator"));
 }
 
-/// F4 (#152): TS `Decorated.validate` calls each decorator's own
-/// `.validate()` before the duplicate-name scan; every call site fixed
-/// by #152 used to run the duplicate-name scan first. With decorator
-/// validation enabled (`missingDecorator: 'error'`) and a class
-/// carrying a duplicate decorator whose name is also undeclared, the
-/// *old* order would find the duplicate first and never reach
-/// `Decorator.validate` at all — reporting `Duplicate decorator`. The
-/// fixed order must instead run `Decorator.validate` first and report
-/// its undeclared-type failure, matching TS's `super.validate()` chain
-/// (`Decorated.validate` before `ClassDeclaration`'s own checks).
+/// TS `Decorated.validate` calls each decorator's own `.validate()` before
+/// the duplicate-name scan. With decorator validation enabled
+/// (`missingDecorator: 'error'`) and a class carrying a duplicate decorator
+/// whose name is also undeclared, `Decorator.validate`'s undeclared-type
+/// failure is reported, not `Duplicate decorator`.
 #[test]
 fn undeclared_decorator_is_reported_before_the_duplicate_scan_when_decorator_validation_is_enabled()
 {
@@ -1426,13 +1408,13 @@ fn undeclared_decorator_is_reported_before_the_duplicate_scan_when_decorator_val
     assert!(!err.contains("Duplicate decorator"), "{err}");
 }
 
-/// BC-14 (R1, closing DV-016; P2-09c/F6 gap-audit finding): TS
+/// BC-14 (DV-016): TS
 /// `Decorator.validate` catches its own `try` block's errors (including
 /// its own `invalidDecorator` throws) in one outer `catch` and re-reports
 /// them through `handleError(missingDecorator, err)`. TS 5.0.0 wrapped the
 /// caught `IllegalModelException` in a new one, so the message embedded
 /// `IllegalModelException: ` and carried the `"File '<name>': "` suffix
-/// twice. The caught exception is now thrown as it is: one suffix.
+/// twice. Rust throws the caught exception as it is: one suffix.
 #[test]
 fn a_decorator_validation_error_carries_the_file_suffix_once() {
     use crate::introspect::decorator::DecoratorValidationOptions;
@@ -1600,7 +1582,7 @@ fn a_transaction_inherits_the_system_timestamp_field() {
 
 /// A relationship to a class with no identity of its own, but that
 /// extends one that has (every `Asset`/`Participant`), is valid: the
-/// inherited-identifier-lookup gap this task closes.
+/// identifier lookup follows the super types.
 ///
 /// TS: RelationshipDeclaration.validate calls the target's inherited
 /// `isIdentified()` (src/introspect/relationshipdeclaration.ts).
@@ -1699,8 +1681,8 @@ fn a_map_key_kind_outside_the_allowed_set_is_rejected() {
 
 #[test]
 fn an_undeclared_map_value_type_is_an_illegal_model_error() {
-    // BC-12 (R1): an `IllegalModelException` naming the undeclared type
-    // (TS 5.0.0 threw V8's `TypeError` reading `isMapDeclaration` off
+    // BC-12: an `IllegalModelException` naming the undeclared type (TS
+    // 5.0.0 threw V8's `TypeError` reading `isMapDeclaration` off
     // `null`, DV-014).
     let key = serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapKeyType" });
     let err = validate(map_with(
@@ -1771,11 +1753,11 @@ fn a_map_value_may_not_be_a_map_declaration() {
     );
 }
 
-/// P2-04 (issue #48): `Property.validate`'s size-validator check
-/// (property.ts) allows a non-array size validator only when the
-/// property's own type is a map declaration — checked here only once
-/// the target type is known, which is why it is a `validate_models`
-/// check (`check_property_type`) rather than a load-time one
+/// `Property.validate`'s size-validator check (property.ts) allows a
+/// non-array size validator only when the property's own type is a
+/// map declaration — checked here only once the target type is known,
+/// which is why it is a `validate_models` check
+/// (`check_property_type`) rather than a load-time one
 /// (`Property::check_validators`, which only knows the property's own
 /// AST, not what its type resolves to).
 ///
@@ -1870,11 +1852,12 @@ fn size_validator_on_a_map_type_imported_from_another_namespace_is_allowed() {
 
 #[test]
 fn test_fresh_model_manager_is_valid() {
-    // A fresh manager has only the two system models loaded (P1-07b: the
+    // A fresh manager has only the two system models loaded (the
     // decorator model, then the root model); it must validate. Only the
     // root model is skipped by `is_system_namespace`, so this also covers
     // the decorator model's own declarations validating cleanly. (TS
-    // `validateModelFiles` validates every model file, the root included.)
+    // `validateModelFiles` validates every model file, the root
+    // included.)
     let manager = ModelManager::new().unwrap();
     assert!(manager.validate_models().is_ok());
 }
@@ -2017,7 +2000,7 @@ fn assert_duplicate_class_name(err: Error, fqn: &str) {
     );
 }
 
-/// TS: `ModelFile.validate()`'s duplicate-name scan (P2-08). Loading
+/// TS: `ModelFile.validate()`'s duplicate-name scan. Loading
 /// (`add_model`, which never validates — TS `addModelFile(…, true)`)
 /// accepts the duplicate; the later `validateModelFiles` rejects it.
 #[test]
@@ -2072,11 +2055,11 @@ fn duplicate_declaration_scan_runs_between_imports_and_declarations() {
     assert!(!message.contains("Duplicate class name"), "{message}");
 }
 
-/// P5-48: [`ModelManager::validate_and_add_model_file`] gives the same
-/// result as `validate_detached_model_file` then `add_model_file`: the
-/// same handle and namespaces when the file is valid; when it is not,
-/// the same error, the file handed back and the manager unchanged
-/// (another file still registers under the handle it would have had).
+/// [`ModelManager::validate_and_add_model_file`] gives the same result
+/// as `validate_detached_model_file` then `add_model_file`: the same
+/// handle and namespaces when the file is valid; when it is not, the
+/// same error, the file handed back and the manager unchanged (another
+/// file still registers under the handle it would have had).
 #[test]
 fn validate_and_add_model_file_matches_validate_detached_then_add() {
     use crate::introspect::model_file::ModelFile;
@@ -2142,9 +2125,9 @@ fn validate_and_add_model_file_matches_validate_detached_then_add() {
     assert!(err.to_string().contains("already"), "{err}");
 }
 
-/// P5-101 (D-9): [`ModelManager::validate_and_add_shared_model_file`]
-/// registers the very file it is given (no copy) and hands the same file
-/// back on a validation error.
+/// [`ModelManager::validate_and_add_shared_model_file`] registers the
+/// very file it is given (no copy) and hands the same file back on a
+/// validation error.
 #[test]
 fn validate_and_add_shared_model_file_shares_the_file() {
     use crate::introspect::model_file::ModelFile;
@@ -2177,10 +2160,10 @@ fn validate_and_add_shared_model_file_shares_the_file() {
     manager.validate_models().unwrap();
 }
 
-/// P5-48: a self-import still fails as "namespace not defined" in
+/// A self-import still fails as "namespace not defined" in
 /// [`ModelManager::validate_and_add_model_file`], which validates the
 /// file already registered: `check_imports` does not see its own
-/// namespace (P2-08d), exactly as `validate_detached_model_file` does.
+/// namespace, exactly as `validate_detached_model_file` does.
 #[test]
 fn validate_and_add_model_file_does_not_resolve_a_self_import() {
     use crate::introspect::model_file::ModelFile;
@@ -2205,8 +2188,7 @@ fn validate_and_add_model_file_does_not_resolve_a_self_import() {
 }
 
 /// [`ModelManager::validate_detached_model_file`]'s fast-path guard
-/// (P5-06: cargo-mutants found `registered.ast() == model_file.ast()`
-/// surviving as `!=`), the ast half. When `self` already holds a file
+/// (`registered.ast() == model_file.ast()`), the ast half. When `self` already holds a file
 /// under `model_file`'s namespace whose AST *differs* — here, a fresh
 /// invalid variant of an already-registered valid file — the guard must
 /// stay false and take the scratch path, which validates the new
@@ -2243,8 +2225,7 @@ fn validate_detached_model_file_rejects_a_namesake_with_different_content() {
 }
 
 /// [`ModelManager::validate_detached_model_file`]'s fast-path guard, the
-/// file-name half (P5-06: `registered.file_name() == model_file.file_name()`
-/// surviving as `!=`). `self` already holds an *invalid* file — built
+/// file-name half (`registered.file_name() == model_file.file_name()`). `self` already holds an *invalid* file — built
 /// with [`ModelManager::with_model_file_registered`] directly, bypassing
 /// `add_model`'s own pre-registration validation, the only way to get an
 /// invalid file registered at all — named `orig.cto`; `renamed`, an
@@ -2351,9 +2332,9 @@ fn a_detached_model_file_validates_against_its_manager() {
 }
 
 /// TS `Property.validate`'s size-validator check for a primitive field
-/// and a relationship: construction accepts both (P2-08), validation
-/// rejects them with TS's exact message — the property's fully-qualified
-/// name — and before a relationship's own primitive-type check.
+/// and a relationship: construction accepts both, validation rejects
+/// them with TS's exact message — the property's fully-qualified name —
+/// and before a relationship's own primitive-type check.
 ///
 /// Ported from `test/introspect/property.js` #getSizeValidator "should
 /// reject size on a non-array String property" / "... Integer property".
@@ -2396,18 +2377,15 @@ fn size_validator_on_a_non_array_primitive_or_relationship_is_rejected_by_valida
     }
 }
 
-// --- Additional MapDeclaration/MapKeyType/MapValueType porting (P2-06,
-// continuing accordproject/concerto-rust#50): TS
+// --- MapDeclaration/MapKeyType/MapValueType: TS
 // test/introspect/mapdeclaration.js. Each test below names the TS `it()`
 // it ports. Cases that need a real `ModelFile` object (`new
 // MapDeclaration(modelFile, ast)`, `introspectUtils.loadLastDeclaration`,
 // and the TS `MapKeyType`/`MapValueType` classes' own `getParent`,
-// `getNamespace` and `toString`) were deferred to P2-08's `ModelFile.new`
-// by the coordinator's split on this issue (#114), and are now covered
-// there instead of as unit tests here: the oracle corpus already records
-// these `it()`s as `MapDeclaration.validate`, `MapKeyType`/
+// `getNamespace` and `toString`) are covered by the oracle instead: the corpus already records these
+// `it()`s as `MapDeclaration.validate`, `MapKeyType`/
 // `MapValueType.getNamespace`/`getParent`/`toString` fixtures (behavioural
-// tests become fixtures directly, plan §2.1), and P2-06b wires them
+// tests become fixtures directly), wired
 // against `ModelFile::from_json` on an unregistered file
 // ([`ModelManager::validate_detached_declaration`],
 // [`ModelManager::validate_detached_map_key`],
@@ -2415,16 +2393,14 @@ fn size_validator_on_a_non_array_primitive_or_relationship_is_rejected_by_valida
 // `declref`/`map_part` on an `mfnew` target) rather than duplicating them
 // as hand-written Rust tests — this engine has no separate `MapKeyType`/
 // `MapValueType` type to call `getParent`/`getNamespace`/`toString` on in
-// the first place (this engine reads a
-// map's key and value as plain accessors on `MapDeclaration`"). The TS
-// `getModelFile()` test has no oracle fixture and stays untouched; the
-// TS `#accept` visitor test has no Rust counterpart yet at all, since no
-// visitor pattern has been ported (plan section 3: visitors stay TS
-// shells for now).
+// the first place (this engine reads a map's key and value as plain
+// accessors on `MapDeclaration`"). The TS `getModelFile()` test has no
+// oracle fixture; the TS `#accept` visitor test has no Rust counterpart,
+// since visitors stay TS shells.
 
 // TS: `#constructor` "should throw if ast contains no Map Key Type" /
 // "no Map Value Property": a map without its key or value is not a map
-// the typed read can read (P5-61).
+// the typed read can read.
 #[test]
 fn map_missing_its_key_field_is_rejected_at_construction() {
     let value = serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringMapValueType" });
@@ -2451,7 +2427,7 @@ fn map_missing_its_value_field_is_rejected_at_construction() {
 
 // TS: `#constructor` "should throw if invalid $class provided for Map
 // Key" / "... for Map Value": a `$class` the metamodel does not declare
-// is not a key or value the typed read can read (P5-61).
+// is not a key or value the typed read can read.
 #[test]
 fn map_key_with_an_unknown_class_is_rejected_at_construction() {
     let err = validate(map_with(
@@ -2824,10 +2800,7 @@ fn aliased_map_manager() -> ModelManager {
                         "$class": "concerto.metamodel@1.0.0.ImportTypes",
                         "namespace": "child@1.0.0",
                         // test/data/aliasing/parent.json: `types` holds the
-                        // declared names as strings (merge with P2-08: this
-                        // used object entries, which `ImportTypes` skips, and
-                        // resolved only through the aliased-import fallthrough
-                        // that P2-08's review carry-over (a) removed).
+                        // declared names as strings.
                         "types": ["FullName", "Child"],
                         "aliasedTypes": [
                             { "$class": "concerto.metamodel@1.0.0.AliasedType", "name": "FullName", "aliasedName": "KidFullName" },
@@ -2868,9 +2841,9 @@ fn an_aliased_imported_concept_map_value_validates() {
     assert!(validate_map_value(&manager, "parent@1.0.0", map).is_ok());
 }
 
-// --- Remaining TS test/introspect/mapdeclaration.js parity (P2-06,
-// accordproject/concerto-rust#50). Each case is built from the AST its
-// test/data/parser/mapdeclaration/*.cto file parses to.
+// --- Remaining TS test/introspect/mapdeclaration.js parity. Each case
+// is built from the AST its test/data/parser/mapdeclaration/*.cto file
+// parses to.
 
 /// Asserts `result` is the `IllegalModelException` TS throws: the only
 /// thing the TS tests below assert about their errors.
@@ -3083,7 +3056,7 @@ fn inherited_property_files(s_extra: serde_json::Value) -> (ModelManager, serde_
 /// `getProperties()`, inherited ones included, in the subclass's own pass:
 /// validating `b.cto` alone rejects the size validator `X.s` carries, and
 /// names `b.cto` (`field.validate(this)` for a primitive field) while the
-/// property's FQN stays `X`'s (P2-08 review).
+/// property's FQN stays `X`'s.
 #[test]
 fn an_inherited_property_is_validated_in_the_subclass_pass() {
     use crate::introspect::model_file::ModelFile;
@@ -3122,8 +3095,8 @@ fn an_inherited_property_is_validated_in_the_subclass_pass() {
     );
 }
 
-/// `validate_property`'s `in_owner_file` guard (P5-06: cargo-mutants
-/// found `owner_ns != namespace` survived both a `true`/`false` and a
+/// `validate_property`'s `in_owner_file` guard (cargo-mutants found
+/// `owner_ns != namespace` survived both a `true`/`false` and a
 /// `!=`/`==` swap): a duplicate-decorator error on an *inherited*
 /// property — raised before the primitive early-return that
 /// [`an_inherited_property_is_validated_in_the_subclass_pass`] goes
@@ -3156,8 +3129,7 @@ fn a_duplicate_decorator_on_an_inherited_property_is_attached_to_the_owner_file(
     }
 }
 
-/// `validate_property`'s `in_owner_file` guard, the other side (P5-06
-/// review follow-up): `owner_ns != namespace` forced to a constant
+/// `validate_property`'s `in_owner_file` guard, the other side: `owner_ns != namespace` forced to a constant
 /// `true` survived the above test uncaught, because that test only ever
 /// puts the guard's *true* branch (an inherited, other-namespace
 /// property) under test. Here `p` is `X`'s own property — `owner_ns ==
@@ -3243,7 +3215,7 @@ fn a_valid_inherited_property_passes_the_subclass_pass() {
 /// TS `ClassDeclaration.validate` looks an inherited, other-namespace
 /// property's type up with `modelManager.getType(typeFqn)`, whose two
 /// `TypeNotFoundException`s differ by whether the type's namespace is
-/// loaded at all (P2-08 review).
+/// loaded at all.
 #[test]
 fn an_inherited_property_of_an_unloadable_type_reports_model_manager_get_type() {
     let run = |load_c: bool| {
@@ -3299,15 +3271,15 @@ fn an_inherited_property_of_an_unloadable_type_reports_model_manager_get_type() 
 }
 
 /// `validate_property`'s other attach guard, `context_ns != namespace`
-/// (P5-06: cargo-mutants found the same `true`/`false`/`!=`→`==`
-/// survivals as [`a_duplicate_decorator_on_an_inherited_property_is_attached_to_the_owner_file`],
-/// on the *other* branch of `validate_property`): `Y` (`org.b`) inherits
-/// `X`'s (`org.a`) relationship property `c`, typed `Cc` — declared,
-/// import-free, in a third namespace, `org.c`, so `Cc` resolves (unlike
+/// (cargo-mutants found the same `true`/`false`/`!=`→`==` survivals as
+/// [`a_duplicate_decorator_on_an_inherited_property_is_attached_to_the_owner_file`],
+/// on the *other* branch of `validate_property`): `Y` (`org.b`) inherits `X`'s
+/// (`org.a`) relationship property `c`, typed `Cc` — declared, import-free, in a
+/// third namespace, `org.c`, so `Cc` resolves (unlike
 /// [`an_inherited_property_of_an_unloadable_type_reports_model_manager_get_type`])
-/// and `check_property_type` itself raises the "must be to a class that
-/// has an identifier" error, attached to `Cc`'s own file (`c.cto`), not
-/// `b.cto`, the same way the owner-file guard attaches `a.cto` above.
+/// and `check_property_type` itself raises the "must be to a class that has an
+/// identifier" error, attached to `Cc`'s own file (`c.cto`), not `b.cto`, the same
+/// way the owner-file guard attaches `a.cto` above.
 #[test]
 fn an_inherited_relationship_to_an_unidentified_type_is_attached_to_the_types_file() {
     use crate::introspect::model_file::ModelFile;
@@ -3373,7 +3345,7 @@ fn an_inherited_relationship_to_an_unidentified_type_is_attached_to_the_types_fi
 }
 
 /// `validate_property`'s `context_ns != namespace` guard, the other side
-/// (P5-06 review follow-up, same shape as
+/// (same shape as
 /// [`a_duplicate_decorator_on_an_own_property_is_not_misattached_via_detached_declaration`]
 /// above): the guard is only ever reached when `owner_ns != namespace`
 /// (the early return above it covers every `owner_ns == namespace`
@@ -3446,7 +3418,7 @@ fn an_inherited_relationship_to_a_same_namespace_unidentified_type_is_not_misatt
     }
 }
 
-// --- P5-06: cargo-mutants found `validate_detached_declaration`,
+// --- cargo-mutants found `validate_detached_declaration`,
 // `validate_detached_map_key` and `validate_detached_map_value` (each
 // `-> Result<()>` replaced with `Ok(())`) and `detached_map`'s match arm
 // (deleted) surviving under the `--lib` unit suite: real coverage for
@@ -3538,9 +3510,10 @@ fn validate_detached_map_key_and_value_in_isolation() {
                 { "$class": "concerto.metamodel@1.0.0.MapDeclaration", "name": "ValuePointsAtAMap",
                   "key": { "$class": "concerto.metamodel@1.0.0.StringMapKeyType" },
                   "value": object_type("Valid", "ObjectMapValueType") }
-                // P5-61: a `type.name` that is not a string is not
-                // a map the typed read can read, so the loaded map's
-                // `value_type()` is never `None` for an object value.
+                // A `type.name` that is not a string is not a map
+                // the typed read can read, so the loaded map's
+                // `value_type()` is never `None` for an object
+                // value.
             ]
         }),
         None,
@@ -3565,8 +3538,8 @@ fn validate_detached_map_key_and_value_in_isolation() {
     assert!(manager.validate_detached_map_key(&mf, 3).is_ok());
     assert!(manager.validate_detached_map_value(&mf, 3).is_ok());
 
-    // `validate_detached_map_value`'s own rejecting case (P5-06:
-    // cargo-mutants found `validate_detached_map_value -> Ok(())`
+    // `validate_detached_map_value`'s own rejecting case (cargo-mutants
+    // found `validate_detached_map_value -> Ok(())`
     // survived the two checks above, since neither of their values is
     // ever actually rejected — only [`validate_map_value`]'s own
     // "MapDeclaration as Map Type Value" check, on a value that points
@@ -3585,10 +3558,8 @@ fn validate_detached_map_key_and_value_in_isolation() {
     assert!(manager.validate_detached_map_key(&mf, 1).is_err());
 }
 
-/// `check_property_type`'s `owner_ns == namespace` guard (P5-06:
-/// cargo-mutants found this `==` -> `!=` mutant survived): reachable and
-/// observable, contrary to the review comment on the earlier partial
-/// sweep that called it equivalent without proof.
+/// `check_property_type`'s `owner_ns == namespace` guard (an `==` -> `!=`
+/// mutant cargo-mutants found surviving): reachable and observable.
 ///
 /// Reached only through [`validate_property`]'s inherited, non-primitive
 /// branch (`owner_ns != namespace`), which calls `check_property_type`
@@ -3617,9 +3588,9 @@ fn validate_detached_map_key_and_value_in_isolation() {
 /// validation exercises the inherited/cross-namespace path the direct
 /// `ns_a.Base` validation (`owner_ns == namespace` there) does not.
 ///
-/// P5-98 (A-2): this used a user import of the system name `Concept`
-/// under `dangerouslyAllowReservedSystemTypeNamesInUserModels`, relying
-/// on the first import winning; TS's last import wins, so that import
+/// This used a user import of the system name `Concept` under
+/// `dangerouslyAllowReservedSystemTypeNamesInUserModels`, relying on
+/// the first import winning; TS's last import wins, so that import
 /// resolves to the system `Concept` and TS 5.0.0 rejects that model.
 #[test]
 fn an_inherited_relationship_resolves_its_type_through_the_declaring_file_not_the_type_s_own_file()

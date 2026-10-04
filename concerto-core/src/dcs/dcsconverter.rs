@@ -63,7 +63,7 @@ fn pre_port(message: impl Into<String>) -> ContractError {
 // number or boolean by construction of the AST
 // (`DecoratorString`/`DecoratorNumber`/`DecoratorBoolean`), and a number is
 // written the way `Number.prototype.toString()` writes it (`0.000001`,
-// `1e+21`), not serde_json's shortest form (P5-98, C-11).
+// `1e+21`), not serde_json's shortest form.
 
 /// `handleTarget` (`src/dcsconverter.ts`): `target`'s own keys, in order,
 /// minus `$class`.
@@ -185,8 +185,8 @@ pub fn json_to_yaml(dcs_json: &Value) -> Result<String> {
     }
     let class = dcs_json.get("$class").and_then(Value::as_str);
     let dcs_namespace = model_util::get_namespace(class.filter(|c| !c.is_empty()))?;
-    // `ModelUtil.parseNamespace(dcsNamespace).version`. Since BC-02 (R1,
-    // P5-50) an unversioned namespace is rejected there (TS 5.0.0 gave
+    // `ModelUtil.parseNamespace(dcsNamespace).version`. Since BC-02 an
+    // unversioned namespace is rejected there (TS 5.0.0 gave
     // `undefined`).
     let (_, version) = model_util::namespace_parts(dcs_namespace)?;
     let version = Some(version.to_string());

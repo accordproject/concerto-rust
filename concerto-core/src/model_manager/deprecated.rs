@@ -99,9 +99,9 @@ impl ModelManager {
     ///
     /// TS: `ClassDeclaration.getAllSuperTypeDeclarations`, inherited unchanged
     /// by `EnumDeclaration`. On a cyclic inheritance chain this walks
-    /// `class_info`, so it returns the same `IllegalModelException` naming
-    /// the cycle as `getProperties`/`getProperty`/`getIdentifierFieldName`
-    /// (BC-11, R1; TS 5.0.0 loops until it runs out of memory, DV-013).
+    /// `class_info`, so it returns the same `IllegalModelException` naming the
+    /// cycle as `getProperties`/`getProperty`/`getIdentifierFieldName` (BC-11;
+    /// TS 5.0.0 loops until it runs out of memory; DV-013).
     #[deprecated(since = "0.1.0", note = "use `super_types`")]
     pub fn get_all_super_type_names(&self, fqn: &str) -> Result<Vec<String>> {
         self.super_type_names(fqn)

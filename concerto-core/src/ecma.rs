@@ -1,8 +1,8 @@
 //! Crate-private helpers for the ECMAScript semantics the TypeScript
 //! reference relies on (PORTING.md section 3.1).
 //!
-//! The model ASTs reach Rust as `serde_json::Value` (OD-3), so these helpers
-//! take JSON values. A JSON value can hold every JS value a model AST holds,
+//! The model ASTs reach Rust as `serde_json::Value`, so these helpers take
+//! JSON values. A JSON value can hold every JS value a model AST holds,
 //! except `undefined` (an absent key, modelled as `Option::None` by callers)
 //! and the non-finite numbers (which neither the CTO parser nor `JSON.parse`
 //! produce).
@@ -82,7 +82,7 @@ impl Primitive {
 /// [`less_than`]/[`greater_than`] already build, exposed directly for a
 /// caller that needs the number itself rather than a comparison (e.g. a
 /// fuzz-mutated model AST's numeric validator bound, read with no type check
-/// at all by the TS reference: DV-002/accordproject/concerto-rust#217).
+/// at all by the TS reference: DV-002).
 #[cfg(feature = "js-compat")]
 pub(crate) fn to_number(value: &Value) -> f64 {
     Primitive::of(value).to_number()
@@ -226,7 +226,7 @@ pub(crate) fn parse_int(s: &str) -> f64 {
 /// prefix that is a `StrDecimalLiteral` (`Infinity`, digits with an optional
 /// fraction and exponent); `NaN` when there is none.
 pub(crate) fn parse_float(s: &str) -> f64 {
-    // F-11 (accordproject/concerto-rust#458): compiled once, not per call.
+    // Compiled once, not per call.
     static STR_DECIMAL_LITERAL: LazyLock<regress::Regex> = LazyLock::new(|| {
         regress::Regex::new(r"^[+-]?(?:Infinity|(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)")
             .expect("static pattern")

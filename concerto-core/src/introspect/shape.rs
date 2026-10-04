@@ -1,5 +1,5 @@
-//! BC-19's AST shape check, folded into the strict typed read (P5-69,
-//! BC-19-b, accordproject/concerto-rust#408).
+//! BC-19's AST shape check, folded into the strict typed read
+//! (BC-19-b).
 //!
 //! [`conforms`] answers, from what the typed read ([`super::typed_ast`]) has
 //! already decoded, whether a model AST certainly has the metamodel's
@@ -16,7 +16,7 @@
 //! What the typed read decodes into a generated struct is already checked
 //! by that decode: an unknown key, a field of the wrong JSON type, a missing
 //! required field, a `null` required field. [`conforms`] adds what the read
-//! does not express, which is where each rule of `check_ast_shape` now
+//! does not express, which is where each rule of `check_ast_shape`
 //! lives (the table test below maps every rule to its home):
 //!
 //! - every node the read keeps as a `Value` (the model's own keys, every
@@ -504,21 +504,21 @@ fn value_conforms(value: &Value, ty: Ty) -> bool {
     }
 }
 
-/// A class's `identified` value, as the read reads it (P5-76: as a
-/// [`Kept`], not a `Value`; the verdict is the same): `null`, or a node of
-/// the metamodel's `Identified` or `IdentifiedBy`.
+/// A class's `identified` value, as the read reads it (as a [`Kept`]; not
+/// a `Value`; the verdict is the same): `null`, or a node of the
+/// metamodel's `Identified` or `IdentifiedBy`.
 pub(crate) fn identified_conforms(value: &Kept) -> bool {
     matches!(value, Kept::Other(Value::Null)) || kept_node_conforms(value, IDENTIFIED)
 }
 
-/// A node's `decorators` value, as the read reads it (P5-76: as a [`Kept`],
-/// not a `Value`; the verdict is the same): `null`, or an array of
-/// `Decorator` nodes.
+/// A node's `decorators` value, as the read reads it (as a [`Kept`]; not a
+/// `Value`; the verdict is the same): `null`, or an array of `Decorator`
+/// nodes.
 pub(crate) fn decorators_conform(value: &Kept) -> bool {
     optional_nodes(Some(value), DECORATOR)
 }
 
-/// A node's optional `location` (a [`Location`], P5-76): the same
+/// A node's optional `location` (a [`Location`]): the same
 /// verdict as for its `Value`.
 fn optional_location(value: Option<&Location>) -> bool {
     value.is_none_or(|value| match value {
@@ -570,8 +570,7 @@ fn kept_value_conforms(value: &Kept, ty: Ty) -> bool {
 
 /// An optional array-of-nodes field the read kept as given (a
 /// `decorators`): missing, `null`, or an array of nodes of the types
-/// `allowed`. Since P5-76 the read keeps it as a [`Kept`], not a `Value`;
-/// the verdict is the same.
+/// `allowed`, kept as a [`Kept`].
 fn optional_nodes(value: Option<&Kept>, allowed: &'static [&'static str]) -> bool {
     value.is_none_or(|value| {
         matches!(value, Kept::Other(Value::Null)) || kept_value_conforms(value, Nodes(allowed))

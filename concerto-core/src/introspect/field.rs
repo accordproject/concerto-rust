@@ -9,7 +9,7 @@
 //! Unlike the scalar's, the field's `StringValidator` is not built here: the
 //! view builds it ([`FieldValidator::String`]).
 
-// P5-104 (C-9): what this module holds is the JS-compatibility seam's
+// What this module holds is the JS-compatibility seam's
 // (`field::process` and the view snapshots it feeds); without the
 // `js-compat` feature none of it is compiled.
 #[cfg(feature = "js-compat")]

@@ -10,13 +10,10 @@
 //! semantic validation, and they run over an already loaded [`ModelManager`].
 //!
 //! Validation stops at the first problem. TS raises every one of these as
-//! `IllegalModelException` (`ClassDeclaration.validate` and its callees;
-//! PORTING.md section 2.3), so every error here carries
-//! a contract error with `ErrorKind::IllegalModel`, from the error
-//! catalogue (`Error::new`). A model whose inheritance is circular surfaces
-//! the `RangeError` TS's recursion overflows with (`ErrorKind::RecursionLimit`,
-//! PORTING.md section 2.5, DV-013), raised by the model manager's
-//! super-type walk. A model that validates cleanly returns `Ok(())`.
+//! `IllegalModelException` (`ClassDeclaration.validate` and its callees), so
+//! every error here is an `ErrorKind::IllegalModel` contract error from the
+//! error catalogue; a circular inheritance chain is one too (BC-11). A model
+//! that validates cleanly returns `Ok(())`.
 
 use crate::hash::{SeededHashMap, SeededHashSet};
 
@@ -30,29 +27,19 @@ use crate::introspect::{DeclarationKind, Decorated, Typed, Validate};
 use crate::model_manager::ModelManager;
 use crate::model_util::{self, get_namespace, is_primitive_type, qualify, short_name};
 
-/// A class's own AST `location`, for an error's `location` ([`Error::at`])
-/// (PORTING.md 2.1). `ClassDeclaration` keeps its `location` as a typed
-/// `mm::Range`, so this re-serialises it through
-/// [`crate::error::location_value`]; it is not a verbatim copy of the AST's
-/// JSON the way `ScalarDeclaration::process` reads `ast.location`.
+/// A class's own AST `location`, re-serialised from its typed `mm::Range`,
+/// for an error's `location` ([`Error::at`]).
 fn class_location(class: &ClassDeclaration) -> Option<serde_json::Value> {
     class.location().and_then(crate::error::location_value)
 }
 
 /// A property's own AST `location` (TS: `this.ast.location` inside
-/// `Property.validate`/`Decorated.validate`, property.ts/decorated.ts —
-/// `this` there is the property, not its owning class). P2-08 review
-/// carry-over (c) from P2-04's review (#48): earlier code used the owning
-/// class's location for these, before `Property` carried its own.
+/// `Property.validate`/`Decorated.validate`, where `this` is the property).
 fn property_location(property: &Property) -> Option<serde_json::Value> {
     property.location().and_then(crate::error::location_value)
 }
 
-/// A typed AST `location`, re-serialised for an error only once that error
-/// is raised (P5-48, accordproject/concerto-rust#369): the checks below take
-/// the typed `mm::Range` and build its JSON value on their error path alone,
-/// not on every call, which is what a check that passes (the common case)
-/// used to pay for.
+/// A typed AST `location`, re-serialised only when an error is raised.
 fn lazy_location(range: Option<&mm::Range>) -> Option<serde_json::Value> {
     range.and_then(crate::error::location_value)
 }
@@ -63,26 +50,21 @@ impl ModelManager {
     /// `Ok(())` if every model is semantically valid, otherwise the first
     /// problem found.
     ///
-    /// TS: `validateModelFiles` (basemodelmanager.ts) — `for (ns in
-    /// this.modelFiles)`, the order the files were added in. A subclass's
-    /// pass also checks the properties it inherits (`validate_property`), so
-    /// when two files are both invalid the order decides which error comes
-    /// first; P2-08 review: this used to sort by namespace instead.
+    /// TS: `validateModelFiles` (basemodelmanager.ts), over the files in the
+    /// order they were added: a subclass's pass also checks the properties
+    /// it inherits, so the order decides which error comes first.
     pub fn validate_models(&self) -> Result<()> {
         self.validate_models_naming_file().map_err(|(_, err)| err)
     }
 
     js_compat_pub! {
         /// [`ModelManager::validate_models`], with the namespace of the model
-        /// file the first problem was found in (P5-11,
-        /// accordproject/concerto-rust#287): TS `validateModelFiles` throws
-        /// that file's own `validate()` error, which names the file, so a
-        /// binding needs to know which one failed.
+        /// file the first problem was found in: TS `validateModelFiles`
+        /// throws that file's own `validate()` error, which names the file,
+        /// so a binding needs to know which one failed.
         pub fn validate_models_naming_file(&self) -> std::result::Result<(), (String, Error)> {
-            // P5-97 (accordproject/concerto-rust#448): a file already known
-            // to be valid here (validated in this manager, or shared with a
-            // proof that holds) is not validated again: it would pass, so
-            // the first error found is the same.
+            // A file already known to be valid here is not validated again:
+            // it would pass, so the first error found is the same.
             let model_files = self
                 .model_files()
                 .enumerate()
@@ -103,64 +85,32 @@ impl ModelManager {
         }
     }
 
-    /// TS `ModelFile.validate()` (modelfile.ts), checked against `self` as
-    /// the file's owning model manager — the same `this.getModelManager()`
-    /// import resolution reaches. [`ModelManager::validate_models`] runs
-    /// this over every loaded file; the oracle's `ModelFile.validate` op
-    /// runs it directly on one (P2-08).
+    /// TS `ModelFile.validate()` (modelfile.ts), with `self` as the file's
+    /// owning model manager.
     ///
-    /// **`model_file` must be the file `self` itself has registered under
-    /// its namespace**, the same object [`ModelManager::model_file`] would
-    /// return: `check_imports` and, through [`ModelManager::resolve_type_name`],
-    /// every super-type and property-type lookup this pass runs, all resolve
-    /// a namespace *through `self`* (`self.model_file(namespace)`), not
-    /// through `model_file` directly. TS's `this.getModelManager()` always
-    /// finds `this` this way, because `this` is a live reference the caller
-    /// already holds; a `model_file` this port reconstructs from an AST
-    /// rather than fetches from `self` is a different value with the same
-    /// content, and `self` has no way to recognise it as "the same file" for
-    /// these lookups if it is not registered — every check that needs to
-    /// resolve *this file's own* namespace back to itself then wrongly
-    /// reports it as undeclared (a caller that cannot guarantee registration
-    /// must check first, as `ops.rs`'s `registered_file` does for the oracle
-    /// dispatch).
+    /// **`model_file` must be the file `self` has registered under its
+    /// namespace**: import, super-type and property-type lookups resolve a
+    /// namespace through `self`, so an unregistered copy would report its own
+    /// types as undeclared. A caller that cannot guarantee registration must
+    /// check first (or use [`ModelManager::validate_detached_model_file`]).
     ///
-    /// In order: (1) `super.validate()` — the file's own decorators
-    /// (`Decorated.validate`); (2) the `getImports()` loop; (3) the
-    /// duplicate-class-name scan (`check_unique_declaration_names`):
-    /// `ModelFile::from_json` accepts a second declaration of one name, as
-    /// TS's constructor does, so this is where it is rejected; (4) each
-    /// declaration, in file order — including, first thing, the
-    /// import-clash check every declaration kind reaches through its own
-    /// `super.validate()` chain (`check_import_clash`'s doc comment).
-    ///
-    /// Every error but step (3)'s names `model_file` as TS's does
-    /// (`attach_model_file`); step (3)'s `IllegalModelException` is
-    /// constructed with no model file at all in TS, so it has no `File
-    /// '<name>'` suffix.
+    /// In order: (1) the file's own decorators (`Decorated.validate`); (2)
+    /// the `getImports()` loop; (3) the duplicate-class-name scan
+    /// (`check_unique_declaration_names`), which `ModelFile::from_json`
+    /// leaves to this pass as TS's constructor does; (4) each declaration, in
+    /// file order, starting with its import-clash check. Every error but
+    /// step (3)'s names `model_file`; TS constructs step (3)'s with no model
+    /// file at all.
     pub fn validate_model_file(&self, model_file: &ModelFile) -> Result<()> {
         self.validate_model_file_with_import_scope(model_file, self, None)
     }
 
-    /// [`ModelManager::validate_model_file`], checking `model_file`'s own
-    /// `getImports()` loop against `import_scope` rather than against
-    /// `self`. The two differ only for
-    /// [`ModelManager::validate_detached_model_file`]'s scratch branch
-    /// (P2-08d, accordproject/concerto-rust#151): every check here but `check_imports` needs
-    /// `model_file` registered in `self` to resolve its own local types
-    /// (TS bypasses the manager for those, `this.getModelFile().getType`,
-    /// so a scratch registration is a Rust-only accommodation, that
-    /// function's doc comment); `check_imports`'s `this.getModelManager()
-    /// .getModelFile(importNamespace)` is the one lookup in
-    /// `ModelFile.validate()` TS actually routes through the manager, and
-    /// it must see the manager exactly as it stood when TS calls
-    /// `.validate()` — which, for every caller of `validate_detached_model_file`,
-    /// never yet holds `model_file`'s own namespace.
-    ///
-    /// `hidden` names a namespace `import_scope` is taken not to hold
-    /// (P5-48: [`ModelManager::validate_and_add_model_file`] validates a file
-    /// it has already registered, and its own namespace must still look
-    /// unregistered to `check_imports`).
+    /// [`ModelManager::validate_model_file`], with `model_file`'s
+    /// `getImports()` loop checked against `import_scope` rather than `self`:
+    /// for [`ModelManager::validate_detached_model_file`]'s scratch branch,
+    /// whose `check_imports` must see the manager as it stood before the
+    /// file's namespace was registered. `hidden` names a namespace
+    /// `import_scope` is taken not to hold.
     fn validate_model_file_with_import_scope(
         &self,
         model_file: &ModelFile,
@@ -180,32 +130,20 @@ impl ModelManager {
     }
 
     js_compat_pub! {
-        /// TS `modelFile.validate()` for a `ModelFile` whose `getModelManager()`
-        /// is `self` but which `self` may never have registered — `new
-        /// ModelFile(modelManager, ast)` followed directly by `validate()`, or
-        /// `addModelFile`'s validate-before-register. When `self` already holds
-        /// exactly this file (same AST, same file name) under its namespace,
-        /// this is [`ModelManager::validate_model_file`] on that file. Otherwise
-        /// it validates against a scratch copy of `self` with `model_file`
-        /// registered in place of whatever `self` holds under its namespace
-        /// (`ModelManager::with_model_file_registered`), so that the file's own
-        /// local types resolve to itself, as TS's `this.getLocalType` does,
-        /// while every import still resolves through the same files `self`
-        /// holds. `self` itself is never changed (P2-08).
+        /// TS `modelFile.validate()` for a `ModelFile` whose manager is `self`
+        /// but which `self` may not have registered (`new ModelFile(mm, ast)`
+        /// then `validate()`, or `addModelFile`'s validate-before-register).
+        /// When `self` holds exactly this file under its namespace, this is
+        /// [`ModelManager::validate_model_file`]; otherwise it validates
+        /// against a scratch copy of `self` with `model_file` registered in
+        /// place, so its local types resolve to itself. `self` is never
+        /// changed. `check_imports` runs against `self`, so a self-import
+        /// fails as any unloaded namespace does.
         ///
-        /// The scratch branch's `check_imports` step is the one exception
-        /// (P2-08d, accordproject/concerto-rust#151): it runs against `self`, not the scratch, because
-        /// `model_file` is never genuinely registered under its own namespace
-        /// at the point TS calls `.validate()` here — a self-import (an
-        /// `import` statement naming `model_file`'s own namespace) must fail
-        /// "namespace is not defined" the same way any other not-yet-loaded
-        /// namespace does, not resolve to `model_file` itself.
-        ///
-        /// One divergence remains, and no oracle fixture reaches it: a file
-        /// *another* file's declarations reach back into during this pass (an
-        /// imported super type whose own super type lives in `model_file`'s
-        /// namespace) sees `model_file` here, where TS would see the file `self`
-        /// actually holds under that namespace.
+        /// One divergence remains, which no oracle fixture reaches: a file an
+        /// imported declaration reaches back into, in `model_file`'s
+        /// namespace, is `model_file` here, where TS sees the file `self`
+        /// holds.
         pub fn validate_detached_model_file(&self, model_file: &ModelFile) -> Result<()> {
             let registered = self.model_file(model_file.namespace());
             if let Some(registered) = registered
@@ -218,35 +156,22 @@ impl ModelManager {
             let registered = scratch
                 .model_file(model_file.namespace())
                 .expect("with_model_file_registered registers the file under its namespace");
-            // P2-08d (#151): `import_scope: self`, not `scratch` — see the doc comment
-            // above and on `validate_model_file_with_import_scope`.
+            // `import_scope: self`, not `scratch` (doc comment above).
             scratch.validate_model_file_with_import_scope(registered, self, None)
         }
     }
 
-    /// TS `BaseModelManager.addModelFile`'s validate-then-register for a
-    /// model file this manager does not hold yet: the same checks, the
-    /// same first error and the same result as
-    /// [`ModelManager::validate_detached_model_file`] followed, once it
-    /// passes, by [`ModelManager::add_model_file`], returning the new
-    /// file's handle.
+    /// TS `BaseModelManager.addModelFile`'s validate-then-register: the same
+    /// checks, first error and result as
+    /// [`ModelManager::validate_detached_model_file`] followed by
+    /// [`ModelManager::add_model_file`], returning the new file's handle.
     ///
-    /// P5-48 (accordproject/concerto-rust#369): when this manager does
-    /// not hold the file's namespace (the common case), the file is
-    /// registered first and validated in place, and taken out again if
-    /// validation fails, rather than validated in a scratch copy of the
-    /// manager holding a deep copy of the file
-    /// ([`ModelManager::with_model_file_registered`]) and then
-    /// registered. The manager validated is the one the scratch copy
-    /// would be (the same files, in the same order, the same options),
-    /// and `check_imports` still sees the manager without the file's
-    /// namespace (P2-08d). Any other case takes the two-step path.
-    ///
-    /// On a validation error the manager is as it was (its caches aside)
-    /// and the file is handed back (boxed) with the error; an error from the
-    /// registration itself (a namespace already registered, only on the
-    /// two-step path) consumes it, as [`ModelManager::add_model_file`]
-    /// does.
+    /// When the manager does not hold the namespace, the file is registered
+    /// first, validated in place with its namespace hidden from
+    /// `check_imports`, and taken out again on failure; otherwise the
+    /// two-step path runs. On a validation error the manager is as it was
+    /// (its caches aside) and the file is handed back (boxed) with the error;
+    /// a registration error consumes it.
     #[cfg(feature = "js-compat")]
     pub fn validate_and_add_model_file(
         &mut self,
@@ -265,13 +190,10 @@ impl ModelManager {
             })
     }
 
-    /// [`ModelManager::validate_and_add_model_file`] for a model file that
-    /// may also be held elsewhere (P5-101, D-9,
-    /// accordproject/concerto-rust#455): the same checks, the same first
-    /// error and the same result, but the file is registered shared, as
-    /// [`ModelManager::add_shared_model_file`] registers it, not copied.
-    /// On a validation error the shared file is handed back with the
-    /// error; an error from the registration itself consumes it.
+    /// [`ModelManager::validate_and_add_model_file`] for a shared model file,
+    /// registered as [`ModelManager::add_shared_model_file`] registers it.
+    /// On a validation error the shared file is handed back with the error;
+    /// a registration error consumes it.
     #[cfg(feature = "js-compat")]
     pub fn validate_and_add_shared_model_file(
         &mut self,
@@ -285,8 +207,8 @@ impl ModelManager {
             return match self.validate_model_file_with_import_scope(&shared, self, Some(namespace))
             {
                 Ok(()) => {
-                    // P5-97: it passed with its own namespace hidden from
-                    // its imports, so it passes `validate_models` too.
+                    // It passed with its own namespace hidden from its
+                    // imports, so it passes `validate_models` too.
                     self.mark_validated(id);
                     Ok(id)
                 }
@@ -303,21 +225,11 @@ impl ModelManager {
             .map_err(|err| (err, None))
     }
 
-    /// TS `declaration.validate()` called directly on one declaration of a
-    /// `ModelFile` built with `new ModelFile(modelManager, ast)` and never
-    /// registered — `MapDeclaration.validate`'s oracle fixtures do exactly
-    /// this (the fixture's `declref` targets an `mfnew` model file, P2-06b).
-    /// Reuses [`ModelManager::validate_detached_model_file`]'s
-    /// scratch-registration resolution, but for the one declaration at
-    /// `index` in [`ModelFile::declarations`] rather than the whole file, so
-    /// this is never charged for a sibling declaration's own errors, or for
-    /// `ModelFile.validate`'s own import and duplicate-name checks — neither
-    /// of which the recorded op ever runs.
-    ///
-    /// A pre-port `IllegalModel` error (`Error::illegal_model`, no TS
-    /// class corresponds to it) if `model_file` has no declaration at
-    /// `index`: a harness-only bound, the same convention `model_manager.rs`'s
-    /// `next_index` documents.
+    /// TS `declaration.validate()` on one declaration of an unregistered
+    /// `ModelFile` (as `MapDeclaration.validate`'s oracle fixtures call it):
+    /// [`ModelManager::validate_detached_model_file`]'s scratch resolution,
+    /// for the declaration at `index` only. A pre-port `IllegalModel` error
+    /// if `model_file` has no declaration at `index` (a harness-only bound).
     #[cfg(feature = "js-compat")]
     pub fn validate_detached_declaration(
         &self,
@@ -352,12 +264,9 @@ impl ModelManager {
         validate_map_value(&scratch, model_file.namespace(), &map)
     }
 
-    /// The scratch-registered copy of `self`
-    /// [`ModelManager::validate_detached_model_file`] builds (with
-    /// `model_file` registered under its own namespace, in place of
-    /// whatever `self` holds there), plus that namespace as an owned
-    /// `String` — every caller here goes on to borrow `model_file`'s
-    /// declaration back out of the *scratch* copy, not `self`.
+    /// The scratch copy of `self` [`ModelManager::validate_detached_model_file`]
+    /// builds, and `model_file`'s namespace, which callers borrow the
+    /// declaration back out of the scratch copy by.
     #[cfg(feature = "js-compat")]
     fn detached_scratch(&self, model_file: &ModelFile) -> Result<(Self, String)> {
         let scratch = self.with_model_file_registered(std::sync::Arc::new(model_file.clone()))?;
@@ -365,8 +274,7 @@ impl ModelManager {
     }
 
     /// [`ModelManager::detached_scratch`], plus the `MapDeclaration` at
-    /// `index`, cloned out so it can be validated against the scratch copy
-    /// without borrowing the copy at the same time.
+    /// `index`, cloned out so it can be validated against the scratch copy.
     #[cfg(feature = "js-compat")]
     fn detached_map(&self, model_file: &ModelFile, index: usize) -> Result<(Self, MapDeclaration)> {
         let (scratch, namespace) = self.detached_scratch(model_file)?;
@@ -384,10 +292,8 @@ impl ModelManager {
     }
 }
 
-/// A harness-only bound: `index` names no declaration of `model_file` (for
-/// [`ModelManager::detached_map`], not one that loaded as a
-/// `MapDeclaration`). No TS class corresponds to this, the same convention
-/// `model_manager.rs`'s `next_index` documents.
+/// A harness-only bound: `index` names no `MapDeclaration` of `model_file`.
+/// No TS class corresponds to it.
 #[cfg(feature = "js-compat")]
 fn no_such_detached_declaration(model_file: &ModelFile, index: usize) -> Error {
     Error::illegal_model(
@@ -397,12 +303,9 @@ fn no_such_detached_declaration(model_file: &ModelFile, index: usize) -> Error {
     )
 }
 
-/// TS: `ModelFile.validate()`'s "Check if names of the declarations are
-/// unique" loop (modelfile.ts): the first declaration whose fully-qualified
-/// name repeats an earlier one's throws an `IllegalModelException` whose
-/// message is `Duplicate class name <fqn>` — built with no model file and no
-/// location, so neither is set here (and [`ModelManager::validate_model_file`]
-/// does not attach one).
+/// TS: `ModelFile.validate()`'s unique-names loop: the first declaration whose
+/// fully-qualified name repeats an earlier one's throws `Duplicate class name
+/// <fqn>`, with no model file and no location.
 fn check_unique_declaration_names(model_file: &ModelFile) -> Result<()> {
     let mut seen = SeededHashSet::default();
     for declaration in model_file.declarations() {
@@ -418,23 +321,13 @@ fn check_unique_declaration_names(model_file: &ModelFile) -> Result<()> {
     Ok(())
 }
 
-/// Fills in the current model file's name on an `IllegalModel` contract error
-/// that does not carry one yet.
+/// Fills in the model file's name on an `IllegalModel` contract error that
+/// does not carry one yet.
 ///
-/// TS: every `IllegalModelException` raised while validating a model file's
-/// own imports and declarations is constructed with `this.modelFile` (or,
-/// for the file's own checks, `this` itself) — always the file being
-/// validated here, never a different one (`ModelFile.validate`,
-/// `Decorated.validate`, `ClassDeclaration.validate`/`_resolveSuperType`,
-/// `Property.validate`/`RelationshipDeclaration.validate`, all in
-/// src/introspect). The constructor decorates the message with `File
-/// '<name>': ` whenever that file has one (illegalmodelexception.ts) — part
-/// of `ModelFile.getName()`'s contract (P2-08). [`undeclared_type_error`]
-/// already attaches its own file name; this backstops every other check in
-/// this module, which builds a bare [`Error`] through
-/// [`Error::new`] with no file in scope. A `model_file`
-/// already set (as `undeclared_type_error` sets its own) is left alone, and
-/// only `IllegalModel`-kind contract errors are touched.
+/// TS constructs every `IllegalModelException` raised while validating a
+/// file's imports and declarations with that file, and the constructor
+/// appends `File '<name>': ` when it has a name. A `model_file` already set
+/// (as [`undeclared_type_error`] sets it) is left alone.
 pub(crate) fn attach_model_file(mut err: Error, model_file: &ModelFile) -> Error {
     let contract = err.contract();
     if contract.model_file.is_none() && contract.kind == ErrorKind::IllegalModel {
@@ -443,18 +336,13 @@ pub(crate) fn attach_model_file(mut err: Error, model_file: &ModelFile) -> Error
     err
 }
 
-/// A declaration may not take the name of a type its file imports (including
-/// implicitly, from its own namespace, which is caught the same way) —
-/// unless the model manager's `dangerouslyAllowReservedSystemTypeNamesInUserModels`
-/// escape hatch is set and the imported name resolves to one of the five
-/// reserved system declarations.
+/// A declaration may not take the name of a type its file imports (its own
+/// namespace included), unless the manager's
+/// `dangerouslyAllowReservedSystemTypeNamesInUserModels` option is set and
+/// the name resolves to one of the five reserved system declarations.
 ///
-/// TS: `Declaration.validate` (declaration.ts, "#648"), reached through every
-/// subtype's own `super.validate()` chain — `ClassDeclaration.validate` (so
-/// every concept-like declaration and, unchanged, `EnumDeclaration`),
-/// `ScalarDeclaration.validate` and `MapDeclaration.validate` all call it
-/// after their own decorator checks and before anything else (P2-08; the
-/// `MapDeclaration` call site was added by #152, closing finding F2).
+/// TS: `Declaration.validate` (declaration.ts), reached through every
+/// declaration kind's `super.validate()` chain after its decorator checks.
 fn check_import_clash(
     manager: &ModelManager,
     namespace: &str,
@@ -480,10 +368,8 @@ fn check_import_clash(
     .at(lazy_location(location)))
 }
 
-/// TS: `Declaration.isReservedSystemTypeImport` (declaration.ts) — `name`,
-/// already known to be an imported type of `model_file`, resolves to a
-/// concept-like declaration (concept, asset, participant, transaction or
-/// event — never an enum, scalar or map) of a system model file.
+/// TS: `Declaration.isReservedSystemTypeImport`: an imported `name` resolves
+/// to a concept-like declaration of a system model file.
 fn is_reserved_system_type_import(
     manager: &ModelManager,
     model_file: &ModelFile,
@@ -507,38 +393,25 @@ fn is_reserved_system_type_import(
 }
 
 impl Validate for Declaration {
-    /// Class-like and map declarations have their own checks in this pass; an
-    /// enum's are just its decorators (P2-07) and those of its values, since
-    /// nothing else about it needs another declaration in view. A scalar's
-    /// structural checks (its validator, its default value) are fully run
-    /// while loading, but its decorators are not (TS `Decorated.validate`
-    /// still runs from `ScalarDeclaration.validate`, scalardeclaration.ts),
-    /// so this pass checks those the same way it does for an enum.
+    /// Class-like and map declarations have their own checks; an enum's and
+    /// a scalar's are their decorators (and an enum's values'), since loading
+    /// runs every other scalar check.
     fn validate(&self, manager: &ModelManager, namespace: &str) -> Result<()> {
         match self {
             Declaration::Class(class) => class.validate(manager, namespace),
             Declaration::Map(map) => map.validate(manager, namespace),
             Declaration::Enum(enm) => {
                 let fqn = qualify(namespace, enm.name());
-                // TS: `EnumDeclaration` inherits `ClassDeclaration.validate`
-                // unchanged, whose own `super.validate()` reaches
-                // `Declaration.validate`'s decorator and import-clash checks
-                // before anything class-specific (P2-08). Within the
-                // decorator checks, `Decorated.validate` runs each
-                // decorator's own `.validate()` before the duplicate-name
-                // scan (F4, #152).
+                // TS: `EnumDeclaration` inherits `ClassDeclaration.validate`:
+                // decorator and import-clash checks first.
                 check_decorators(manager, namespace, enm, Some(&fqn), None)?;
                 check_import_clash(manager, namespace, enm.name(), enm.location())?;
                 // TS: `ClassDeclaration.validate`'s duplicate-field-name
-                // check, inherited unchanged by `EnumDeclaration` — run in
-                // the same position relative to the decorator checks above
-                // and the per-value checks below as TS's single `validate()`
-                // body runs it relative to its own two neighbours (P2-04,
-                // closing the "enum duplicate values" gap of plan §1.2).
+                // check, between the decorator and per-value checks.
                 check_unique_field_names(manager, enm.name(), None, &fqn)?;
                 for value in enm.values() {
-                    // P5-48: the value's name is built only when a decorator
-                    // check will read it.
+                    // The value's name is built only when a decorator check
+                    // will read it.
                     let value_fqn = decorator_context(manager, value)
                         .then(|| format!("{fqn}.{}", value.name()));
                     check_decorators(manager, namespace, value, value_fqn.as_deref(), None)?;
@@ -547,18 +420,10 @@ impl Validate for Declaration {
             }
             Declaration::Scalar(scalar) => {
                 let fqn = qualify(namespace, scalar.name());
-                // TS: `ScalarDeclaration.validate`'s `super.validate()` goes
-                // straight to `Declaration.validate` (it extends
-                // `Declaration`, not `ClassDeclaration`): decorators, then
-                // the import-clash check (P2-08). Its own further check
-                // (a duplicate-FQN scan over `getModelFile()
-                // .getAllDeclarations()`) is unreachable on this pass:
-                // `ModelFile.validate()` runs the same scan over the same
-                // declarations before validating any of them
-                // (`check_unique_declaration_names`), so a duplicate never
-                // gets this far. Within the decorator checks, `Decorated
-                // .validate` runs each decorator's own `.validate()` before
-                // the duplicate-name scan (F4, #152).
+                // TS: `ScalarDeclaration.validate` reaches
+                // `Declaration.validate` (decorators, then the import-clash
+                // check). Its duplicate-FQN scan is unreachable here:
+                // `check_unique_declaration_names` has already run it.
                 check_decorators(manager, namespace, scalar, Some(&fqn), None)?;
                 check_import_clash(manager, namespace, scalar.name(), None)
             }
@@ -569,37 +434,19 @@ impl Validate for Declaration {
 impl Validate for ClassDeclaration {
     fn validate(&self, manager: &ModelManager, namespace: &str) -> Result<()> {
         let fqn = qualify(namespace, self.name());
-        // TS: `ClassDeclaration.validate`'s `super.validate()`
-        // (classdeclaration.ts) reaches `Declaration.validate`'s
-        // `super.validate()` first — `Decorated.validate`'s decorator checks
-        // (each decorator's own `.validate()`, then the duplicate-name scan,
-        // F4, #152) — and only then `Declaration.validate`'s own
-        // import-clash check ([`check_import_clash`]'s doc comment), before
-        // this method's own super-type block (P2-08, reordered #152: this
-        // used to run the decorator checks last).
+        // TS: `ClassDeclaration.validate`'s `super.validate()` runs the
+        // decorator checks, then the import-clash check, before the
+        // super-type block.
         check_decorators(manager, namespace, self, Some(&fqn), self.location())?;
         check_import_clash(manager, namespace, self.name(), self.location())?;
         check_super_type(manager, namespace, self)?;
-        // TS: the `if (this.idField)` identity block — `check_identifier`'s
-        // not-a-property/not-a-string/optional checks, then
-        // `check_identity_matches_super`'s super-type redeclare check — runs
-        // before the "we also have to check fields defined in super
-        // classes" duplicate-name loop (classdeclaration.ts `validate`).
-        // Reordered (P2-08c review): a system-identified subclass of an
-        // explicitly-identified super type used to reach the duplicate-name
-        // loop first, misreporting the redeclare as two same-named
-        // `$identifier` fields (its own, and the implicit `Asset`/etc. root
-        // super type's own system identifier) instead of naming the conflict.
+        // TS: the `if (this.idField)` identity block runs before the
+        // duplicate-name loop, so a redeclared identity is reported as such.
         check_identifier(manager, namespace, self)?;
         check_identity_matches_super(manager, namespace, self)?;
         check_unique_field_names(manager, self.name(), self.location(), &fqn)?;
-        // TS: `for (field of this.getProperties())` — every property, own
-        // and then inherited (`getProperties` walks up the super-type
-        // chain), each validated in this class's own pass (P2-08 review:
-        // this used to loop over `own_properties()` only, so a file
-        // validated on its own never checked what it inherits).
-        // P5-48: the borrowed property list (P5-13's `class_properties`),
-        // not a copied one with an owned owner name per property.
+        // TS: `for (field of this.getProperties())`: every property, own and
+        // inherited, validated in this class's pass.
         for (owner_fqn, property) in manager.class_properties(&fqn)?.iter() {
             validate_property(manager, namespace, owner_fqn, property)?;
         }
@@ -607,19 +454,14 @@ impl Validate for ClassDeclaration {
     }
 }
 
-/// TS: one iteration of `ClassDeclaration.validate`'s property loop
-/// (classdeclaration.ts) for `class` in `namespace`, over a property declared
-/// by `owner_fqn` (`class` itself, or one of its super types).
+/// TS: one iteration of `ClassDeclaration.validate`'s property loop for
+/// `class`, over a property declared by `owner_fqn`.
 ///
-/// TS picks the declaration `field.validate(classDecl)` runs against: `this`
-/// (`class`) when the field is primitive or declared in `class`'s own
-/// namespace; otherwise the declaration of the field's *type*
-/// (`modelManager.getType(field.getFullyQualifiedTypeName())`, the type name
-/// resolved in the declaring file). `classDecl.getModelFile()` is where
-/// `Property.validate` resolves the type name and which file its errors
-/// name. `Decorated.validate` (the property's own decorators) and
-/// `RelationshipDeclaration.validate`'s lookups use the property's own
-/// parent instead — the declaring file.
+/// `field.validate(classDecl)` runs against `class` when the field is
+/// primitive or declared in `class`'s namespace, else against the
+/// declaration of the field's type; that declaration's file resolves the
+/// type name and is named in the errors. The property's own decorators and
+/// `RelationshipDeclaration.validate`'s lookups use the declaring file.
 fn validate_property(
     manager: &ModelManager,
     namespace: &str,
@@ -627,8 +469,8 @@ fn validate_property(
     property: &Property,
 ) -> Result<()> {
     let owner_ns = get_namespace(Some(owner_fqn))?;
-    // P5-48: the property's own name is built only when a decorator check
-    // will read it.
+    // The property's own name is built only when a decorator check will
+    // read it.
     let property_fqn =
         decorator_context(manager, property).then(|| format!("{owner_fqn}.{}", property.name()));
     // `field.getModelFile()`: the declaring file, for an inherited
@@ -639,12 +481,8 @@ fn validate_property(
         _ => e,
     };
 
-    // TS: `Property.validate` runs `super.validate()` — `Decorated.validate`:
-    // each decorator's own `.validate()` when enabled, then the
-    // duplicate-decorator scan (F4, #152) — before its own `resolveType`
-    // call (property.ts). `check_property_type` below is that
-    // `resolveType`/relationship logic, so the decorator checks run first
-    // here too (P2-08 review carry-over (b) from P2-04's review, #48).
+    // TS: `Property.validate` runs `Decorated.validate` before its own
+    // `resolveType` call (`check_property_type`).
     check_decorators(
         manager,
         owner_ns,
@@ -686,17 +524,17 @@ fn validate_property(
 }
 
 /// Whether [`validate_decorators`] reads its `context` for `element`: only
-/// when decorator validation is enabled and `element` has a decorator
-/// (P5-48, so that a caller builds the context string only then).
+/// when decorator validation is enabled and `element` has a decorator (so
+/// that a caller builds the context string only then).
 fn decorator_context(manager: &ModelManager, element: &impl Decorated) -> bool {
     manager.decorator_validation().is_enabled() && !element.decorators().is_empty()
 }
 
 /// TS `Decorated.validate`: each decorator's own `.validate()`
 /// ([`validate_decorators`]), then the duplicate-name scan
-/// ([`check_unique_decorators`]), in that order (F4, #152). `context` is the
-/// element's FQN for the decorator checks; `location` is where a duplicate
-/// is reported.
+/// ([`check_unique_decorators`]), in that order. `context` is the element's
+/// FQN for the decorator checks; `location` is where a duplicate is
+/// reported.
 fn check_decorators(
     manager: &ModelManager,
     namespace: &str,
@@ -709,9 +547,7 @@ fn check_decorators(
 }
 
 /// Runs [`crate::introspect::decorator::Decorator::validate`] over every
-/// decorator an element carries, when the model manager's
-/// `decoratorValidation` option enables it (TS `Decorator.validate` is a
-/// no-op otherwise, and so is this: P2-07).
+/// decorator an element carries, when `decoratorValidation` enables it.
 fn validate_decorators(
     manager: &ModelManager,
     namespace: &str,
@@ -733,7 +569,7 @@ fn check_unique_decorators(element: &impl Decorated, location: Option<&mm::Range
     for decorator in element.decorators() {
         // TS keys its `Set` on `getName()` and interpolates it into the
         // message as is, so a decorator with no `name` at all is its own
-        // entry and reads `undefined` (accordproject/concerto-rust#218).
+        // entry and reads `undefined`.
         let name = decorator.js_name();
         if !seen.insert(name) {
             return Err(Error::new(
@@ -756,14 +592,12 @@ fn check_unique_decorators(element: &impl Decorated, location: Option<&mm::Range
 const SELF_EXTENDING_EXEMPT: [&str; 5] =
     ["Asset", "Concept", "Event", "Participant", "Transaction"];
 
-/// The super type, if any (explicit or implicit `Concept`, `ClassDeclaration`
-/// doc comment), must not be the class's own name (unless it is one of the
-/// five built-in kinds), must resolve to a declared type, and — unless that
-/// type is a concept — must be the same kind as the class itself: an asset
-/// cannot extend a participant, for example.
+/// The super type, if any (explicit or the implicit `Concept`), must not be
+/// the class's own name (unless one of the five built-in kinds), must
+/// resolve, and, unless it is a concept, must be the class's own kind.
 ///
 /// TS: `ClassDeclaration.validate`'s super-type block, then
-/// `_resolveSuperType` (src/introspect/classdeclaration.ts).
+/// `_resolveSuperType`.
 fn check_super_type(
     manager: &ModelManager,
     namespace: &str,
@@ -796,12 +630,9 @@ fn check_super_type(
         .at(class_location(class)));
     };
 
-    // A super type that is not a concept must be the exact same kind as the
-    // subtype. This also covers a super type that resolves to a non-class
-    // declaration (an enum, scalar or map): TS never checks `classDecl` is a
-    // `ClassDeclaration` before comparing `declarationKind()`, so extending
-    // one of those fails here, with the same message, rather than with
-    // "could not find".
+    // A super type that is not a concept must be the same kind. TS never
+    // checks it is a `ClassDeclaration`, so an enum, scalar or map super
+    // type fails here too, with the same message.
     if super_declaration.declaration_kind() != "ConceptDeclaration"
         && class.declaration_kind() != super_declaration.declaration_kind()
     {
@@ -824,26 +655,17 @@ fn check_super_type(
     Ok(())
 }
 
-/// No field name may appear twice once inherited fields are included, so a
-/// subtype cannot silently redeclare a field from a super type.
+/// No field name may appear twice once inherited fields are included.
 ///
-/// TS: `ClassDeclaration.validate`'s `uniquePropertyNames` loop
-/// (classdeclaration.ts), inherited unchanged by `EnumDeclaration` — an
-/// enum's values are properties too (`getProperties()`), so two values of
-/// the same name in one enum are rejected exactly the way two same-named
-/// fields on a class are, with the same message and catalogue code
-/// (`declaration_name`/`location` let both callers share this one check;
-/// see [`ClassDeclaration::validate`] and the `Declaration::Enum` arm of
-/// [`Validate for Declaration`]).
+/// TS: `ClassDeclaration.validate`'s `uniquePropertyNames` loop, inherited by
+/// `EnumDeclaration`, whose values are properties too.
 fn check_unique_field_names(
     manager: &ModelManager,
     declaration_name: &str,
     location: Option<&mm::Range>,
     fqn: &str,
 ) -> Result<()> {
-    // P5-48: the borrowed property list and borrowed names, in a set that
-    // is only ever probed, never iterated (seeded: the names come from user
-    // models, PORTING.md 3.7).
+    // Seeded: the names come from user models (PORTING.md 3.7).
     let properties = manager.class_properties(fqn)?;
     let mut seen = SeededHashSet::default();
     for (_, property) in properties.iter() {
@@ -863,11 +685,8 @@ fn check_unique_field_names(
 }
 
 /// A field-provided identifier (`identified by field`) must name a required
-/// field typed as `String` or a String-based scalar. The field itself may
-/// come from a super type (TS: `this.getProperty(this.idField)`
-/// — src/introspect/classdeclaration.ts — inherited, unlike
-/// [`ClassDeclaration::identifier_field_name`] itself, which only ever names
-/// one of this class's own fields).
+/// field typed as `String` or a String-based scalar, possibly inherited (TS:
+/// `this.getProperty(this.idField)`).
 fn check_identifier(
     manager: &ModelManager,
     namespace: &str,
@@ -892,11 +711,8 @@ fn check_identifier(
             .at(class_location(class))
         })?;
 
-    // TS checks the type first, then optionality (classdeclaration.ts
-    // `validate`), so an optional non-String identifier reports the type.
-    // TS: `idField.getParent().getModelFile().getType(idField.getType())`
-    // resolves the field's type in the file that *declares* the field, which
-    // for an inherited identifier is the super type's, not this class's.
+    // TS checks the type first, then optionality. The field's type resolves
+    // in the file that declares it.
     let owner_namespace = get_namespace(Some(owner))?;
     if !is_string_typed(manager, owner_namespace, field) {
         return Err(Error::new(
@@ -937,15 +753,10 @@ fn is_string_typed(manager: &ModelManager, namespace: &str, field: &Property) ->
 }
 
 /// Object and relationship properties must point at a declared type; a
-/// relationship additionally must target an identifiable class, never a
-/// primitive.
-/// `namespace` is the namespace of TS's `classDecl.getModelFile()` — where
-/// the type name is resolved ([`validate_property`]); `owner_ns` and
-/// `owner` name the property's declaring class, for its fully-qualified
-/// name and for `RelationshipDeclaration.validate`'s own target lookup;
-/// `class` is the class whose pass this is, for the last-resort fallback's
-/// location. `owner_fqn` is `owner_ns` and `owner` qualified (the arena's
-/// cached FQN, P5-48: not rebuilt per property).
+/// relationship must target an identifiable class, never a primitive.
+/// `namespace` is `classDecl.getModelFile()`'s, where the type name resolves
+/// ([`validate_property`]); `owner_ns`/`owner`/`owner_fqn` name the declaring
+/// class; `class` is the class whose pass this is.
 #[allow(clippy::too_many_arguments)]
 fn check_property_type(
     manager: &ModelManager,
@@ -961,16 +772,9 @@ fn check_property_type(
     };
 
     if type_identifier.name.is_empty() {
-        // TS: `this.type` is falsy for an empty-string type name exactly as
-        // it is for `null`/`undefined` (`ObjectProperty`'s `this.ast.type ?
-        // this.ast.type.name : null`, `RelationshipProperty`'s unconditional
-        // `this.ast.type.name`), so `Property.validate`'s `if(this.type)`
-        // guard skips `resolveType` entirely — no "undeclared type" is ever
-        // raised for it. `RelationshipDeclaration.validate` then makes its
-        // own `if(!this.getType())` check straight after `super.validate`
-        // (relationshipdeclaration.ts): a relationship with no type is
-        // rejected there; any other property kind is silently accepted, the
-        // same as a genuinely absent `type` node.
+        // TS: an empty type name is falsy, so `Property.validate` skips
+        // `resolveType`; `RelationshipDeclaration.validate` then rejects a
+        // relationship with no type, and any other property kind passes.
         if property.is_relationship() {
             return Err(Error::new(
                 ErrorKind::IllegalModel,
@@ -990,10 +794,8 @@ fn check_property_type(
     }
 
     if property.is_relationship() && is_primitive_type(&type_identifier.name) {
-        // TS: RelationshipDeclaration.validate's own hardcoded message
-        // (src/introspect/relationshipdeclaration.ts): `'Relationship ' +
-        // this.getName() + ' cannot be to the primitive type ' +
-        // this.getType()` — no owner clause.
+        // TS: `RelationshipDeclaration.validate`'s own message, with no owner
+        // clause.
         return Err(Error::new(
             ErrorKind::IllegalModel,
             "relationshipdeclaration-validate-primitivetype",
@@ -1008,15 +810,9 @@ fn check_property_type(
     let target_fqn = resolve(manager, namespace, &type_identifier.name);
 
     let Some(target_fqn) = target_fqn else {
-        // TS: `Property.validate` runs `classDecl.getModelFile().resolveType(
-        // 'property ' + this.getFullyQualifiedName(), this.type)` before any
-        // relationship-specific check (property.ts) — `RelationshipDeclaration
-        // .validate` calls it through `super.validate(classDecl)` first thing.
-        // `resolveType` (modelfile.ts) is the same import/local lookup
-        // `resolve` above does; when the type name does not resolve through
-        // it at all, this is the error every property kind raises — a
-        // relationship never reaches its own "points to a missing type" check
-        // below, because `resolveType` throws first.
+        // TS: `Property.validate` runs `resolveType` before any
+        // relationship check, so an unresolvable type is this error for
+        // every property kind.
         return Err(undeclared_type_error(
             manager,
             namespace,
@@ -1027,10 +823,8 @@ fn check_property_type(
 
     let target = manager.get_declaration(&target_fqn).ok();
     if !is_primitive_type(&type_identifier.name) {
-        // TS: `Property.validate`'s size-validator check runs right after
-        // `resolveType` succeeds and before any relationship-specific check;
-        // a type that `getType` cannot find (swallowed by its try/catch)
-        // counts as not a map.
+        // TS: the size-validator check runs after `resolveType`, before any
+        // relationship check; a type `getType` cannot find is not a map.
         check_size_validator_target(
             owner_fqn,
             property,
@@ -1038,9 +832,7 @@ fn check_property_type(
         )?;
     }
     // `RelationshipDeclaration.validate` looks its target up from the
-    // property's own parent — the declaring file — not from `classDecl`.
-    // The two agree unless an inherited property is validated in the
-    // context of its type's declaration ([`validate_property`]).
+    // declaring file, not from `classDecl`.
     let (target_fqn, target) = if owner_ns == namespace {
         (target_fqn, target)
     } else {
@@ -1054,33 +846,11 @@ fn check_property_type(
     };
     let Some(target) = target else {
         if property.is_relationship() {
-            // TS: `'Relationship ' + this.getName() + ' points to a missing
-            // type ' + this.getFullyQualifiedTypeName()`
-            // (relationshipdeclaration.ts), reached only once `resolveType`
-            // above has already succeeded (the type resolves through
-            // import/local lookup, so `target_fqn` is always known here) and
-            // the declaration lookup `RelationshipDeclaration.validate` does
-            // on top of that — `getModelFile().getType(...)` in the same
-            // namespace, `getModelManager().getType(...)` otherwise, swallowed
-            // into `null` on error — still comes back empty.
-            //
-            // No unit test reaches this branch: through the full
-            // `validate_models` pipeline, `target_fqn` (via [`resolve`],
-            // ultimately `ModelFile::resolve_local_type`) and
-            // `manager.get_declaration` always agree. A local name in
-            // `resolve_local_type`'s `local_types` map is built straight from
-            // the file's own declarations, the same list `get_declaration`
-            // reads; an imported name is checked against the *target*
-            // namespace's declarations by [`check_imported_types_exist`],
-            // which every model file's own imports are run through before any
-            // of its declarations validate. So an import naming a
-            // non-existent type is rejected earlier, with a different
-            // message, before a relationship of that file ever reaches this
-            // check. This mirrors TS: real divergence between `resolveType`
-            // and the later `getType` lookup needs the try/catch around
-            // `getModelManager().getType(...)` to swallow a *different* kind
-            // of failure than "undeclared", which the current port does not
-            // yet model.
+            // TS: "points to a missing type", when the declaration lookup
+            // after a successful `resolveType` comes back empty. Unreached
+            // through `validate_models`: an imported name is checked against
+            // its namespace by `check_imports` first, and a local name comes
+            // from the same declarations `get_declaration` reads.
             return Err(Error::new(
                 ErrorKind::IllegalModel,
                 "relationshipdeclaration-validate-missingtype",
@@ -1088,14 +858,9 @@ fn check_property_type(
             )
             .at(property_location(property)));
         }
-        // Not yet observed for a non-relationship property: TS's own
-        // `Property.validate` has no declaration lookup beyond `resolveType`
-        // above, which just succeeded, so this is unreached in practice. Kept
-        // as a defensive fallback rather than an `unreachable!`, since
-        // `resolve` and `get_declaration` are still two separate Rust
-        // lookups that could in principle disagree; it raises the error
-        // `resolveType` itself raises for a type it cannot find (P5-98,
-        // B-10: no longer a `pre-port` message of its own).
+        // Unreached in practice (`resolveType` just succeeded); a defensive
+        // fallback in case `resolve` and `get_declaration` disagree, with the
+        // error `resolveType` raises.
         return Err(undeclared_type_error(
             manager,
             namespace,
@@ -1105,17 +870,12 @@ fn check_property_type(
     };
 
     if property.is_relationship() {
-        // TS: `classDeclaration.isIdentified()` (RelationshipDeclaration.validate,
-        // src/introspect/relationshipdeclaration.ts) — inherited, so a
-        // target that has no identity of its own but extends one that does
-        // (every `Asset`/`Participant`, for one) still counts.
+        // TS: `classDeclaration.isIdentified()`, inherited.
         let identifiable =
             target.is_class_declaration() && manager.identifier_field(&target_fqn)?.is_some();
         if !identifiable {
-            // TS: `'Relationship ' + this.getName() + ' must be to a class
-            // that has an identifier, but this is to ' +
-            // this.getFullyQualifiedTypeName()` — no owner clause, and with
-            // the target's own fully-qualified name appended.
+            // TS: no owner clause, the target's fully-qualified name
+            // appended.
             return Err(Error::new(
                 ErrorKind::IllegalModel,
                 "relationshipdeclaration-validate-notidentified",
@@ -1128,15 +888,10 @@ fn check_property_type(
     Ok(())
 }
 
-/// TS: `Property.validate`'s size-validator check (property.ts): a
-/// `sizeValidator` on a property that is not an array is allowed only when
-/// the property's type resolves to a map declaration (`is_map_type`). Its
-/// own hardcoded message names the property by
-/// `getFullyQualifiedName()` — the owning declaration's fully-qualified name
-/// plus the property's — with `this.ast.location`. TS's `Property`
-/// constructor does not check this (P2-08: the check moved here from
-/// `Property::check_validators`, so a `ModelFile` with such a property still
-/// constructs).
+/// TS: `Property.validate`'s size-validator check: a `sizeValidator` on a
+/// non-array property is allowed only when its type is a map declaration.
+/// The message names the property's fully-qualified name, with its
+/// location.
 fn check_size_validator_target(
     owner_fqn: &str,
     property: &Property,
@@ -1156,59 +911,30 @@ fn check_size_validator_target(
 /// Resolves a `TypeIdentifier`'s `name` to a fully-qualified name, through
 /// the imports and local declarations of `namespace`.
 fn resolve(manager: &ModelManager, namespace: &str, name: &str) -> Option<String> {
-    // TS: every `TypeIdentifier` consumer in the reference — `this.superType
-    // = this.ast.superType.name` (`ClassDeclaration.process`), `this.type =
-    // this.ast.type.name` (`Property.process`, `MapKeyType.process`,
-    // `MapValueType.process`) — keeps only `name`, discarding `namespace`
-    // (and `resolvedName`) outright, then resolves that bare name through
-    // the declaring namespace's own imports (`isImportedType`/
-    // `resolveImport`) or local declarations, never by qualifying `name`
-    // with `ti.namespace` directly. That distinction matters for an aliased
-    // import's `TypeIdentifier`: its `namespace` is the *target*'s (the
-    // import's own `namespace`), while `name` is the local alias, not the
-    // target's own declared name — qualifying `name` with that `namespace`
-    // directly would build `{target namespace}.{alias}`, a name nothing
-    // declares; the alias only resolves correctly by going through the
-    // import list ([`ModelManager::resolve_type_name`], PORTING.md 6.2),
-    // which every caller here now always does.
-    //
-    // The error is discarded (`.ok()`) by every caller: they use `None` to
-    // mean "does not resolve" and build their own error, so the location `resolve_type_name` would attach to its own
-    // error never surfaces. Passing `None` here is exact, not a shortcut.
+    // TS keeps only a `TypeIdentifier`'s `name` and resolves it through the
+    // declaring namespace's imports or local declarations, never qualifying
+    // it with `ti.namespace` (which, for an aliased import, is the target's
+    // while `name` is the alias). Callers build their own error from `None`.
     manager.resolve_type_name_at(namespace, name, None).ok()
 }
 
-/// TS `ModelFile.validate`'s single loop over `this.getImports()`
-/// (modelfile.ts), for every fully-qualified name this file imports (so an
-/// `import ns.{A, B}` is walked once per name, not once per import
-/// statement): the source namespace must be loaded; no earlier import in
-/// this file may have named a different version of the same bare namespace
-/// (the global `concerto` namespace is exempt); and the imported short name
-/// must actually be declared there. `None` for every error's `location`:
-/// `ModelFile` carries no `location` field in this port (7.2), and TS itself
-/// passes none on this path (`this` alone, no `fileLocation` argument).
+/// TS `ModelFile.validate`'s loop over `this.getImports()`, once per imported
+/// name: the source namespace must be loaded; no earlier import may name a
+/// different version of the same bare namespace (`concerto` is exempt); and
+/// the name must be declared there. No `location`, as in TS.
 ///
-/// TS computes `modelFile` (the lookup below) and then *unconditionally*
-/// destructures `ModelUtil.parseNamespace(importNamespace)` — before it ever
-/// checks `!modelFile` and throws `modelmanager-gettype-noregisteredns`. So a
-/// import namespace that is both unregistered and fails `parseNamespace`
-/// (for example a mutated import `name` that makes the synthesised
-/// `importNamespace` carry a second, semver-invalid `@version` segment)
-/// surfaces `parseNamespace`'s own plain `Error`, never the "no registered
-/// ns" `IllegalModelException` — reproduced here by calling
-/// [`parse_namespace`] first and propagating its error with `?`, faithfully
-/// including that ordering (accordproject/concerto-rust#241, the `../`
-/// namespace-import mismatch off #219).
+/// TS runs `ModelUtil.parseNamespace(importNamespace)` before its `!modelFile`
+/// check, so an unregistered namespace that also fails `parseNamespace`
+/// raises `parseNamespace`'s plain `Error`; [`model_util::parse_namespace`] runs first
+/// here too.
 fn check_imports(
     manager: &ModelManager,
     hidden: Option<&str>,
     model_file: &ModelFile,
 ) -> Result<()> {
-    // P5-48 (accordproject/concerto-rust#369): the walk over
-    // `imported_type_names()`, reading each import's namespace and name in
-    // place; a fully-qualified name is built only for an error, or for a
-    // name the plain split would not give back (an empty part, or a dot in
-    // the imported name).
+    // Each import's namespace and name are read in place; a fully-qualified
+    // name is built only for an error, or where the plain split would not
+    // give it back.
     type Borrowed<'a> = std::borrow::Cow<'a, str>;
     let mut seen_versions: SeededHashMap<Borrowed<'_>, Option<Borrowed<'_>>> =
         SeededHashMap::default();
@@ -1230,8 +956,8 @@ fn check_imports(
             } else {
                 manager.model_file(import_namespace)
             };
-            // Borrowed from the import itself, or, on the rare path that built
-            // the name, copied (the set outlives it).
+            // Borrowed from the import, or copied on the rare path that built
+            // the name.
             let (name, version): (Borrowed<'_>, Option<Borrowed<'_>>) = if in_place {
                 let (name, version) = model_util::split_namespace(imp.namespace())?;
                 (Borrowed::Borrowed(name), version.map(Borrowed::Borrowed))
@@ -1299,9 +1025,7 @@ fn check_identity_matches_super(
     namespace: &str,
     class: &ClassDeclaration,
 ) -> Result<()> {
-    // TS: `if (this.idField)` — own identity only; a class with no identity
-    // of its own has nothing to conflict with its super type here (a
-    // subtype that merely inherits identity is not this check's concern).
+    // TS: `if (this.idField)`: own identity only.
     if !class.is_identified() {
         return Ok(());
     }
@@ -1318,19 +1042,15 @@ fn check_identity_matches_super(
     let Some(super_class) = super_declaration.as_class() else {
         return Ok(());
     };
-    // TS: `superType.isIdentified()` — inherited, so a direct super type
-    // with no identity of its own but an identified ancestor still gates
-    // this check.
+    // TS: `superType.isIdentified()`, inherited.
     let Some(super_id_field) = manager.identifier_field(&super_fqn)? else {
         return Ok(());
     };
-    // TS: within `if (this.idField)`, `this.isSystemIdentified()` reduces to
-    // whether this class's own `idField` is `$identifier`, since own
-    // identity always wins over inherited in `getIdentifierFieldName`.
+    // TS: within `if (this.idField)`, `this.isSystemIdentified()` is whether
+    // the own `idField` is `$identifier`.
     let this_system_identified = class.identifier_field_name().is_none();
-    // TS: `this.isSystemIdentified()` ? `!superType.isSystemIdentified()` (both
-    // inherited) : `superType.isExplicitlyIdentified()` (the direct super
-    // type's own field, not inherited further).
+    // TS: then `!superType.isSystemIdentified()` (inherited), or
+    // `superType.isExplicitlyIdentified()` (the direct super type's own).
     let redeclares = if this_system_identified {
         super_id_field != "$identifier"
     } else {
@@ -1351,22 +1071,12 @@ fn check_identity_matches_super(
 }
 
 impl Validate for MapDeclaration {
-    /// Checks a map against the key and value types the specification
-    /// permits, and, like every other declaration (P2-07), that it carries no
-    /// duplicate decorator and that its decorators pass `decoratorValidation`
-    /// when enabled.
+    /// Checks a map's key and value types, its decorators and its name
+    /// against imports.
     ///
-    /// TS: `MapDeclaration.validate` (src/introspect/mapdeclaration.ts) is
-    /// `super.validate(); this.key.validate(); this.value.validate()`, where
-    /// `super.validate()` is `Declaration.validate` — `Decorated.validate`'s
-    /// decorator checks (each decorator's own `.validate()`, then the
-    /// duplicate-name scan, F4), then the import-clash check — run before
-    /// the key and value checks (F2, F3, #152: this used to run the key and
-    /// value checks first, and never ran the import-clash check at all). The
-    /// oracle op `MapDeclaration.validate` exercises this whole sequence,
-    /// while `MapKeyType.validate` and `MapValueType.validate` exercise
-    /// `validate_map_key` and `validate_map_value` in isolation (see
-    /// `tests/oracle/ops.rs`).
+    /// TS: `MapDeclaration.validate` is `super.validate()` (decorators, then
+    /// the import-clash check), then `this.key.validate()` and
+    /// `this.value.validate()`.
     fn validate(&self, manager: &ModelManager, namespace: &str) -> Result<()> {
         let fqn = qualify(namespace, self.name());
         check_decorators(manager, namespace, self, Some(&fqn), None)?;
@@ -1378,39 +1088,21 @@ impl Validate for MapDeclaration {
 
 js_compat_pub! {
     /// `MapKeyType.validate` (src/introspect/mapkeytype.ts). The key-kind
-    /// membership check TS makes at `MapDeclaration` construction time
-    /// (`ModelUtil.isValidMapKey`) is the typed read's: a loaded
-    /// `MapDeclaration`'s key is always one of the metamodel's key kinds
-    /// (P5-61).
-    ///
-    /// Every error passes `location: None`: `MapDeclaration` does not keep
-    /// its key's location, so there is no AST node to copy from.
+    /// check TS makes at construction is the typed read's. Every error has
+    /// no location: `MapDeclaration` does not keep its key's.
     pub fn validate_map_key(
         manager: &ModelManager,
         namespace: &str,
         map: &MapDeclaration,
     ) -> Result<()> {
-        // An object key names a scalar, which has to be over a String or DateTime.
-        //
-        // TS: `MapKeyType.validate` (src/introspect/mapkeytype.ts) — this is a
-        // different check, with a different message, than the kind-membership
-        // one above (which ports `MapDeclaration`'s own construction-time
-        // `ModelUtil.isValidMapKey`, this function's own doc comment): this one
-        // runs once the key's kind is already known to be `ObjectMapKeyType`,
-        // over the scalar it names.
+        // An object key names a scalar over a String or DateTime.
         if let Some(key) = map.key_type() {
             let scalar = resolve(manager, namespace, &key.name)
                 .and_then(|fqn| manager.get_declaration(&fqn).ok())
                 .and_then(Typed::type_name);
             if !matches!(scalar, Some("String") | Some("DateTime")) {
-                // TS: `MapKeyType.validate` throws `new
-                // IllegalModelException(message)` with no `modelFile` argument
-                // (mapkeytype.ts) — unlike a construction-time check, this
-                // message never gets a `File '<name>': ` suffix. A default
-                // `model_file: None` would let
-                // [`ModelManager::validate_model_file`]'s generic
-                // [`attach_model_file`] stamp one on anyway, so it is marked
-                // `Some(None)` ("no file, and already decided") here instead.
+                // TS throws with no `modelFile`, so no `File '<name>': `
+                // suffix: `Some(None)` stops `attach_model_file` adding one.
                 let mut err = ContractError::new(
                     ErrorKind::IllegalModel,
                     "mapkeytype-validate-invalidscalar",
@@ -1429,20 +1121,16 @@ js_compat_pub! {
 
 js_compat_pub! {
     /// `MapValueType.validate` (src/introspect/mapvaluetype.ts). The
-    /// value-kind membership check and `MapValueType.processType`'s "must
-    /// contain property 'type'" checks are the typed read's: a loaded
-    /// `MapDeclaration`'s value is always one of the metamodel's value
-    /// kinds, and an object or relationship value always has a `type` with
-    /// a string `name` (P5-61).
+    /// value-kind and "must contain property 'type'" checks are the typed
+    /// read's.
     pub fn validate_map_value(
         manager: &ModelManager,
         namespace: &str,
         map: &MapDeclaration,
     ) -> Result<()> {
-        // TS: `MapValueType.processType` (src/introspect/mapvaluetype.ts): an
-        // object or relationship value's `type.$class` must be
-        // `TypeIdentifier`. The typed read keeps the `$class` string as
-        // given, so this is checked here.
+        // TS: `MapValueType.processType`: an object or relationship value's
+        // `type.$class` must be `TypeIdentifier`, which the typed read keeps
+        // as given.
         if let Some(t) = map.value_type()
             && t._class != crate::introspect::qualified_class("TypeIdentifier")
         {
@@ -1451,20 +1139,14 @@ js_compat_pub! {
             return Err(Error::new(ErrorKind::IllegalModel, "mapvaluetype-process-invalidtypeclass", vec![("name", map.name().to_string())]).at(None));
         }
 
-        // TS: `MapValueType.validate` allows any declaration as a map value except
-        // another MapDeclaration ("All declarations, with the exception of
-        // MapDeclarations, are valid Values."); it does not itself check that the
-        // referenced type is declared.
+        // TS: any declaration but a MapDeclaration is a valid value.
         if let Some(value) = map.value_type() {
             let declared = resolve(manager, namespace, &value.name)
                 .and_then(|fqn| manager.get_declaration(&fqn).ok());
             let Some(declared) = declared else {
-                // BC-12 (R1): an undeclared value type is an
-                // `IllegalModelException` naming it. TS 5.0.0 read
-                // `this.modelFile.getType(...)`'s `null` straight into
-                // `decl.isMapDeclaration?.()` (the `?.` guards only the call,
-                // not the property read), so V8 threw `TypeError: Cannot read
-                // properties of null (reading 'isMapDeclaration')` (DV-014).
+                // BC-12: an undeclared value type is an
+                // `IllegalModelException` naming it, where TS 5.0.0 threw a
+                // V8 `TypeError` (DV-014).
                 return Err(undeclared_type_error(
                     manager,
                     namespace,
@@ -1480,25 +1162,10 @@ js_compat_pub! {
     }
 }
 
-/// Builds a semantic-validation error through a message-catalogue entry
-/// (PORTING.md 2.1, 2.2): `code` is a catalogue key, either a template TS
-/// builds with `Globalize(...).messageFormatter(code)(params)` or one of
-/// TS's own hardcoded strings ported as a [`crate::error::Renderer::Inline`]
-/// entry (P5-98, B-10: these used to be `pre-port` messages).
-///
-/// `modelfile-resolvetype-undecltype`: TS's `ModelFile.resolveType` (module
-/// doc on [`resolve`]) — a type name that resolves through neither the
-/// primitive list, an import, nor a local declaration. `context` is TS's own
-/// `context` argument verbatim (e.g. `'property ' + this.getFullyQualifiedName()`,
-/// `Property.validate`, property.ts); no `location`, since `resolveType`'s own
-/// callers on this path never pass its optional `fileLocation` third argument.
-///
-/// TS passes `this` (the `ModelFile`) as the exception's `modelFile` argument
-/// (`IllegalModelException` constructor), which the message ends with
-/// `modelFile.getName()` for, when the file was given a name — `namespace`'s
-/// own [`ModelFile::file_name`], read fresh through `manager` rather than
-/// threaded in by every caller, since a property's declaring class always
-/// carries its namespace already.
+/// `modelfile-resolvetype-undecltype`: TS's `ModelFile.resolveType` error for
+/// a type name that resolves through neither the primitives, an import, nor
+/// a local declaration. `context` is TS's `context` argument verbatim; no
+/// location. The error names `namespace`'s model file, as TS passes `this`.
 fn undeclared_type_error(
     manager: &ModelManager,
     namespace: &str,

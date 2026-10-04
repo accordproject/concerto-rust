@@ -9,9 +9,9 @@ macro_rules! handle {
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
         pub struct $name(pub(super) u32);
 
-        // P5-104 (C-9): every handle type gets both conversions, and the
-        // native code uses them for some types only, so without the
-        // `js-compat` feature an unused one is allowed rather than gated.
+        // Every handle type gets both conversions, and the native code
+        // uses them for some types only, so without the `js-compat`
+        // feature an unused one is allowed rather than gated.
         impl $name {
             js_compat_pub! {
                 /// The handle with this raw index, as a binding gets it back from
@@ -51,8 +51,8 @@ handle! {
 }
 
 handle! {
-    /// A handle to a property of a class declaration, or a value of an enum
-    /// declaration (P2-04), loaded into a [`ModelManager`](super::ModelManager). Both are
+    /// A handle to a property of a class declaration, or a value of an enum declaration,
+    /// loaded into a [`ModelManager`](super::ModelManager). Both are
     /// [`Property`](crate::Property) values, addressed the same way, through the unified
     /// `ClassLike::own_properties`.
     PropId

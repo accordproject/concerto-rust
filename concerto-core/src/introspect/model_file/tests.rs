@@ -1,8 +1,8 @@
 use super::*;
 
-/// P5-93: the names a load reads from JSON text share the copy of the
-/// text the file keeps (`concerto_metamodel::Name`), where each used to
-/// be copied; an escaped one is a copy of its own.
+/// The names a load reads from JSON text share the copy of the text the
+/// file keeps (`concerto_metamodel::Name`); an escaped one is a copy of its
+/// own.
 #[test]
 fn names_read_from_text_share_the_text_the_file_keeps() {
     let text = r#"{"$class":"concerto.metamodel@1.0.0.Model","namespace":"org.acme@1.0.0","declarations":[{"$class":"concerto.metamodel@1.0.0.ConceptDeclaration","name":"Person","isAbstract":false,"properties":[{"$class":"concerto.metamodel@1.0.0.StringProperty","name":"first","isArray":false,"isOptional":false},{"$class":"concerto.metamodel@1.0.0.ObjectProperty","name":"l\u0061st","type":{"$class":"concerto.metamodel@1.0.0.TypeIdentifier","name":"Person"},"isArray":false,"isOptional":false}]}]}"#;
@@ -45,11 +45,10 @@ fn sample() -> ModelFile {
     .unwrap()
 }
 
-/// P5-77 (accordproject/concerto-rust#419): `compact_ast` keeps a
-/// parsed AST as its compact JSON text, and the AST read back from it is
-/// equal to the one it replaced (numbers included), so is the text a
-/// second compaction returns, and a clone shares the text; a file read
-/// from text keeps its own text.
+/// `compact_ast` keeps a parsed AST as its compact JSON text, and the
+/// AST read back from it is equal to the one it replaced (numbers
+/// included), so is the text a second compaction returns, and a clone
+/// shares the text; a file read from text keeps its own text.
 #[test]
 fn compact_ast_keeps_an_equal_ast_as_text() {
     let value = serde_json::json!({
@@ -101,9 +100,9 @@ fn parses_namespace_imports_and_declarations() {
     assert!(!mf.is_system_namespace());
 }
 
-/// P5-93: `local_types` holds each name's hash. The last declaration of
-/// a name wins (TS's `Map.set`), and a hash two names share is resolved
-/// by name.
+/// `local_types` holds each name's hash. The last declaration of a name
+/// wins (TS's `Map.set`), and a hash two names share is resolved by
+/// name.
 #[test]
 fn local_types_find_the_last_declaration_of_a_name() {
     let concept = |name: &str| {
@@ -257,8 +256,7 @@ fn a_system_property_name_is_rejected_with_the_declaration_location() {
 /// TS's `ModelFile` constructor accepts two declarations of one name:
 /// both stay in `getAllDeclarations()`, and the `localTypes` lookup keeps
 /// the last (a `Map.set` per declaration). Rejecting the duplicate is
-/// `ModelFile.validate()`'s job (P2-08 review: this test used to assert
-/// that construction itself failed, which TS never does).
+/// `ModelFile.validate()`'s job; TS construction never fails on it.
 #[test]
 #[allow(deprecated)]
 fn duplicate_declaration_is_accepted_at_construction_and_the_last_wins() {
@@ -450,7 +448,7 @@ fn get_imports_lists_declared_names_never_aliases() {
     assert!(!mf.is_imported_type("Address"));
 }
 
-/// P5-28: `from_json_text_with_imports` loads the same file as
+/// `from_json_text_with_imports` loads the same file as
 /// `from_json_text` and returns the AST's own `imports` node verbatim,
 /// or `None` when the AST has none.
 #[test]
@@ -509,7 +507,7 @@ fn get_import_uri_is_keyed_by_the_imports_first_fully_qualified_name() {
 
 #[test]
 fn external_imports_preserves_import_order_for_several_uri_imports() {
-    // Issue #263: `getExternalImports` must come back in import order
+    // `getExternalImports` must come back in import order
     // (TS builds `importUriMap` by assigning one key per import, in
     // file order), not the arbitrary order a `HashMap` would give.
     let n = 12;

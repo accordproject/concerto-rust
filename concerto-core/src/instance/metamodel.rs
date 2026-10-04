@@ -1,38 +1,17 @@
-//! `BaseModelManager.validateAst` (`src/basemodelmanager.ts`; task P3-04,
-//! `accordproject/concerto-rust#59`; `SEAM_LEDGER.tsv` row
-//! `src/basemodelmanager.ts BaseModelManager validateAst`, planned task
-//! `P3-04+P4-08`): checking a Concerto AST document against the metamodel
-//! itself, rebuilt on [`super::validate`] (P3-01, the instance validator
-//! that folded in `concerto-validate-rs`'s structural check, plan decision
-//! D3) and accordproject/concerto#1273's `STRICT_VALIDATE_OPTIONS` (P3-02,
-//! the strictness preset). P6-01 (step 5) runs it on [`super::from_json`],
-//! `Serializer.fromJSON` over plain JSON, so that it does not depend on the
-//! JS object model (docs/public-api.md F8).
+//! Checking a Concerto AST document against the metamodel itself.
 //!
-//! **Scope (this task only).** The issue's plan gave `concerto-validate-rs`
-//! (D3) as the exit condition — "validate-rs tests pass on the new core" —
-//! but the maintainer's later comment on the issue supersedes that: leave
-//! `concerto-validate-rs` untouched (it is reference-only, to be archived),
-//! and instead port its test cases as tests of the function this module
-//! adds (below). [`validate_metamodel`] is that function: the standalone
-//! structural check `concerto-validate-rs::validate_metamodel` provided,
-//! rebuilt on the instance validator with the strict preset instead of
-//! `concerto-validate-rs`'s own bug-ridden hand-rolled one (plan §1.3).
-//! [`validate_ast`] adds `validateAst`'s version check in front of it.
-//! Wiring either into a caller's own [`ModelManager`] — TS's
-//! `options.metamodelValidation`, and the temporary add/remove of
-//! `this.metamodelModelFile` so `getType` resolves it — is `SEAM_LEDGER.tsv`'s
-//! other half of this row. Task P4-08b (accordproject/concerto-rust#174)
-//! added it as [`ModelManager::validate_ast`] (with
-//! `ModelManager::set_metamodel_validation`), built on this module's
-//! `check_version`, `metamodel_model_file` and `deserialize_ast`.
+//! - [`validate_metamodel`]: `BaseModelManager.validateAst`'s structural
+//!   check, the instance validator ([`super::from_json`]) run with
+//!   accordproject/concerto#1273's `STRICT_VALIDATE_OPTIONS`; [`validate_ast`]
+//!   adds the version check in front of it. `ModelManager::validate_ast` runs
+//!   the same check over a caller's own manager (`metamodelValidation`).
+//! - [`validate_meta_model_instance`] and [`model_manager_from_meta_model`]:
+//!   TS `validateMetaModel` and `modelManagerFromMetaModel`
+//!   (src/introspect/metamodel.ts).
+//! - [`check_ast_shape`]: the strict AST shape check at model load (BC-19).
 //!
-//! accordproject/concerto-rust#265 adds the two `src/introspect/metamodel.ts`
-//! functions the ledger also places here, [`validate_meta_model_instance`]
-//! (`validateMetaModel`) and [`model_manager_from_meta_model`]
-//! (`modelManagerFromMetaModel`), and [`ModelManager::add_metamodel`] for the
-//! constructor's `addMetamodel` option, so the native oracle harness can
-//! replay their fixtures.
+//! Every check runs on one resident metamodel manager per thread
+//! ([`with_resident_metamodel_manager`]).
 
 use std::cell::RefCell;
 
@@ -51,11 +30,9 @@ use crate::model_util;
 pub const METAMODEL_NAMESPACE: &str = "concerto.metamodel@1.0.0";
 
 /// The fully-qualified name of the metamodel declaration `$short`, as a
-/// `&'static str` literal: `metamodel_class!("MapDeclaration")` is
-/// `"concerto.metamodel@1.0.0.MapDeclaration"` ([`METAMODEL_NAMESPACE`],
-/// a dot, the short name), built at compile time rather than with
-/// `format!` on each call (P5-102, C-10). Only the decorator command sets
-/// (`dcs`, the `js-compat` feature) use it.
+/// `&'static str` literal built at compile time: `metamodel_class!("MapDeclaration")`
+/// is `"concerto.metamodel@1.0.0.MapDeclaration"`. Only the decorator command
+/// sets (`dcs`, the `js-compat` feature) use it.
 #[cfg(feature = "js-compat")]
 macro_rules! metamodel_class {
     ($short:literal) => {
@@ -65,21 +42,17 @@ macro_rules! metamodel_class {
 #[cfg(feature = "js-compat")]
 pub(crate) use metamodel_class;
 
-/// The metamodel's own AST, `MetaModelUtil.metaModelAst` (the document
-/// `new ModelManager({ addMetamodel: true })` adds): the vendored copy
-/// `concerto-core/src/metamodel.json`, next to the system models'
-/// `rootmodel.json`, identical byte for byte to
+/// The metamodel's own AST, `MetaModelUtil.metaModelAst`: the vendored
+/// `concerto-core/src/metamodel.json`, identical to
 /// `concerto-metamodel/vendor/concerto.metamodel@1.0.0.json`. Read only by
-/// [`metamodel_model_file`], the crate's one loader of it (P5-102, C-10).
+/// [`metamodel_model_file`].
 const METAMODEL_AST_JSON: &str = include_str!("../metamodel.json");
 
-/// A fresh [`ModelManager`] holding the system models and the metamodel
-/// file ([`metamodel_model_file`], shared, not copied), validated. TS's
-/// `validateAst` adds `this.metamodelModelFile` only for the duration of
-/// the check (and only when a metamodel is not already present) rather
-/// than caching it; the checks here run on
-/// [`with_resident_metamodel_manager`]'s per-thread copy of this manager
-/// instead (P5-21), which holds the same models and gives the same answer.
+/// A fresh [`ModelManager`] holding the system models and the metamodel file
+/// ([`metamodel_model_file`], shared), validated: the manager
+/// [`with_resident_metamodel_manager`] keeps per thread. It gives the same
+/// answer as TS's `validateAst`, which adds the metamodel only for the
+/// duration of the check.
 fn metamodel_model_manager() -> Result<ModelManager> {
     let mut mm = ModelManager::new()?;
     mm.add_shared_model_file(metamodel_model_file()?)?;
@@ -87,26 +60,17 @@ fn metamodel_model_manager() -> Result<ModelManager> {
     Ok(mm)
 }
 
-/// Runs `f` on a resident, per-thread [`metamodel_model_manager`] (task
-/// P5-21, accordproject/concerto-rust#319): built on the first call on each
-/// thread, then kept with its caches warm, so a later call pays for no
-/// system-model or metamodel load.
+/// Runs `f` on a resident, per-thread `metamodel_model_manager`, built on
+/// the first call on each thread and kept with its caches warm. It is the
+/// crate's one resident metamodel manager: [`validate_metamodel`],
+/// [`validate_meta_model_instance`], `ModelManager::validate_ast_value`'s
+/// pre-check, the DCS validation manager (a [`ModelManager::fork`] of it)
+/// and the concerto-wasm binding `validateMetaModelInstance` (hence `pub`
+/// under `js-compat`) all use it.
 ///
-/// It is the crate's one resident metamodel manager (P5-102, F-7/B-8/A-12):
-/// [`validate_metamodel`], [`validate_meta_model_instance`],
-/// `ModelManager::validate_ast_value`'s pre-check and the DCS validation
-/// manager (`crate::dcs`, a [`ModelManager::fork`] of it) all use it.
-///
-/// The concerto-wasm binding `validateMetaModelInstance` runs on it too
-/// (P5-102, F-7), so TS's `validateMetaModel` holds no metamodel manager
-/// of its own; that is why it is `pub` under `js-compat`.
-///
-/// The manager is only ever read (`f` gets it by shared reference, and
-/// nothing else can reach it), so every call sees the same models a
-/// fresh manager would hold, and gets the same result and error.
-/// A build error is returned and not cached, exactly as an uncached build
-/// returns it. Being per-thread, the cache adds no shared state: nothing
-/// here changes what is `Send` or `Sync` (P6-01).
+/// The manager is only ever read, so every call gets the result and error a
+/// fresh manager would give. A build error is returned, not cached. Being
+/// per-thread, it adds no shared state.
 pub fn with_resident_metamodel_manager<R>(
     f: impl FnOnce(&ModelManager) -> Result<R>,
 ) -> Result<R> {
@@ -133,11 +97,9 @@ pub fn with_resident_metamodel_manager<R>(
     })
 }
 
-/// The `Serializer.fromJSON` options a metamodel instance is checked
-/// with, one per caller of [`with_resident_metamodel_manager`] (P5-102,
-/// F-7), so the concerto-wasm binding `validateMetaModelInstance` can
-/// take the preset as an argument and its TS caller hold no metamodel
-/// manager of its own.
+/// The `Serializer.fromJSON` options a metamodel instance is checked with,
+/// one per caller of [`with_resident_metamodel_manager`], so the
+/// `validateMetaModelInstance` binding can take the preset as an argument.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MetaModelPreset {
     /// accordproject/concerto#1273's `STRICT_VALIDATE_OPTIONS`:
@@ -149,8 +111,7 @@ pub enum MetaModelPreset {
     Default,
     /// A `new Serializer(factory, modelManager)`'s defaults:
     /// `validateMetaModel`'s check ([`validate_meta_model_instance`]).
-    /// `Object.assign({}, baseDefaultOptions, {})`, so the same options
-    /// as [`Self::Default`], named apart for its caller.
+    /// The same options as [`Self::Default`], named apart for its caller.
     #[cfg_attr(not(feature = "js-compat"), expect(dead_code, reason = "js-compat seam only"))]
     Serializer,
 }
@@ -172,27 +133,18 @@ impl MetaModelPreset {
 }
 
 /// The text a TS `catch (err)` would see on `err.message`: the exception's
-/// own, already-constructed message. For a catalogue error that is
-/// `ContractError::final_message` (the same text the native oracle harness
-/// compares, per its own doc comment), the pre-port shapes included (B-9).
+/// own, already-constructed message (`ContractError::final_message` for a
+/// catalogue error).
 fn ts_message(err: &Error) -> String {
     err.contract().final_message()
 }
 
 /// `BaseModelManager.validateAst`'s structural check:
-/// `this.getSerializer().fromJSON(modelFile.getAst())`
-/// (`src/basemodelmanager.ts`), run with accordproject/concerto#1273's
-/// `STRICT_VALIDATE_OPTIONS` preset (task P3-02) so an unknown property or a
-/// required property explicitly set to `null` is rejected too — the
-/// strictness `concerto-validate-rs` never had (plan §1.3's confirmed bugs:
-/// no `Long`/`DateTime`/relationship/enum support, only the direct super
-/// type's properties merged, abstract and nested `$class` values unchecked).
-/// Any failure — no `$class`, an unresolvable type, a structural mismatch —
-/// is re-thrown as `MetamodelException(error.message)`, exactly as TS's
-/// `catch` block does.
-///
-/// The metamodel manager is resident per thread (task P5-21,
-/// `with_resident_metamodel_manager`), not rebuilt on every call.
+/// `this.getSerializer().fromJSON(modelFile.getAst())`, run with
+/// accordproject/concerto#1273's `STRICT_VALIDATE_OPTIONS`, so an unknown
+/// property or a required property set to `null` is rejected too. Any
+/// failure (no `$class`, an unresolvable type, a structural mismatch) is
+/// re-thrown as `MetamodelException(error.message)`, as TS's `catch` does.
 pub fn validate_metamodel(ast: &Value) -> Result<()> {
     let options = MetaModelPreset::Strict.from_json_options();
     with_resident_metamodel_manager(|mm| {
@@ -213,16 +165,10 @@ fn wrapped(err: &Error) -> Error {
     .into()
 }
 
-/// `BaseModelManager`'s cached `this.metamodelModelFile`: `new
-/// ModelFile(this, MetaModelUtil.metaModelAst, undefined,
-/// MetaModelNamespace)` (`src/basemodelmanager.ts`'s constructor), so its
-/// file name is the namespace itself and it has no CTO definitions.
-///
-/// Loaded once per thread and shared on every later call (P5-06:
-/// `validateAst` registers it on every call; A-4,
-/// accordproject/concerto-rust#448: an `Arc`, as the system model files
-/// are, never a deep copy); a load error is returned, and not cached,
-/// exactly as an uncached load would return it.
+/// `BaseModelManager`'s `this.metamodelModelFile`: `new ModelFile(this,
+/// MetaModelUtil.metaModelAst, undefined, MetaModelNamespace)`, so its file
+/// name is the namespace and it has no CTO definitions. Loaded once per
+/// thread and shared (an `Arc`); a load error is returned, not cached.
 pub(crate) fn metamodel_model_file() -> Result<std::sync::Arc<ModelFile>> {
     thread_local! {
         static METAMODEL_MODEL_FILE: RefCell<Option<std::sync::Arc<ModelFile>>> =
@@ -242,21 +188,12 @@ pub(crate) fn metamodel_model_file() -> Result<std::sync::Arc<ModelFile>> {
     Ok(model_file)
 }
 
-/// `validateAst`'s structural check against the caller's own model manager
-/// `mm` (which must already hold the metamodel):
-/// `this.getSerializer().fromJSON(modelFile.getAst())`, with the manager's
-/// serializer default options (`baseDefaultOptions`, `{validate: true,
-/// utcOffset}`), not [`validate_metamodel`]'s strict preset — concerto-core
-/// 5.0.0 passes no options here. Any failure is re-thrown as
-/// `MetamodelException(error.message)`.
-///
-/// TS's `Serializer` merges the manager's own constructor options into its
-/// defaults too. None of the keys `Serializer.fromJSON` reads
-/// (`acceptResourcesForRelationships`, `utcOffset`,
-/// `strictQualifiedDateTimes`) can change a metamodel document's outcome —
-/// the metamodel declares no relationship and no `DateTime` property — so
-/// only a manager option `validate: false` would, and no
-/// `ModelManager` in this port carries a serializer option bag.
+/// `validateAst`'s structural check against the caller's own manager `mm`
+/// (which must already hold the metamodel), with the manager's serializer
+/// defaults (`{validate: true, utcOffset}`), not the strict preset:
+/// concerto-core 5.0.0 passes no options here. Any failure is re-thrown as
+/// `MetamodelException(error.message)`. No other serializer option the
+/// manager could carry changes a metamodel document's outcome.
 pub(crate) fn deserialize_ast(mm: &ModelManager, ast: &Value) -> Result<()> {
     from_json(
         mm,
@@ -268,40 +205,22 @@ pub(crate) fn deserialize_ast(mm: &ModelManager, ast: &Value) -> Result<()> {
     .map_err(|err| wrapped(&err))
 }
 
-/// `BaseModelManager.validateAst(modelFile)` (`src/basemodelmanager.ts`):
-/// the version check (`check_version`), then the structural check
-/// ([`validate_metamodel`]).
-///
-/// Unlike the TS reference, this takes the AST directly rather than a
-/// `ModelFile` handle — task P3-04's scope is the standalone check
-/// `concerto-validate-rs` provided (module doc), not the `ModelFile`/
-/// `ModelManager` view integration (task P4-08). A missing or non-string
-/// `$class` fails the version check exactly as it does in TS
-/// (`check_version`'s doc), before any structural check runs.
+/// `BaseModelManager.validateAst(modelFile)` over the AST itself: the version
+/// check (`check_version`), then the structural check
+/// ([`validate_metamodel`]). A missing or non-string `$class` fails the
+/// version check, as in TS.
 pub fn validate_ast(ast: &Value) -> Result<()> {
     check_version(ast)?;
     validate_metamodel(ast)
 }
 
-/// TS `validateMetaModel(input)` (`src/introspect/metamodel.ts`;
-/// `SEAM_LEDGER.tsv` row `validateMetaModel`, planned task `P3-04+P4-08`;
-/// accordproject/concerto-rust#265): `serializer.fromJSON(input)` over a
-/// fresh metamodel manager (`newMetaModelManager()`), with a `Serializer`
-/// built with no options, so the default `{validate: true}`. TS returns
-/// `input` itself unchanged, so a caller that needs the return value keeps
-/// its own `input`.
+/// TS `validateMetaModel(input)` (src/introspect/metamodel.ts):
+/// `serializer.fromJSON(input)` over `newMetaModelManager()` with a default
+/// `Serializer`. TS returns `input` unchanged.
 ///
-/// Not [`validate_metamodel`]: that is `validateAst`'s check, which runs the
-/// strict preset and re-throws every failure as a `MetamodelException`.
-/// This one runs the default options, and a failure is the serializer's own
-/// error, unwrapped, as TS throws it.
-///
-/// The metamodel manager is the resident one
-/// ([`with_resident_metamodel_manager`], P5-102), which holds the models a
-/// fresh `newMetaModelManager()` holds and is only read. TS's
-/// `newMetaModelManager` names the file `concerto.metamodel` and keeps the
-/// metamodel's CTO text as its definitions; neither is observable here
-/// beyond an error message's wording (error parity compares the class).
+/// Unlike [`validate_metamodel`], this runs the default options, and a
+/// failure is the serializer's own error, unwrapped, as TS throws it. It runs
+/// on the resident metamodel manager, which holds the same models.
 #[cfg_attr(not(feature = "js-compat"), expect(dead_code, reason = "js-compat seam only"))]
 pub fn validate_meta_model_instance(input: &Value) -> Result<()> {
     let options = MetaModelPreset::Serializer.from_json_options();
@@ -311,25 +230,19 @@ pub fn validate_meta_model_instance(input: &Value) -> Result<()> {
 }
 
 /// TS `modelManagerFromMetaModel(metaModel, validate = true)`
-/// (`src/introspect/metamodel.ts`; `SEAM_LEDGER.tsv` row
-/// `modelManagerFromMetaModel`, planned task `P3-04+P4-08`;
-/// accordproject/concerto-rust#265):
+/// (src/introspect/metamodel.ts):
 ///
 /// 1. when `validate` is set, [`validate_meta_model_instance`] first;
 /// 2. a fresh [`ModelManager`] (`new ModelManager()`, no options);
 /// 3. for each entry of `metaModel.models`, in order, `new ModelFile(mm,
-///    model, null, null)` (which, since BC-19 in R1, runs
-///    [`check_ast_shape`] on an object model) and a validating
-///    `addModelFile(mf, null, null)`:
-///    a namespace already registered is the already-exists error, otherwise
-///    the new file alone is validated against the manager as it stands
-///    (`ModelManager::validate_detached_model_file`) before it is
-///    registered;
+///    model, null, null)` (which runs [`check_ast_shape`] on an object
+///    model, BC-19) and a validating `addModelFile(mf, null, null)`: a
+///    namespace already registered is the already-exists error, otherwise
+///    the new file alone is validated against the manager as it stands;
 /// 4. `validateModelFiles()` over the whole manager.
 ///
 /// `metaModel.models.forEach` on something that is not an array is V8's
-/// `TypeError`, as in TS: reading `models` of `null`, `forEach` of a
-/// missing or `null` `models`, or `forEach` not being a function.
+/// `TypeError`, as in TS.
 #[cfg_attr(not(feature = "js-compat"), expect(dead_code, reason = "js-compat seam only"))]
 pub fn model_manager_from_meta_model(meta_model: &Value, validate: bool) -> Result<ModelManager> {
     if validate {
@@ -357,10 +270,10 @@ pub fn model_manager_from_meta_model(meta_model: &Value, validate: bool) -> Resu
         Some(_) => return Err(not_a_function("mm.models.forEach")),
     };
     for model in models {
-        // BC-19 (R1): `new ModelFile(modelManager, mm, null, null)` on a
-        // `new ModelManager()`, whose default is the strict shape check,
-        // after the constructor's own argument checks (a falsy or non-object
-        // AST is a plain `Error`).
+        // BC-19: `new ModelFile(modelManager, mm, null, null)` on a `new
+        // ModelManager()`, whose default is the strict shape check, after
+        // the constructor's own argument checks (a falsy or non-object AST
+        // is a plain `Error`).
         ModelFile::check_constructor_arguments(Some(model), None, None)?;
         check_ast_shape(model)?;
         let model_file = ModelFile::from_json_with_definitions(model, None, None)?;
@@ -373,58 +286,35 @@ pub fn model_manager_from_meta_model(meta_model: &Value, validate: bool) -> Resu
     Ok(mm)
 }
 
-/// The strict AST shape check at model load (BREAKING-CHANGES-PLAN.md BC-19,
-/// with BC-17 and BC-20; release R1, task P5-49,
-/// accordproject/concerto-rust#370): TS `new ModelFile(modelManager, ast)`
-/// runs it, after its own argument checks, unless the manager was built
-/// with `metamodelValidation: false`. So every load path that builds a
-/// `ModelFile` (`fromAst`, `addModel`, `addCTOModel`, `addModelFiles`,
-/// `updateModelFile`, and the file `addModelFile` is given) rejects an AST
-/// that does not have the metamodel's shape, with an
-/// `IllegalModelException`, before any part of the AST is walked. TS 5.0.0
-/// loads many such ASTs, or crashes on them with a V8 `TypeError` (BC-18).
+/// The strict AST shape check at model load (BC-19, with BC-17 and BC-20):
+/// TS `new ModelFile(modelManager, ast)` runs it after its own argument
+/// checks, unless the manager was built with `metamodelValidation: false`.
+/// So every load path rejects an AST that does not have the metamodel's
+/// shape with an `IllegalModelException`, before any part of it is walked.
+/// TS 5.0.0 loads many such ASTs, or crashes on them (BC-18).
 ///
-/// In order, and stopping at the first problem:
+/// In order, stopping at the first problem:
 ///
-/// 1. BC-17 and BC-20, over every node of the AST in document order: a
-///    `decorators` that is present, not `null` and not an array
-///    (`modelfile-load-decoratorsnotarray`); a super type (`superType`)
-///    whose `name` is not a non-empty string
-///    (`modelfile-load-supertypename`); any other `name` that is not a
-///    string (`modelfile-load-namenotstring`); since P5-61, an
-///    `identified`, `sizeValidator`, `lengthValidator` or `validator` that
-///    is present, not `null` and not an object with a string `$class`
-///    (`modelfile-load-nodenotobject`), which the metamodel check alone
-///    accepts when it has no own keys or no `$class`.
-/// 2. `validateAst`'s strict check ([`validate_ast`]): the version check,
-///    then the structure against the metamodel with the strict preset
-///    ([`validate_metamodel`]). Its error, whatever its class, is
-///    re-thrown as an `IllegalModelException` whose message is the check's
-///    own, after a fixed prefix (`modelfile-load-astshape`).
+/// 1. BC-17 and BC-20, over every node in document order: a `decorators`
+///    that is present, not `null` and not an array
+///    (`modelfile-load-decoratorsnotarray`); a `superType` whose `name` is
+///    not a non-empty string (`modelfile-load-supertypename`); any other
+///    `name` that is not a string (`modelfile-load-namenotstring`); an
+///    `identified`, `sizeValidator`, `lengthValidator` or `validator` that is
+///    present, not `null` and not an object with a string `$class`
+///    (`modelfile-load-nodenotobject`).
+/// 2. `validateAst`'s strict check ([`validate_ast`]), its error re-thrown
+///    as an `IllegalModelException` after a fixed prefix
+///    (`modelfile-load-astshape`).
 ///
-/// **One tolerance.** The reference CTO parser (concerto-cto 5.0.0) writes a
-/// string `defaultValue` on a `DateTimeProperty` (`o DateTime d
-/// default="..."`), which `concerto.metamodel@1.0.0` does not declare, so
-/// `validateAst` rejects every such model ("Unexpected properties for type
-/// concerto.metamodel@1.0.0.DateTimeProperty: defaultValue"). Every other
-/// AST the reference parser writes for the oracle corpus passes the check
-/// (P5-49 ran it over all 611 CTO-cache ASTs). So that a model written in
-/// CTO still loads, a string `defaultValue` on a `DateTimeProperty` node is
-/// left out of step 2; any other `defaultValue` there is checked as before.
+/// **One tolerance.** concerto-cto 5.0.0 writes a string `defaultValue` on a
+/// `DateTimeProperty`, which the metamodel does not declare; so that such a
+/// model still loads, that value is left out of step 2.
 ///
-/// The check reads nothing but `ast`, so it does not depend on, or change,
-/// any caller's manager.
-///
-/// **Folded into the typed read (P5-69, BC-19-b, accordproject/concerto-rust#408).**
-/// The rules above are checked first on the typed read of `ast`, the strict
-/// decode every load runs (`introspect::shape`, whose module doc says
-/// where each rule now lives), with no metamodel instance validation. Only
-/// an AST that read cannot vouch for is checked by the steps above as
-/// written (`check_ast_shape_exact`, whose step 2 runs on the resident
-/// metamodel manager, [`validate_metamodel`]'s), so the verdict and the
-/// error are always theirs. The JS API's `ModelFile` constructor runs the
-/// same fold inside its one load of the AST
-/// (`ModelFile::from_json_text_checked_with_imports`).
+/// The check reads only `ast`. It is folded into the typed read every load
+/// runs (`introspect::shape`): only an AST that read cannot vouch for is
+/// checked by the steps above as written (`check_ast_shape_exact`), so the
+/// verdict and the error are always theirs.
 #[cfg_attr(not(feature = "js-compat"), expect(dead_code, reason = "js-compat seam only"))]
 pub fn check_ast_shape(ast: &Value) -> Result<()> {
     if crate::introspect::shape::ast_conforms(ast) {
@@ -481,11 +371,10 @@ fn strip_parser_extras(node: &mut Value) {
     }
 }
 
-/// The keys whose value, when present and not `null`, must be a node: an
-/// object with a string `$class` ([`check_ast_shape`], step 1). The metamodel
-/// check alone accepts any value with no own keys there (a number, a
-/// boolean, `""`, `[]`, `{}`), as TS's `validateAst` does, and an object
-/// without a `$class` (P5-61, accordproject/concerto-rust#393).
+/// The keys whose value, when present and not `null`, must be an object
+/// with a string `$class` ([`check_ast_shape`], step 1); the metamodel check
+/// alone accepts a value with no own keys there, or an object without a
+/// `$class`.
 const NODE_KEYS: [&str; 4] = ["identified", "sizeValidator", "lengthValidator", "validator"];
 
 /// [`check_ast_shape`]'s first step, for `node` and everything under it.
@@ -555,20 +444,12 @@ fn shape_error(code: &'static str, value: &Value) -> Error {
 /// (`basemodelmanager-validateast-versionmismatch`, rendering an absent
 /// version as JS `null`, as the TS template literal does).
 ///
-/// TS's `ModelFile` constructor does not require the AST to carry a
-/// `$class`, so on `addModelFile`'s path (`metamodelValidation`) any JSON
-/// value can reach `ModelUtil.getNamespace(fqn)`:
-///
-/// - falsy (missing, `null`, `false`, `0`, `""`): its `!fqn` guard throws
-///   `Error` "FQN is invalid." (`modelutil-getnamespace-nofnq`);
-/// - an array: `Array.prototype.lastIndexOf('.')` finds a `"."` element only
-///   by strict equality; with none the namespace is `''` (and
-///   `parseNamespace` throws "Namespace is null or undefined."), with one
-///   `fqn.substr` is not a function (V8 `TypeError`);
-/// - any other non-string (a non-zero number, `true`, an object):
-///   `fqn.lastIndexOf` is not a function (V8 `TypeError`).
-///
-/// Each fails before the metamodel is added, as in TS.
+/// The `ModelFile` constructor does not require a `$class`, so any JSON
+/// value can reach `ModelUtil.getNamespace(fqn)`: a falsy one throws
+/// "FQN is invalid." (`modelutil-getnamespace-nofnq`); an array has
+/// namespace `''` without a `"."` element (`parseNamespace` throws) and is a
+/// V8 `TypeError` with one; any other non-string is a V8 `TypeError`. Each
+/// fails before the metamodel is added, as in TS.
 pub(crate) fn check_version(ast: &Value) -> Result<()> {
     let class = ast.get("$class").unwrap_or(&Value::Null);
     let ns = match class {
@@ -598,8 +479,8 @@ pub(crate) fn check_version(ast: &Value) -> Result<()> {
 }
 
 /// `ModelUtil.parseNamespace(ns).version`, except that an unversioned
-/// namespace gives `None` rather than `parse_namespace`'s error (BC-02,
-/// P5-50): it is still rejected, by the caller's version mismatch, with the
+/// namespace gives `None` rather than `parse_namespace`'s error (BC-02): it
+/// is still rejected, by the caller's version mismatch, with the
 /// `MetamodelException` TS 5.0.0 threw for it.
 fn namespace_version(ns: &str) -> Result<Option<String>> {
     Ok(model_util::split_namespace(ns)?.1.map(str::to_string))
@@ -610,8 +491,8 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// P5-102 (F-7/B-8/A-12): one resident manager, holding the one shared
-    /// metamodel file under its namespace, as `validateAst` registers it.
+    /// One resident manager, holding the one shared metamodel file under
+    /// its namespace, as `validateAst` registers it.
     #[test]
     fn the_resident_manager_holds_the_shared_metamodel_file() {
         let file = metamodel_model_file().unwrap();
@@ -628,10 +509,10 @@ mod tests {
         .unwrap();
     }
 
-    /// P5-102 (F-7): the presets the `validateMetaModelInstance` binding
-    /// takes read as the options their callers used before: strict for
-    /// `validateAst`, a Serializer's defaults (the same as the manager's)
-    /// for `validateMetaModel`.
+    /// The presets the `validateMetaModelInstance` binding takes read as
+    /// the options their callers used before: strict for `validateAst`, a
+    /// Serializer's defaults (the same as the manager's) for
+    /// `validateMetaModel`.
     #[test]
     fn metamodel_presets_read_as_their_callers_options() {
         let strict = MetaModelPreset::Strict.from_json_options();
@@ -646,18 +527,11 @@ mod tests {
         );
     }
 
-    // ---- ported from concerto-validate-rs's src/lib.rs tests (issue
-    //      accordproject/concerto-rust#59's exit condition, as narrowed by
-    //      the maintainer's issue comment: validate-rs's own tests, ported
-    //      as tests of this module, citing the source test) ----
+    // ---- concerto-validate-rs's src/lib.rs tests, ported as tests of
+    //      this module ----
 
     /// concerto-validate-rs `tests::test_valid_metamodel_validation`: the
-    /// vendored metamodel document, validated against itself. Unlike the
-    /// source test, this reads the same vendored copy this module already
-    /// includes rather than a repo-root `metamodel.json` (that file exists
-    /// only in `concerto-validate-rs`, out of scope here — see the module
-    /// doc), but it is byte-for-byte the same document (both copies are
-    /// `MetaModelUtil.metaModelAst`).
+    /// vendored metamodel document validated against itself.
     #[test]
     fn valid_metamodel_validation() {
         let metamodel: Value =
@@ -669,15 +543,9 @@ mod tests {
         );
     }
 
-    /// concerto-validate-rs `tests::test_invalid_json`: malformed JSON text
-    /// fails validation. This module's API boundary differs deliberately
-    /// from `concerto-validate-rs`'s: `validate_metamodel` takes an already
-    /// parsed [`Value`], not a `&str` — JSON parsing is a step upstream of
-    /// this module in concerto-rust (`serde_json::from_str`, as every other
-    /// entry point in this crate does), not something this port repeats. A
-    /// document with no usable `$class` at all is the nearest equivalent
-    /// this module's own boundary can express; it still fails, through
-    /// `Serializer::from_json`'s own "no `$class`" check.
+    /// concerto-validate-rs `tests::test_invalid_json`: `validate_metamodel`
+    /// takes a parsed [`Value`], so a document with no usable `$class` is the
+    /// nearest equivalent, and fails `from_json`'s "no `$class`" check.
     #[test]
     fn invalid_json_has_no_usable_class() {
         let result = validate_metamodel(&json!({}));
@@ -687,11 +555,8 @@ mod tests {
         );
     }
 
-    /// concerto-validate-rs `tests::test_invalid_namespace`: a `namespace`
-    /// of the wrong JSON type fails validation. The source fixture omits
-    /// `imports`/`declarations`, which `STRICT_VALIDATE_OPTIONS` would also
-    /// reject as missing required properties; either way the document must
-    /// fail, so this keeps both defects to stay close to the source.
+    /// concerto-validate-rs `tests::test_invalid_namespace`: a `namespace` of
+    /// the wrong JSON type fails validation.
     #[test]
     fn invalid_namespace_type() {
         let ast = json!({
@@ -753,20 +618,8 @@ mod tests {
     }
 
     /// concerto-validate-rs `tests::test_extra_properties`: an undeclared
-    /// property anywhere in the document fails validation.
-    /// `concerto-validate-rs`'s own hand-rolled structural check caught
-    /// this only by accident of its shape checks; here it is
-    /// `populator::validate_properties` (called unconditionally by
-    /// `visitClassDeclaration`, in both TS and this port) that rejects it
-    /// — *not* `STRICT_VALIDATE_OPTIONS`. This
-    /// document's two extra keys (`isOptional` on the declaration,
-    /// `propertyType` on the property) are both non-null, and a non-null
-    /// unknown key is rejected by `Serializer.fromJSON`'s default
-    /// (non-strict) behaviour too, in TS and in this port alike — see
-    /// `super::deserialize`'s own divergence table ("Unknown field =
-    /// non-null" is an error under the default). The strict preset's own,
-    /// real effect on unknown keys is exercised below by
-    /// `null_extra_property_rejected_only_under_the_strict_preset`.
+    /// non-null property anywhere fails validation, under the default options
+    /// too (`validate_properties`, not the strict preset).
     #[test]
     fn extra_properties_rejected_under_the_strict_preset() {
         let ast = json!({
@@ -798,23 +651,9 @@ mod tests {
         );
     }
 
-    /// The strict preset's actual, provable effect on unknown keys, and the
-    /// test that would fail if `validate_metamodel` stopped applying
-    /// `STRICT_VALIDATE_OPTIONS` (e.g. `Some(&options)` dropped to `None`).
-    /// Per `super::deserialize`'s own divergence table, an unknown property
-    /// set to `null` is *ignored* by default (it never reaches
-    /// `populator::validate_properties`, since `get_assignable_properties`
-    /// drops nullish values before that check runs) and rejected only when
-    /// `STRICT_VALIDATE_OPTIONS.reject_unknown_keys` is set — unlike a
-    /// non-null unknown property, which `extra_properties_rejected_under_
-    /// the_strict_preset` above shows fails either way, strict or not.
-    ///
-    /// The first assertion calls `validate_metamodel` itself (which always
-    /// applies the strict preset) and expects it to reject the document.
-    /// The second calls the underlying serializer directly with the
-    /// default (non-strict) options, on the identical document, and expects
-    /// it to accept it — establishing that the first assertion's failure is
-    /// really due to the strict preset, not some other check.
+    /// The strict preset's own effect: an unknown property set to `null` is
+    /// ignored by default and rejected only with `reject_unknown_keys`. Fails
+    /// if `validate_metamodel` stops applying `STRICT_VALIDATE_OPTIONS`.
     #[test]
     fn null_extra_property_rejected_only_under_the_strict_preset() {
         let ast = json!({
@@ -890,10 +729,9 @@ mod tests {
         assert!(validate_ast(&ast).is_err());
     }
 
-    // ---- the resident metamodel manager (task P5-21) ----
+    // ---- the resident metamodel manager ----
 
-    /// The structural check on a fresh metamodel manager, as
-    /// `validate_metamodel` ran it before P5-21.
+    /// The structural check on a fresh metamodel manager.
     fn validate_metamodel_on_a_fresh_manager(ast: &Value) -> Result<()> {
         let mm = metamodel_model_manager()?;
         let options = FromJsonOptions {
@@ -956,7 +794,7 @@ mod tests {
     }
 
     // ---- ModelManager::validate_ast: `validateAst` on a caller's own
-    //      model manager, the `metamodelValidation` option (task P4-08b) ----
+    //      model manager, the `metamodelValidation` option ----
 
     fn namespaces(mm: &ModelManager) -> Vec<String> {
         mm.model_files()
@@ -1024,8 +862,8 @@ mod tests {
         // TS: `validateAst`'s `deleteModelFile(MetaModelNamespace)` follows
         // the `try`/`catch` that re-throws, so a failed check never reaches it.
         let mut mm = ModelManager::new().unwrap();
-        // P5-61: the loader refuses an unknown key, so the model file holds
-        // a malformation the loader does not check (a fraction in an
+        // The loader refuses an unknown key, so the model file holds a
+        // malformation the loader does not check (a fraction in an
         // `Integer` field; `typed_ast`'s module doc, "Not checked").
         let position = json!({"$class": "concerto.metamodel@1.0.0.Position", "line": 1.5, "column": 1, "offset": 0});
         let mf = model_file(&json!({
@@ -1064,8 +902,7 @@ mod tests {
         assert_eq!(namespaces(&mm), expected);
     }
 
-    // ---- ModelManager::validate_ast_value (P5-13,
-    //      accordproject/concerto-rust#297): the check over the AST alone,
+    // ---- ModelManager::validate_ast_value: the check over the AST alone,
     //      on the resident metamodel manager where that is exact ----
 
     /// An AST the `ModelFile` constructor rejects (no `namespace`,
@@ -1140,9 +977,9 @@ mod tests {
     }
 
     /// A manager without the system models (`ModelManager::default()`) does
-    /// not match the resident manager's, so its own check runs, as before
-    /// P5-13: the metamodel's declarations cannot resolve their implicit
-    /// `Concept` super type there.
+    /// not match the resident manager's, so its own check runs: the
+    /// metamodel's declarations cannot resolve their implicit `Concept`
+    /// super type there.
     #[test]
     fn manager_validate_ast_value_without_system_models_checks_the_manager_itself() {
         let ast = json!({
@@ -1267,8 +1104,8 @@ mod tests {
         );
     }
 
-    // ---- accordproject/concerto-rust#265: `addMetamodel`,
-    //      `validateMetaModel` and `modelManagerFromMetaModel` ----
+    // ---- `addMetamodel`, `validateMetaModel` and
+    //      `modelManagerFromMetaModel` ----
 
     fn kind_of(err: &Error) -> Option<ErrorKind> {
         Some(err.contract().kind)
@@ -1360,8 +1197,8 @@ mod tests {
     fn model_manager_from_meta_model_checks_the_shape_even_without_validate() {
         // Structurally invalid (an undeclared property), semantically fine.
         // `validate` runs `validateMetaModel` over the whole document first;
-        // without it, BC-19 (R1) still rejects the model when its
-        // `ModelFile` is built, with an `IllegalModelException`.
+        // without it, BC-19 still rejects the model when its `ModelFile` is
+        // built, with an `IllegalModelException`.
         let mut doc = person_models();
         doc["models"][0]["undeclared"] = json!(true);
         let err = model_manager_from_meta_model(&doc, true).expect_err("validateMetaModel");
@@ -1374,7 +1211,7 @@ mod tests {
         );
     }
 
-    // ---- P5-49 (BC-19 with BC-17 and BC-20, R1): `check_ast_shape` ----
+    // ---- `check_ast_shape` (BC-19, with BC-17 and BC-20) ----
 
     fn person_model() -> Value {
         person_models()["models"][0].clone()
@@ -1450,8 +1287,8 @@ mod tests {
 
     #[test]
     fn check_ast_shape_requires_a_node_for_identified_and_the_validators() {
-        // P5-61: the metamodel check alone accepts a value with no own keys,
-        // or an object without a `$class`, for these four keys.
+        // The metamodel check alone accepts a value with no own keys, or an
+        // object without a `$class`, for these four keys.
         let identified = |value: Value| {
             let mut model = person_model();
             model["declarations"][0]["identified"] = value;
@@ -1535,8 +1372,8 @@ mod tests {
     #[test]
     fn check_ast_shape_rejects_what_the_metamodel_rejects() {
         // BC-19: an unknown property, a wrong-typed field and another
-        // metamodel version (a malformed `identified` is step 1's since
-        // P5-61, `check_ast_shape_requires_a_node_for_identified_and_the_validators`).
+        // metamodel version (a malformed `identified` is step 1's,
+        // `check_ast_shape_requires_a_node_for_identified_and_the_validators`).
         let mut unknown = person_model();
         unknown["undeclared"] = json!([]);
         let mut bounds = person_model();

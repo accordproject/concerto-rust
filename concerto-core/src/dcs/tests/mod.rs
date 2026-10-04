@@ -38,9 +38,9 @@ fn falsy_or_equal_matches_a_string_by_membership() {
 fn falsy_or_equal_matches_an_array_by_intersection() {
     assert!(falsy_or_equal(Some(&json!(["z", "y"])), &["x", "y"]));
     assert!(!falsy_or_equal(Some(&json!(["z", "w"])), &["x", "y"]));
-    // P5-102 (C-3): the intersection's own rules, without building it:
-    // an empty array (truthy) intersects nothing, a non-string element
-    // is never in the string array, and a repeated one counts once.
+    // The intersection's own rules, without building it: an empty
+    // array (truthy) intersects nothing, a non-string element is never
+    // in the string array, and a repeated one counts once.
     assert!(!falsy_or_equal(Some(&json!([])), &["x"]));
     assert!(!falsy_or_equal(
         Some(&json!([1, null, true])),
@@ -49,7 +49,7 @@ fn falsy_or_equal_matches_an_array_by_intersection() {
     assert!(falsy_or_equal(Some(&json!([1, "y", "y"])), &["y"]));
 }
 
-/// P5-102 (C-10): the compile-time class names are the namespace's.
+/// The compile-time class names are the namespace's.
 #[test]
 fn metamodel_class_names_are_qualified_by_the_metamodel_namespace() {
     use crate::instance::metamodel::METAMODEL_NAMESPACE;
@@ -63,8 +63,8 @@ fn metamodel_class_names_are_qualified_by_the_metamodel_namespace() {
     );
 }
 
-/// P5-102 (C-2): the validation manager shares the metamodel, the DCS
-/// model and the caller's files, and parses none of them again.
+/// The validation manager shares the metamodel, the DCS model and the
+/// caller's files, and parses none of them again.
 #[test]
 fn validate_shares_every_model_file() {
     let sample = sample_manager();
@@ -108,8 +108,8 @@ fn validate_shares_every_model_file() {
     assert!(!Arc::ptr_eq(&migrate, &dcs));
 }
 
-/// P5-102 (C-2): an invalid model file given to `validate` is still
-/// validated, and fails as before.
+/// An invalid model file given to `validate` is still validated,
+/// and fails as before.
 #[test]
 fn validate_still_validates_the_callers_model_files() {
     let mut broken = ModelManager::new().unwrap();
@@ -141,8 +141,7 @@ fn validate_still_validates_the_callers_model_files() {
     assert_eq!(err.kind(), ErrorKind::IllegalModel, "{err}");
 }
 
-/// P5-102 (C-2): an empty decorate shares the input's model files and
-/// options.
+/// An empty decorate shares the input's model files and options.
 #[test]
 fn decorate_with_no_command_sets_shares_the_model_files() {
     let sample = sample_manager();
@@ -195,8 +194,8 @@ fn can_migrate_only_within_the_same_major_and_to_a_strictly_higher_minor() {
 
 #[test]
 fn can_migrate_takes_strict_semver_only() {
-    // BC-41 (P5-38): no leading `v` and no surrounding whitespace, with
-    // the error `parseNamespace` throws for any invalid version.
+    // BC-41: no leading `v` and no surrounding whitespace, with the
+    // error `parseNamespace` throws for any invalid version.
     for class in [
         "org.accordproject.decoratorcommands@v0.3.0.DecoratorCommandSet",
         "org.accordproject.decoratorcommands@ 0.3.0.DecoratorCommandSet",
@@ -206,8 +205,9 @@ fn can_migrate_takes_strict_semver_only() {
             .unwrap_or_else(|| panic!("{class} was accepted"));
         assert!(err.to_string().to_lowercase().contains("invalid"), "{err}");
     }
-    // BC-02 (P5-50): an unversioned `$class` namespace is
-    // `parseNamespace`'s invalid namespace, a plain `Error`.
+    // BC-02: an unversioned `$class` namespace is
+    // `parseNamespace`'s invalid namespace, a plain
+    // `Error`.
     let err = can_migrate(
         &json!({ "$class": "org.accordproject.decoratorcommands.DecoratorCommandSet" }),
         DCS_VERSION,
@@ -315,9 +315,9 @@ fn validate_command_rejects_a_namespace_that_does_not_exist() {
 
 #[test]
 fn validate_command_rejects_an_unversioned_target_namespace() {
-    // BC-02 (P5-50, #371 option 1): `org.acme` no longer matches the
-    // loaded `org.acme@1.0.0`; it is `parseNamespace`'s invalid
-    // namespace, a plain `Error`.
+    // BC-02: `org.acme` does not match the loaded
+    // `org.acme@1.0.0`; it is `parseNamespace`'s invalid namespace,
+    // a plain `Error`.
     let mgr = sample_manager();
     for target in [
         json!({ "namespace": "org.acme" }),
@@ -331,7 +331,7 @@ fn validate_command_rejects_an_unversioned_target_namespace() {
 
 #[test]
 fn decorate_models_rejects_an_unversioned_target_namespace_without_validation() {
-    // BC-02 (P5-50, #371 option 1): applying the commands rejects an
+    // BC-02: applying the commands rejects an
     // unversioned `target.namespace` too, with or without
     // `validateCommands`; a versioned one still applies.
     let mgr = sample_manager();
@@ -594,8 +594,8 @@ fn valid_command_set() -> Value {
     })
 }
 
-/// P5-27 (F6): `validate_against` on the manager `validate` built
-/// accepts and rejects what `validate` does, with the same error.
+/// `validate_against` on the manager `validate` built accepts and
+/// rejects what `validate` does, with the same error.
 #[test]
 fn validate_against_matches_validate_on_its_own_manager() {
     let sample = sample_manager();
@@ -713,9 +713,9 @@ fn decorate_models_default_options_skip_the_structural_check_and_fail_as_js_does
     );
 }
 
-/// P5-56 (T2, F-A2): on a manager (system models included for
-/// `ExtractAll`/`ExtractVocab`, not for `ExtractNonVocab`),
-/// `extract` keeping its source gives the same result as without, and
+/// On a manager (system models included for
+/// `ExtractAll`/`ExtractVocab`, not for `ExtractNonVocab`), `extract`
+/// keeping its source gives the same result as without, and
 /// `encode_extract_source` over the kept models rebuilds its command
 /// sets and vocabularies.
 #[test]

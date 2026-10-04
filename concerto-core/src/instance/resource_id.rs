@@ -10,8 +10,6 @@
 //! query and fragment, leaving the remainder as the path. It stays private
 //! (`crate`-visible only), matching `parseUri`'s own `@private` marker in TS.
 //!
-//! Ledger: `src/model/resourceid.ts` (`parseUri`, `ResourceId` constructor,
-//! `fromURI`, `toURI`), `planned_task` P2-01+P4-03 (`SEAM_LEDGER.tsv`).
 //! `ResourceId` is otherwise untested directly in TS: its only coupled
 //! tests are `test/model/relationship.js`'s "#uri serialization" cases,
 //! reached through `Relationship.fromURI`/`toURI`. This port's tests lift
@@ -416,9 +414,8 @@ mod tests {
     // ---- ResourceId constructor ----
 
     // Lifted from test/model/relationship.js's "#uri serialization" cases,
-    // which exercise ResourceId only through Relationship (no direct
-    // resourceid test file exists in TS; SEAM_LEDGER.tsv's
-    // coupled_tests_grep for `toURI` names this file).
+    // which exercise ResourceId only through Relationship (TS has no
+    // resourceid test file).
 
     #[test]
     fn constructor_missing_namespace() {

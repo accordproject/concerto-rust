@@ -110,8 +110,8 @@ fn default_value_is_none_when_absent() {
 
 // `ScalarDeclaration.validate` has no direct TS `it()`: TS only ever
 // reaches it through `ModelFile`/`ModelManager` loading, so its own-op
-// oracle fixtures are cross-op ones under `ModelManager.addCTOModel`,
-// deferred to P2-08 (PORTING.md 6.2). This exercises it directly through
+// oracle fixtures are cross-op ones under `ModelManager.addCTOModel`.
+// This exercises it directly through
 // a minimal `ResolutionContext` double instead, as AGENTS.md asks for a
 // unit test of every ported method.
 struct FakeCtx {

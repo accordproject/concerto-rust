@@ -51,9 +51,9 @@ fn write(value: &Value, out: &mut Vec<u8>) {
     }
 }
 
-/// P5-101 (F-8): the validator's reading is [`to_value`]'s, but for a
-/// double, spelt as `instance::validate::js_number` spells a finite JS
-/// number: an integer below `2^53` in magnitude, itself otherwise.
+/// The validator's reading is [`to_value`]'s, but for a double, spelt
+/// as `instance::validate::js_number` spells a finite JS number: an
+/// integer below `2^53` in magnitude, itself otherwise.
 #[test]
 fn to_validator_value_spells_doubles_as_the_validator_does() {
     use super::to_validator_value;
@@ -142,11 +142,10 @@ fn rejects_bytes_not_in_the_layout() {
     assert!(to_value(&deep).is_err());
 }
 
-/// P5-95 (accordproject/concerto-rust#445): a skipped value
-/// (`deserialize_ignored_any`, which no generated struct reaches: the
-/// typed read refuses an unknown key before its value) is checked as a
-/// read one is, a double's finiteness included, so that bytes the typed
-/// read accepts are bytes [`to_value`] accepts.
+/// A skipped value (`deserialize_ignored_any`, which no generated
+/// struct reaches: the typed read refuses an unknown key before its
+/// value) is checked as a read one is, a double's finiteness included,
+/// so that bytes the typed read accepts are bytes [`to_value`] accepts.
 #[test]
 fn a_skipped_value_is_checked_as_a_read_one() {
     use serde::Deserialize;
@@ -178,10 +177,10 @@ fn a_skipped_value_is_checked_as_a_read_one() {
     }
 }
 
-/// P5-95: an array's or an object's size hint is its count bounded by
-/// the bytes left, so a visitor that reserves it (`kept::KeptSeed`)
-/// never reserves for a count the bytes cannot hold (in WASM, a count
-/// of `u32::MAX` times a `Kept` overflowed the reservation: a trap).
+/// An array's or an object's size hint is its count bounded by the
+/// bytes left, so a visitor that reserves it (`kept::KeptSeed`) never
+/// reserves for a count the bytes cannot hold (in WASM, a count of
+/// `u32::MAX` times a `Kept` overflowed the reservation: a trap).
 #[test]
 fn a_size_hint_is_bounded_by_the_bytes_left() {
     use serde::de::{Deserializer, MapAccess, SeqAccess, Visitor};
@@ -219,13 +218,12 @@ fn a_size_hint_is_bounded_by_the_bytes_left() {
     assert_eq!(hint(&[OBJECT, 0xff, 0xff, 0xff, 0xff]), Some(0));
 }
 
-/// P5-95 (accordproject/concerto-rust#445): bytes not in the layout,
-/// written by hand, with each malformed value at each place a model
-/// reads one (the whole AST, its namespace, an unknown key, a decorator
-/// argument's value, a declaration's kept `location`). Each is the outer
-/// error of both staging paths (a `TypeError` at the JS boundary), never
-/// a load and never a panic. An oversized array count in a `location`
-/// used to make `KeptSeed` reserve it.
+/// Bytes not in the layout, written by hand, with each malformed value
+/// at each place a model reads one (the whole AST, its namespace, an
+/// unknown key, a decorator argument's value, a declaration's kept
+/// `location`). Each is the outer error of both staging paths (a
+/// `TypeError` at the JS boundary), never a load and never a panic. An
+/// oversized array count in a `location` is not reserved up front.
 #[test]
 fn malformed_bytes_are_an_error_at_every_place() {
     use crate::introspect::ModelFile;
@@ -400,7 +398,7 @@ fn malformed_bytes_are_an_error_at_every_place() {
     }
 }
 
-/// P5-92 property test: the same ASTs through both staging paths,
+/// Property test: the same ASTs through both staging paths,
 /// [`ModelFile::from_json_text_with_imports`] over `JSON.stringify`'s
 /// text and [`ModelFile::from_compact_with_imports`] over the bytes the
 /// TS writer writes, with and without BC-19's shape check, give the same
@@ -471,7 +469,7 @@ fn text_and_compact_paths_agree() {
                     (Ok((a, ai)), Ok((b, bi))) => {
                         loaded += 1;
                         // Both ASTs parsed first: `Debug` prints a lazily kept
-                        // AST's source, not its value, until then (A-13).
+                        // AST's source, not its value, until then.
                         assert_eq!(a.ast(), b.ast(), "{text}");
                         assert_eq!(format!("{a:?}"), format!("{b:?}"), "{text}");
                         assert_eq!(ai, bi, "{text}");

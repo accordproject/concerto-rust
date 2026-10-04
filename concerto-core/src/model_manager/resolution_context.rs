@@ -1,34 +1,20 @@
 //! The collaborator traits a ported member calls through
-//! ([`ResolutionContext`], [`ValidatedElement`], PORTING.md 1.4), and the
-//! manager's implementation over its arena.
+//! ([`ResolutionContext`], [`ValidatedElement`]), and the manager's
+//! implementation over its arena.
 
 use super::*;
 
 js_compat_pub! {
-    /// The collaborator calls a ported member makes (PORTING.md 1.4).
-    ///
-    /// In TS, some members call other model objects: a model file, the model
-    /// manager, a parent declaration. The Rust port makes each such call through
-    /// this trait, so that core never knows whether it is talking to the arena or
-    /// to JS objects. Each method mirrors the TS method it replaces, with the same
-    /// name in snake case and the same failure.
-    ///
-    /// There are two implementations:
-    ///
-    /// - [`ModelManager`], over its arena, with [`Node`] as the handle. This is
-    ///   the real one: the Rust engine owns the graph.
-    /// - The JS-callback context in `concerto-wasm`, with a `JsValue` as the
-    ///   handle, for the collaborator fallback: a view that a white-box test builds
-    ///   over a stubbed collaborator, with no Rust-backed parent, resolves its
-    ///   collaborator calls by calling that collaborator back.
-    ///
-    /// The methods are only those a port needs; a port that needs another adds
-    /// it, naming the TS call it replaces.
+    /// The collaborator calls a ported member makes. Where TS calls another
+    /// model object (a model file, the manager, a parent declaration), the
+    /// port calls this trait, so a member does not depend on where the graph
+    /// lives. Each method mirrors the TS method it replaces, in snake case,
+    /// with the same failure. [`ModelManager`] implements it over its arena,
+    /// with [`Node`] as the handle; tests implement it over fakes.
     pub trait ResolutionContext {
         /// A handle to a model element: a model file, a declaration or a property.
         type Node;
-        /// What a collaborator call can raise. The JS-callback context carries the
-        /// JS exception through unchanged.
+        /// What a collaborator call can raise.
         type Error: From<ContractError>;
 
         /// TS: ModelFile.getType (src/introspect/modelfile.ts). `type_name` is
@@ -115,17 +101,10 @@ js_compat_pub! {
     /// The field or scalar declaration a validator is attached to, as a validator
     /// reads it (TS: `Validator.field`, typed `Property | ScalarDeclaration`).
     ///
-    /// This stays its own trait rather than [`ResolutionContext`] methods on a
-    /// node (OD-12, settled in P1-04): TS builds a validator while it is
-    /// constructing the element the validator is attached to
-    /// (`ScalarDeclaration.process` runs in the constructor), before that element
-    /// is in the arena and has a handle. The validator reads only that one
-    /// element (PORTING.md 1.1, rule 9).
-    ///
-    /// Its [`FullyQualified`] name is TS
-    /// `this.getFieldOrScalarDeclaration().getFullyQualifiedName()`, read only
-    /// when an error is reported; its `Error` is what reading the element can
-    /// raise.
+    /// Its own trait, not [`ResolutionContext`] methods on a node: TS builds
+    /// a validator while it constructs the element (`ScalarDeclaration.process`
+    /// runs in the constructor), before the element has a handle. Its
+    /// [`FullyQualified`] name is read only when an error is reported.
     pub trait ValidatedElement: FullyQualified {
         /// TS: `this.field?.ast?.defaultValue`; `None` is `undefined`.
         fn default_value(&self) -> std::result::Result<Option<serde_json::Value>, Self::Error>;
@@ -133,8 +112,7 @@ js_compat_pub! {
         /// TS: `field.getName()`. `StringValidator` and `CollectionSizeValidator`
         /// (unlike `NumberValidator`) pass this as the identifier of every error
         /// their constructor reports, and `StringValidator` passes it again as
-        /// the identifier for the `defaultValue` check it runs at load time
-        /// (P2-02).
+        /// the identifier for the `defaultValue` check it runs at load time.
         fn name(&self) -> std::result::Result<String, Self::Error>;
     }
 }
@@ -169,18 +147,11 @@ impl ModelManager {
 
 /// The manager answers collaborator calls from its own graph. A node of a
 /// kind whose TS object has no such method answers V8's "is not a function"
-/// `TypeError`, as the JS-callback context does for the same call; that is
-/// what TS raises for a primitive type name that `ModelFile.getType`
-/// returned. A handle this manager never handed out is an error.
-///
-/// The answers come from the loader's model state. Where that state is not
-/// yet at parity with TS, so are the answers: super types resolve as the
-/// loader resolves them (P2-08). The implicit `Concept` super type (P2-03) is
-/// in every class-like or enum declaration's `class_info` (`ClassLike`), so
-/// it is in [`ResolutionContext::get_all_super_type_declarations`] too, for
-/// both [`Declaration::Class`] and [`Declaration::Enum`] — TS's
-/// `EnumDeclaration extends ClassDeclaration` gives an enum the same implicit
-/// `Concept` super type (P2-03).
+/// `TypeError` (as TS raises for a primitive type name `ModelFile.getType`
+/// returned). A handle this manager never handed out is an error. Every
+/// class-like or enum declaration's chain has the implicit `Concept` super
+/// type, so [`ResolutionContext::get_all_super_type_declarations`] has it
+/// too.
 impl ResolutionContext for ModelManager {
     type Node = Node;
     type Error = Error;
@@ -216,8 +187,8 @@ impl ResolutionContext for ModelManager {
             return Err(not_a_function());
         };
         match self.declaration(id).ok_or_else(|| unknown(*declaration))? {
-            // The cached chain (A-8), resolved by name as `getType` does;
-            // it starts with the type itself.
+            // The cached chain, resolved by name as `getType` does; it
+            // starts with the type itself.
             Declaration::Class(_) | Declaration::Enum(_) => {
                 Ok(self.class_info(self.decl_fqn(id)?)?.chain[1..]
                     .iter()
@@ -279,15 +250,10 @@ impl ResolutionContext for ModelManager {
                     .transpose()?,
             },
         };
-        // TS: Property.getFullyQualifiedTypeName (src/introspect/property.ts:218)
-        // throws a plain `Error` (`ErrorKind::InvalidArgument`, not
-        // `IllegalModelException`) with its own inline template
+        // TS: `Property.getFullyQualifiedTypeName` throws a plain `Error`
         // (`property-getfullyqualifiedtypename-notfound`) when
-        // `ModelFile.getFullyQualifiedTypeName` returns `null` — which it
-        // does, rather than throwing, so this is the one throw site for
-        // both. `this.type` is JS `null` for an enum value (P2-04) and
-        // renders as the literal string `null`, matching `+ this.type`'s
-        // own string coercion.
+        // `ModelFile.getFullyQualifiedTypeName` returns `null`; an enum
+        // value's `null` type renders as `null`.
         resolved.ok_or_else(|| {
             let field = self.property_by_id(id).expect("checked above");
             ContractError::new(

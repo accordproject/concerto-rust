@@ -58,7 +58,7 @@ fn location(text: &str) -> Result<Location, serde_json::Error> {
     Ok(location)
 }
 
-/// What `typed_ast` did before P5-76: the `Value`, decoded strictly.
+/// The `Value`, decoded strictly: the reference for the kept read.
 fn decoded_from_value(value: &Value) -> Result<String, ()> {
     strict_from_value::<Option<mm::Range>>(value)
         .map(|range| format!("{range:?}"))
@@ -157,8 +157,8 @@ pub(crate) const DECORATOR_CASES: [&str; 28] = [
     r#"[null]"#,
     r#""ab""#,
     r#"{"$class":"concerto.metamodel@1.0.0.Decorator","name":"d"}"#,
-    // P5-93: lists `Kept::into_decorators` reads by moving strings out,
-    // and ones it leaves to the strict decode.
+    // Lists `Kept::into_decorators` reads by moving strings out, and
+    // ones it leaves to the strict decode.
     r#"[{"name":"d","arguments":null,"$class":"concerto.metamodel@1.0.0.Decorator"},{"$class":"Decorator","name":"e\u0021","arguments":[{"$class":"concerto.metamodel@1.0.0.DecoratorNumber","value":18446744073709551615},{"value":-3,"$class":"concerto.metamodel@1.0.0.DecoratorNumber"},{"$class":"concerto.metamodel@1.0.0.DecoratorBoolean","value":false}]}]"#,
     r#"[{"$class":"concerto.metamodel@1.0.0.Decorator","name":"d","arguments":[{"$class":"concerto.metamodel@1.0.0.DecoratorNumber","value":1e300},{"$class":"concerto.metamodel@1.0.0.DecoratorString","value":"\ud83d\ude00"}]}]"#,
     r#"[{"$class":"concerto.metamodel@1.0.0.Decorator","name":"d","arguments":[{"$class":"concerto.metamodel@1.0.0.DecoratorString","value":1}]}]"#,
@@ -181,8 +181,8 @@ pub(crate) const IDENTIFIED_CASES: [&str; 20] = [
     r#"{"$class":"x","name":"id"}"#,
     r#"[]"#,
     r#"0"#,
-    // P5-93: values `IdentifiedSeed` reads field by field, or as far
-    // as it can before reading the rest as a `Kept`.
+    // Values `IdentifiedSeed` reads field by field, or as far as it
+    // can before reading the rest as a `Kept`.
     r#"{"name":"id"}"#,
     r#"{"$class":"concerto.metamodel@1.0.0.Identified","name":"id"}"#,
     r#"{"name":"id","$class":"concerto.metamodel@1.0.0.Identified"}"#,
@@ -195,7 +195,7 @@ pub(crate) const IDENTIFIED_CASES: [&str; 20] = [
     r#"{"extra":1,"$class":"concerto.metamodel@1.0.0.Identified"}"#,
 ];
 
-/// P5-76: a `decorators` value read as a [`Kept`] is its `Value`, and
+/// A `decorators` value read as a [`Kept`] is its `Value`, and
 /// decodes into the generated decorators, and gives the processed
 /// [`Decorator`]s, exactly as that `Value` does.
 ///
@@ -221,7 +221,7 @@ fn kept_decorators_are_the_value_and_decode_as_it() {
             parse_decorators(&serde_json::json!({ "decorators": value })),
             "{text}"
         );
-        // P5-93: decoded by moving the strings out, the same result.
+        // Decoded by moving the strings out, the same result.
         let moved = kept
             .into_decorators()
             .map(|d| format!("{d:?}"))
@@ -230,7 +230,7 @@ fn kept_decorators_are_the_value_and_decode_as_it() {
     }
 }
 
-/// P5-76: the same for an `identified` value.
+/// The same for an `identified` value.
 #[test]
 fn kept_identified_is_the_value_and_decodes_as_it() {
     for text in IDENTIFIED_CASES {
@@ -248,10 +248,10 @@ fn kept_identified_is_the_value_and_decodes_as_it() {
     }
 }
 
-/// P5-93: an `identified` value read by [`IdentifiedSeed`], from the
-/// text and from its `Value`, decodes as its `Value` does; it is kept
-/// as a [`Kept`] (its `Value`) unless it is one of the metamodel's own
-/// two nodes, which BC-19's shape check accepts.
+/// An `identified` value read by [`IdentifiedSeed`], from the text and
+/// from its `Value`, decodes as its `Value` does; it is kept as a
+/// [`Kept`] (its `Value`) unless it is one of the metamodel's own two
+/// nodes, which BC-19's shape check accepts.
 ///
 /// [`IdentifiedSeed`]: super::IdentifiedSeed
 #[test]
@@ -304,7 +304,7 @@ fn identified_is_read_field_by_field_and_decodes_as_its_value() {
 
 /// `decorators` values: arrays of decorator nodes as the reference
 /// parser writes them, and every way one can differ from that, at
-/// every point of a node (P5-93, `DecoratorsSeed`).
+/// every point of a node (`DecoratorsSeed`).
 const STRAIGHT_DECORATOR_CASES: [&str; 36] = [
     r#"[]"#,
     r#"null"#,
@@ -358,9 +358,9 @@ fn describe(read: Result<super::Decorators, serde_json::Error>) -> String {
     }
 }
 
-/// P5-93: an array of decorator nodes read straight into its
-/// decorators (`DecoratorsSeed`) gives exactly what the same value read
-/// as a `Kept` gives (`Decorators::from_kept`), whatever the value.
+/// An array of decorator nodes read straight into its decorators
+/// (`DecoratorsSeed`) gives exactly what the same value read as a
+/// `Kept` gives (`Decorators::from_kept`), whatever the value.
 #[test]
 fn decorators_read_as_they_are_read_from_a_kept() {
     use super::{Decorators, DecoratorsSeed};
