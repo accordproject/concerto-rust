@@ -2865,6 +2865,7 @@ fn decorate_options(options: Option<&Value>) -> dcs::DecorateOptions {
         skip_validation_and_resolution: flag("skipValidationAndResolution"),
         disable_metamodel_resolution: tri("disableMetamodelResolution"),
         disable_metamodel_validation: tri("disableMetamodelValidation"),
+        decorator_validation: None,
     }
 }
 

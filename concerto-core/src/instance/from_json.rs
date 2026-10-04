@@ -338,6 +338,47 @@ fn get_property<'v>(value: Option<&'v Value>, key: &str) -> Result<Js<'v>> {
     })
 }
 
+/// The ECMAScript array index `key` names, if any: the canonical decimal
+/// form of an integer below 2^32 - 1 (`"0"`, `"7"`, `"42"`; not `"07"`,
+/// `"+7"`, `"-0"` or `"4294967295"`). `Object.keys` lists these keys first.
+fn js_array_index(key: &str) -> Option<u32> {
+    let bytes = key.as_bytes();
+    if bytes.is_empty()
+        || bytes.len() > 10
+        || !bytes.iter().all(u8::is_ascii_digit)
+        || (bytes.len() > 1 && bytes.starts_with(b"0"))
+    {
+        return None;
+    }
+    key.parse::<u32>().ok().filter(|i| *i != u32::MAX)
+}
+
+/// The order `Object.keys` lists an ordinary object's own keys in: the
+/// array-index keys first, in ascending numeric order, then the others in
+/// insertion order (the order of `items`). One pass partitions the items
+/// and only the array-index ones are sorted, so it costs O(n + k log k) for
+/// n keys of which k are array indices. Shared by every `Object.keys` port
+/// (`concerto-core-js` included), over keys or `(key, value)` entries.
+pub fn js_key_order<T>(items: impl IntoIterator<Item = T>, key: impl Fn(&T) -> &str) -> Vec<T> {
+    let mut indices: Vec<(u32, T)> = Vec::new();
+    let mut rest: Vec<T> = Vec::new();
+    for item in items {
+        match js_array_index(key(&item)) {
+            Some(i) => indices.push((i, item)),
+            None => rest.push(item),
+        }
+    }
+    if indices.is_empty() {
+        return rest;
+    }
+    // Object keys are distinct, so the sort needs no stability.
+    indices.sort_unstable_by_key(|(i, _)| *i);
+    let mut ordered: Vec<T> = Vec::with_capacity(indices.len() + rest.len());
+    ordered.extend(indices.into_iter().map(|(_, item)| item));
+    ordered.extend(rest);
+    ordered
+}
+
 /// `Object.keys(value)`: V8's `TypeError` for `undefined` and `null`, and
 /// the integer-like keys first, in ascending order. Each key an object
 /// holds is borrowed.
@@ -351,30 +392,10 @@ fn object_keys(value: Option<&Value>) -> Result<Vec<Cow<'_, str>>> {
             )
             .into());
         }
-        Some(Value::Object(map)) => {
-            let mut indices: Vec<(u32, &String)> = map
-                .keys()
-                .filter_map(|k| {
-                    k.parse::<u32>()
-                        .ok()
-                        .filter(|i| *i != u32::MAX && k == &i.to_string())
-                        .map(|i| (i, k))
-                })
-                .collect();
-            indices.sort_by_key(|(i, _)| *i);
-            let mut keys: Vec<Cow<'_, str>> = indices
-                .into_iter()
-                .map(|(_, k)| Cow::Borrowed(k.as_str()))
-                .collect();
-            let leading = keys.len();
-            let rest: Vec<Cow<'_, str>> = map
-                .keys()
-                .filter(|k| !keys[..leading].iter().any(|seen| seen == k.as_str()))
-                .map(|k| Cow::Borrowed(k.as_str()))
-                .collect();
-            keys.extend(rest);
-            keys
-        }
+        Some(Value::Object(map)) => js_key_order(map.keys(), |k| k.as_str())
+            .into_iter()
+            .map(|k| Cow::Borrowed(k.as_str()))
+            .collect(),
         Some(Value::String(s)) => (0..s.encode_utf16().count())
             .map(|i| Cow::Owned(i.to_string()))
             .collect(),

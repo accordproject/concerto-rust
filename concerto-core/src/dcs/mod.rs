@@ -46,6 +46,7 @@ use serde_json::{Map, Value};
 
 use crate::error::{ContractError, Error, ErrorKind, Result};
 use crate::instance::metamodel::metamodel_class;
+use crate::introspect::DecoratorValidationOptions;
 use crate::introspect::model_file::ModelFile;
 use crate::model_manager::ModelManager;
 use crate::model_util::{self, ParsedNamespace};
@@ -144,48 +145,60 @@ fn add_dcs_with_index_to_map<'a>(
 }
 
 /// `DecoratorManager.getDecoratorMaps`: indexes `commands` by target. Each
-/// command goes into one map, by the first target field present, in the
-/// order of TS's `switch (true)`: `type`, `property`, `properties` (one entry
-/// per property named), `mapElement`, `declaration`, `namespace`.
+/// command goes into one map, by the first target field that is truthy, in
+/// the order of TS's `switch (true)` over `!!decoratorCommand?.target?.<f>`:
+/// `type`, `property`, `properties` (one entry per property named),
+/// `mapElement`, `declaration`, `namespace`. TS keys its `Map`s by the
+/// field's value, and only ever looks names (strings) up, so a truthy
+/// non-string value claims the command but is never matched: it is not
+/// indexed. A truthy `properties` that is not an array is a `TypeError`, as
+/// `decoratorCommand.target.properties.forEach(...)` is.
 pub(crate) fn get_decorator_maps<'a>(
     commands: impl IntoIterator<Item = &'a Value>,
-) -> DecoratorMaps<'a> {
+) -> Result<DecoratorMaps<'a>> {
     let mut maps = DecoratorMaps::default();
     for (index, command) in commands.into_iter().enumerate() {
         let target = command.get("target");
-        let dcs = || DcsIndexWrapper { command, index };
-        if let Some(t) = target.and_then(|t| t.get("type")).and_then(Value::as_str) {
-            add_dcs_with_index_to_map(&mut maps.type_commands, t, dcs());
-        } else if let Some(p) = target
-            .and_then(|t| t.get("property"))
-            .and_then(Value::as_str)
-        {
-            add_dcs_with_index_to_map(&mut maps.property_commands, p, dcs());
-        } else if let Some(ps) = target
-            .and_then(|t| t.get("properties"))
-            .and_then(Value::as_array)
-        {
+        let truthy = |key: &str| {
+            target
+                .and_then(|t| t.get(key))
+                .filter(|v| crate::ecma::is_truthy(v))
+        };
+        let dcs = DcsIndexWrapper { command, index };
+        let (map, key) = if let Some(t) = truthy("type") {
+            (&mut maps.type_commands, t)
+        } else if let Some(p) = truthy("property") {
+            (&mut maps.property_commands, p)
+        } else if let Some(ps) = truthy("properties") {
+            let Value::Array(ps) = ps else {
+                return Err(ContractError::new(
+                    ErrorKind::MalformedInput,
+                    "engine-typeerror-notafunction",
+                    vec![(
+                        "expression",
+                        "decoratorCommand.target.properties.forEach".to_string(),
+                    )],
+                )
+                .into());
+            };
             for p in ps.iter().filter_map(Value::as_str) {
-                add_dcs_with_index_to_map(&mut maps.property_commands, p, dcs());
+                add_dcs_with_index_to_map(&mut maps.property_commands, p, dcs);
             }
-        } else if let Some(m) = target
-            .and_then(|t| t.get("mapElement"))
-            .and_then(Value::as_str)
-        {
-            add_dcs_with_index_to_map(&mut maps.map_element_commands, m, dcs());
-        } else if let Some(d) = target
-            .and_then(|t| t.get("declaration"))
-            .and_then(Value::as_str)
-        {
-            add_dcs_with_index_to_map(&mut maps.declaration_commands, d, dcs());
-        } else if let Some(n) = target
-            .and_then(|t| t.get("namespace"))
-            .and_then(Value::as_str)
-        {
-            add_dcs_with_index_to_map(&mut maps.namespace_commands, n, dcs());
+            continue;
+        } else if let Some(m) = truthy("mapElement") {
+            (&mut maps.map_element_commands, m)
+        } else if let Some(d) = truthy("declaration") {
+            (&mut maps.declaration_commands, d)
+        } else if let Some(n) = truthy("namespace") {
+            (&mut maps.namespace_commands, n)
+        } else {
+            continue;
+        };
+        if let Value::String(key) = key {
+            add_dcs_with_index_to_map(map, key, dcs);
         }
     }
-    maps
+    Ok(maps)
 }
 
 /// `DecoratorManager.pushMapValues` (`src/decoratormanager.ts`).
@@ -280,6 +293,24 @@ fn js_read<'a>(object: Option<&'a Value>, key: &str) -> Result<Option<&'a Value>
         None => Err(read_properties_error(false, key)),
         Some(Value::Null) => Err(read_properties_error(true, key)),
         Some(v) => Ok(v.get(key)),
+    }
+}
+
+/// JS `value.forEach(...)`, where `value` is `object.key` read as
+/// [`js_read`] reads it (`None` for `undefined`): an array yields its
+/// elements; `undefined` or `null` is a `TypeError` for reading `forEach`;
+/// any other value (a JSON value never holds a function) is a `TypeError`
+/// naming `expression` as not a function.
+fn js_for_each<'a>(value: Option<&'a Value>, expression: &str) -> Result<&'a [Value]> {
+    js_read(value, "forEach")?;
+    match value {
+        Some(Value::Array(items)) => Ok(items),
+        _ => Err(ContractError::new(
+            ErrorKind::MalformedInput,
+            "engine-typeerror-notafunction",
+            vec![("expression", expression.to_string())],
+        )
+        .into()),
     }
 }
 
@@ -981,9 +1012,13 @@ pub(crate) fn migrate_and_validate(
         for command_set in decorator_command_sets.iter() {
             from_json_against(&validation_model_manager, command_set)?;
             if should_validate_commands {
-                // `from_json_against` already established `commands` is an
-                // array.
-                for command in command_set["commands"].as_array().expect("checked above") {
+                // `commandSet.commands.forEach(...)`. `from_json_against`
+                // accepts a valid instance of any type the validation
+                // manager holds (a `CommandTarget`, say), so `commands` may
+                // be missing or not an array.
+                for command in
+                    js_for_each(command_set.get("commands"), "commandSet.commands.forEach")?
+                {
                     validate_command(&validation_model_manager, command)?;
                 }
             }
@@ -1020,6 +1055,26 @@ pub struct DecorateOptions {
     /// `disableMetamodelValidation`, as
     /// [`disable_metamodel_resolution`](Self::disable_metamodel_resolution).
     pub disable_metamodel_validation: Option<bool>,
+    /// The result manager's `decoratorValidation`, which its models are
+    /// validated with; `None` takes the source manager's, as TS's `new
+    /// ModelManager({ decoratorValidation: modelManager.getDecoratorValidation() })`
+    /// does. A binding whose result manager already has its own options
+    /// passes them here rather than setting them on the source, which would
+    /// forget the source's validated marks.
+    pub decorator_validation: Option<DecoratorValidationOptions>,
+}
+
+impl DecorateOptions {
+    /// The result manager's `decoratorValidation`
+    /// ([`decorator_validation`](Self::decorator_validation)).
+    fn result_decorator_validation<'a>(
+        &'a self,
+        model_manager: &'a ModelManager,
+    ) -> &'a DecoratorValidationOptions {
+        self.decorator_validation
+            .as_ref()
+            .unwrap_or_else(|| model_manager.decorator_validation())
+    }
 }
 
 /// `DecoratorManager.decorateModels`: applies every command of every set,
@@ -1036,7 +1091,13 @@ pub fn decorate_models(
     if !prepare_command_sets(model_manager, decorator_command_sets, options)? {
         // The same model files, shared, under the same options, and
         // not validated again.
-        return model_manager.new_like_with(model_manager.user_files_with_proofs(), false);
+        let mut result =
+            model_manager.new_like_with(model_manager.user_files_with_proofs(), false)?;
+        let decorator_validation = options.result_decorator_validation(model_manager);
+        if result.decorator_validation() != decorator_validation {
+            result.set_decorator_validation(decorator_validation.clone());
+        }
+        return Ok(result);
     }
     let prepared = index_commands(decorator_command_sets, options)?;
     apply_decoration(model_manager, &prepared, options)
@@ -1111,6 +1172,7 @@ pub fn index_commands<'a>(
     // Every element is a command object: `synthetic_decorator_imports` has
     // already read `command.decorator` from each.
     let combined_commands: Vec<&'a Value> = combined_commands.into_iter().flatten().collect();
+    let maps = get_decorator_maps(combined_commands.iter().copied())?;
     // BC-02: a command's `target.namespace` goes through `parseNamespace`,
     // so an unversioned one is rejected when the commands are applied,
     // where TS 5.0.0 matched any version.
@@ -1124,7 +1186,6 @@ pub fn index_commands<'a>(
             model_util::parse_namespace(namespace)?;
         }
     }
-    let maps = get_decorator_maps(combined_commands);
     Ok(PreparedDecoration {
         decorator_imports,
         maps,
@@ -1148,7 +1209,7 @@ pub fn apply_decoration(
     }
 
     let mut decorated = ModelManager::new()?;
-    decorated.set_decorator_validation(model_manager.decorator_validation().clone());
+    decorated.set_decorator_validation(options.result_decorator_validation(model_manager).clone());
     for model in models.into_iter().filter(|m| {
         !m.get("namespace")
             .and_then(Value::as_str)

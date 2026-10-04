@@ -831,6 +831,41 @@
         validate_map(&mgr, "org.acme@1.0.0.ScalarKeyMap", &map).unwrap();
     }
 
+    /// R2B-6: a map whose object key type does not resolve (a model loaded
+    /// without validation). TS's `ModelUtil.isScalar` gives `undefined` for
+    /// it, never an error, and anything else is met inside `obj.forEach`:
+    /// an empty map, or one holding only system keys, passes.
+    #[test]
+    fn an_unresolvable_map_key_type_is_not_an_error_before_the_first_entry() {
+        let mut mgr = ModelManager::new().unwrap();
+        mgr.load_model(
+            &json!({
+                "$class": "concerto.metamodel@1.0.0.Model",
+                "namespace": "org.loose@1.0.0",
+                "declarations": [
+                    { "$class": "concerto.metamodel@1.0.0.MapDeclaration", "name": "LooseMap",
+                      "key": { "$class": "concerto.metamodel@1.0.0.ObjectMapKeyType",
+                               "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Missing" } },
+                      "value": { "$class": "concerto.metamodel@1.0.0.StringMapValueType" } }
+                ]
+            }),
+            None,
+        )
+        .unwrap();
+        let id = mgr.declaration_id("org.loose@1.0.0.LooseMap").unwrap();
+        let Some(crate::introspect::Declaration::Map(map)) = mgr.declaration(id) else {
+            panic!("a map declaration");
+        };
+        assert!(!map_key_is_scalar(&mgr, "org.loose@1.0.0.LooseMap", map).unwrap());
+        validate_map(&mgr, "org.loose@1.0.0.LooseMap", &js_map(vec![])).unwrap();
+        validate_map(
+            &mgr,
+            "org.loose@1.0.0.LooseMap",
+            &js_map(vec![(json!("$class"), json!("x"))]),
+        )
+        .unwrap();
+    }
+
     #[test]
     fn a_scalar_keyed_map_with_a_non_string_value_is_rejected() {
         let mgr = fixture();
@@ -1642,6 +1677,31 @@
         assert!(err.to_string().contains("not assignable"), "{err}");
     }
 
+    /// R2B-7: a falsy `$class` is no `$class` for the `_as` entry points,
+    /// as `populate` and `collect_violations` read it, so the document is
+    /// read as the named type; an unknown named type is `TypeNotFound`
+    /// whether or not the document has a `$class`.
+    #[test]
+    fn the_as_entry_points_read_a_falsy_class_as_the_named_type() {
+        let mgr = fixture();
+        let options = crate::instance::ValidationOptions::default();
+        let base = "org.acme@1.0.0.Base";
+        for class in [json!(""), json!(null), json!(false), json!(0)] {
+            let value = json!({ "$class": class, "a": "x" });
+            mgr.validate_instance_as(base, &value, &options).unwrap();
+            assert!(mgr.check_instance_as(base, &value, &options).is_valid());
+        }
+        let typo = "org.acme@1.0.0.Typo";
+        for value in [
+            json!({ "$class": "org.acme@1.0.0.Base", "a": "x" }),
+            json!({ "a": "x" }),
+        ] {
+            let err = err_of(mgr.validate_instance_as(typo, &value, &options));
+            assert_eq!(err.kind(), ErrorKind::TypeNotFound, "{value}: {err}");
+        }
+    }
+
+    // ---- One walk, stop or collect ----
     // ---- One walk, stop or collect ----
 
     /// The first violation collected is the error the first-error walk

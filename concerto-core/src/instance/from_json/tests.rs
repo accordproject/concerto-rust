@@ -292,3 +292,20 @@
         assert_eq!(err.details()[0].code, DetailCode::TypeViolation);
         assert_eq!(err.details()[0].path, "$.doors");
     }
+
+    /// R2C-2: `js_key_order` lists the canonical array-index keys first, in
+    /// ascending order, then the others in insertion order.
+    #[test]
+    fn js_key_order_lists_array_indices_first() {
+        let keys = ["b", "10", "a", "2", "01", "+3", "4294967295", "4294967294", "0", "-0", ""];
+        assert_eq!(
+            js_key_order(keys, |k| k),
+            ["0", "2", "10", "4294967294", "b", "a", "01", "+3", "4294967295", "-0", ""]
+        );
+        assert!(js_key_order(Vec::<&str>::new(), |k| k).is_empty());
+        let entries = [("1", 'x'), ("y", 'y'), ("0", 'z')];
+        assert_eq!(
+            js_key_order(entries, |(k, _)| k),
+            [("0", 'z'), ("1", 'x'), ("y", 'y')]
+        );
+    }

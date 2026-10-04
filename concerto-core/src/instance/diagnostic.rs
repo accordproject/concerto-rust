@@ -490,11 +490,8 @@ pub fn diagnostics_of_error(
 /// `NaN`, a `Map`, a dayjs), whose verdict `read` gives (the JS binding's
 /// `Serializer.fromJSON`), so the error is always `read`'s. `readings` are
 /// the document's tagged forms; the diagnostics are [`diagnose`]'s over the
-/// first reading whose walk raises the same error, else the error's own.
-///
-/// # Panics
-///
-/// When `readings` is empty.
+/// first reading whose walk raises the same error, else the error's own
+/// (located in the first reading, or at the root when there is none).
 #[cfg_attr(not(feature = "js-compat"), allow(dead_code))]
 pub fn diagnose_read(
     mm: &ModelManager,
@@ -504,7 +501,8 @@ pub fn diagnose_read(
     collect_all: bool,
     read: impl FnOnce() -> Result<()>,
 ) -> Diagnosis {
-    let primary = &readings[0];
+    const NO_READING: &Value = &Value::Null;
+    let primary = readings.first().unwrap_or(NO_READING);
     let checked = match fqn {
         Some(fqn) => {
             validate::check_assignable_to_declaration(mm, fqn, primary).and_then(|()| read())

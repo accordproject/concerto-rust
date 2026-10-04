@@ -290,7 +290,7 @@ fn get_decorator_maps_indexes_by_the_first_target_field_in_priority_order() {
         // `type` wins over `declaration` when a command's target sets both.
         json!({"target": {"type": "T2", "declaration": "D2"}}),
     ];
-    let maps = get_decorator_maps(&commands);
+    let maps = get_decorator_maps(&commands).unwrap();
     assert_eq!(maps.type_commands.get("T").unwrap().len(), 1);
     assert_eq!(maps.property_commands.get("p").unwrap().len(), 1);
     assert_eq!(maps.property_commands.get("a").unwrap().len(), 1);
@@ -300,6 +300,77 @@ fn get_decorator_maps_indexes_by_the_first_target_field_in_priority_order() {
     assert_eq!(maps.namespace_commands.get("N").unwrap().len(), 1);
     assert_eq!(maps.type_commands.get("T2").unwrap().len(), 1);
     assert!(!maps.declaration_commands.contains_key("D2"));
+}
+
+/// R2C-4: TS picks a command's map by truthiness
+/// (`!!decoratorCommand?.target?.property`), so an empty `property` or
+/// `type` falls through to the next target field.
+#[test]
+fn get_decorator_maps_skips_falsy_target_fields_as_js_does() {
+    let commands = vec![
+        json!({"target": {"declaration": "Person", "property": ""}}),
+        json!({"target": {"declaration": "Person", "type": ""}}),
+        json!({"target": {"namespace": "N", "properties": []}}),
+        // A truthy non-string claims the command, but no name matches it.
+        json!({"target": {"type": 5, "declaration": "D"}}),
+    ];
+    let maps = get_decorator_maps(&commands).unwrap();
+    assert_eq!(maps.declaration_commands.get("Person").unwrap().len(), 2);
+    assert!(maps.property_commands.is_empty());
+    assert!(maps.type_commands.is_empty());
+    assert!(maps.namespace_commands.is_empty());
+    assert!(!maps.declaration_commands.contains_key("D"));
+}
+
+/// R2C-4 repro 1: `{ declaration: "Person", property: "" }` decorates
+/// `Person` in TS 5.0.0 (the command is filed under the declaration, and
+/// `executeCommand` sees no truthy `property`).
+#[test]
+fn an_empty_target_property_decorates_the_declaration() {
+    let mgr = sample_manager();
+    for empty in ["property", "type"] {
+        let mut target = json!({ "namespace": "org.acme@1.0.0", "declaration": "Person" });
+        target[empty] = json!("");
+        let mut command_set = json!({
+            "commands": [{
+                "type": "UPSERT",
+                "target": target,
+                "decorator": { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "Important" }
+            }]
+        });
+        let decorated = decorate_models(
+            &mgr,
+            std::slice::from_mut(&mut command_set),
+            &mut DecorateOptions::default(),
+        )
+        .unwrap();
+        let ast = decorated.model_file("org.acme@1.0.0").unwrap().ast();
+        assert_eq!(
+            ast["declarations"][0]["decorators"][0]["name"], "Important",
+            "{empty}"
+        );
+    }
+}
+
+/// R2C-4 repro 2: a truthy non-array `properties` (validation off, the
+/// default) is TS's `TypeError` from `target.properties.forEach`.
+#[test]
+fn a_non_array_target_properties_is_a_type_error() {
+    let mgr = sample_manager();
+    let mut command_set = json!({
+        "commands": [{
+            "type": "UPSERT",
+            "target": { "declaration": "Person", "properties": "name" },
+            "decorator": { "$class": "concerto.metamodel@1.0.0.Decorator", "name": "Important" }
+        }]
+    });
+    let err = decorate_models(
+        &mgr,
+        std::slice::from_mut(&mut command_set),
+        &mut DecorateOptions::default(),
+    )
+    .unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::MalformedInput, "{err}");
 }
 
 #[test]
@@ -711,6 +782,87 @@ fn decorate_models_default_options_skip_the_structural_check_and_fail_as_js_does
         err.to_string(),
         "Cannot read properties of undefined (reading 'decorator')"
     );
+}
+
+/// R2C-1: `decorateModels(mm, [{ $class: '...CommandTarget' }], { validate:
+/// true, validateCommands: true })`. Every `CommandTarget` field is
+/// optional, so `serializer.fromJSON` accepts the set, and TS 5.0.0 then
+/// throws a `TypeError` from `commandSet.commands.forEach` (`commands` is
+/// `undefined`). This used to panic (a WASM trap).
+#[test]
+fn validate_commands_over_a_command_set_of_another_dcs_type_is_a_type_error() {
+    let mgr = sample_manager();
+    let mut sets = [json!({
+        "$class": "org.accordproject.decoratorcommands@0.4.0.CommandTarget"
+    })];
+    let mut options = DecorateOptions {
+        validate: true,
+        validate_commands: true,
+        ..Default::default()
+    };
+    let err = decorate_models(&mgr, &mut sets, &mut options).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::MalformedInput, "{err}");
+    assert_eq!(
+        err.to_string(),
+        "Cannot read properties of undefined (reading 'forEach')"
+    );
+}
+
+/// R2C-1, the other shapes `commands` can take on a set that validates as
+/// some type other than `DecoratorCommandSet`: `null` is a `TypeError` for
+/// reading `forEach`, a non-array value one for calling it.
+#[test]
+fn validate_commands_reads_commands_for_each_as_js_does() {
+    for (commands, expected) in [
+        (
+            Value::Null,
+            "Cannot read properties of null (reading 'forEach')",
+        ),
+        (json!("x"), "commandSet.commands.forEach is not a function"),
+        (json!({}), "commandSet.commands.forEach is not a function"),
+    ] {
+        let err = super::js_for_each(Some(&commands), "commandSet.commands.forEach").unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::MalformedInput, "{err}");
+        assert_eq!(err.to_string(), expected);
+    }
+    let commands = json!([1, 2]);
+    assert_eq!(super::js_for_each(Some(&commands), "e").unwrap().len(), 2);
+}
+
+/// R2D-2: the result manager's `decoratorValidation` comes from
+/// `DecorateOptions::decorator_validation` when set (the binding passes the
+/// target manager's), and the source's otherwise. The source keeps its
+/// options and its validity proofs, for a decorated result and an empty
+/// command set alike.
+#[test]
+fn the_result_decorator_validation_is_passed_in_and_the_source_is_untouched() {
+    let mgr = sample_manager();
+    let mut command_set = valid_command_set();
+    command_set["commands"][0]["decorator"]["$class"] = json!("concerto.metamodel@1.0.0.Decorator");
+    mgr.validate_models().unwrap();
+    assert!(mgr.validity_proof("org.acme@1.0.0").is_some());
+    let target = crate::introspect::DecoratorValidationOptions {
+        missing_decorator: Some("warn".into()),
+        invalid_decorator: None,
+    };
+    for sets in [vec![command_set.clone()], Vec::new()] {
+        let mut sets = sets;
+        let mut options = DecorateOptions {
+            decorator_validation: Some(target.clone()),
+            ..Default::default()
+        };
+        let decorated = decorate_models(&mgr, &mut sets, &mut options).unwrap();
+        assert_eq!(decorated.decorator_validation(), &target);
+        assert_eq!(
+            mgr.decorator_validation(),
+            &crate::introspect::DecoratorValidationOptions::default()
+        );
+        assert!(mgr.validity_proof("org.acme@1.0.0").is_some());
+    }
+    // Without one, the result takes the source's.
+    let mut sets = [command_set];
+    let decorated = decorate_models(&mgr, &mut sets, &mut DecorateOptions::default()).unwrap();
+    assert_eq!(decorated.decorator_validation(), mgr.decorator_validation());
 }
 
 /// On a manager (system models included for

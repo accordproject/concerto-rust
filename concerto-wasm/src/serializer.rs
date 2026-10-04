@@ -33,6 +33,21 @@ pub(crate) fn wire_error(reason: String) -> Error {
     )))
 }
 
+/// The error for wire JSON text serde_json could not read. Past serde_json's
+/// recursion limit (128 levels) the text is valid, only nested deeper than
+/// the engine reads text: that is a [`wire_error`], so the shim runs its TS
+/// visitor path, as TS 5.0.0 reads any depth (R2D-1). Any other failure is
+/// malformed text, a JS `SyntaxError` ([`json_syntax`]).
+pub(crate) fn wire_text_error(e: serde_json::Error) -> Error {
+    if e.is_syntax() && e.to_string().starts_with("recursion limit exceeded") {
+        wire_error(format!(
+            "a wire document nested too deeply for the text path: {e}"
+        ))
+    } else {
+        json_syntax(e)
+    }
+}
+
 /// A JS number that is not finite, or `-0`, in [`WIRE_TAG`]'s `"number"`
 /// encoding.
 pub(crate) fn decode_wire_number(text: &str) -> Result<f64> {
@@ -504,7 +519,8 @@ pub(crate) fn parse_wire_bytes(bytes: &[u8]) -> Result<CoreValue> {
 
 /// `decode_wire(&serde_json::from_str(text)?)` in one pass (see
 /// [`WireSeed`]): malformed JSON throws a JS `SyntaxError`, and an
-/// unrecognised wire shape its [`wire_error`].
+/// unrecognised wire shape, or one nested past serde_json's recursion limit
+/// ([`wire_text_error`]), its [`wire_error`].
 pub(crate) fn parse_wire(text: &str) -> Result<CoreValue> {
     use serde::de::DeserializeSeed;
     let error = RefCell::new(None);
@@ -512,7 +528,7 @@ pub(crate) fn parse_wire(text: &str) -> Result<CoreValue> {
     let value = WireSeed { error: &error }
         .deserialize(&mut deserializer)
         .and_then(|value| deserializer.end().map(|()| value))
-        .map_err(json_syntax)?;
+        .map_err(wire_text_error)?;
     match error.into_inner() {
         Some(error) => Err(error),
         None => Ok(value),
@@ -911,7 +927,7 @@ pub fn validate_meta_model_instance(json_text: &str, preset: &str) -> JsResult<(
                 .into());
             }
         };
-        let wire = serde_json::from_str::<Value>(json_text).map_err(json_syntax)?;
+        let wire = serde_json::from_str::<Value>(json_text).map_err(wire_text_error)?;
         let options = preset.from_json_options();
         let serializer = Serializer::new(true, true, None)?;
         let mut outcome = Ok(String::new());

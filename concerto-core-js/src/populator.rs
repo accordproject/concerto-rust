@@ -17,7 +17,8 @@ use crate::value::{Instance, JsObject, JsValue};
 use concerto_core::error::{ContractError, ErrorKind, Result};
 use concerto_core::instance::dayjs::{Dayjs, UtcOffset};
 use concerto_core::instance::from_json::{
-    FromJsonOptions, required_null_error, strict_qualified_date_time, unknown_keys_error,
+    FromJsonOptions, js_key_order, required_null_error, strict_qualified_date_time,
+    unknown_keys_error,
 };
 use concerto_core::instance::model::{self, Field, FieldType, RelationshipSlot, TypeRef};
 use concerto_core::instance::plan::{self, ClassPlan};
@@ -204,31 +205,10 @@ pub(crate) fn object_keys_ref(value: &JsValue) -> Result<Vec<Cow<'_, str>>> {
             )
             .into());
         }
-        JsValue::Object(map) => {
-            // Integer-like keys come first, in ascending order.
-            let mut indices: Vec<(u32, &String)> = map
-                .keys()
-                .filter_map(|k| {
-                    k.parse::<u32>()
-                        .ok()
-                        .filter(|i| *i != u32::MAX && k == &i.to_string())
-                        .map(|i| (i, k))
-                })
-                .collect();
-            indices.sort_by_key(|(i, _)| *i);
-            let mut keys: Vec<Cow<'_, str>> = indices
-                .into_iter()
-                .map(|(_, k)| Cow::Borrowed(k.as_str()))
-                .collect();
-            let leading = keys.len();
-            keys.extend(
-                map.keys()
-                    .filter(|k| !keys[..leading].iter().any(|seen| seen == k.as_str()))
-                    .map(|k| Cow::Borrowed(k.as_str()))
-                    .collect::<Vec<_>>(),
-            );
-            keys
-        }
+        JsValue::Object(map) => js_key_order(map.keys(), |k| k.as_str())
+            .into_iter()
+            .map(|k| Cow::Borrowed(k.as_str()))
+            .collect(),
         JsValue::String(s) => (0..s.encode_utf16().count())
             .map(|i| Cow::Owned(i.to_string()))
             .collect(),
@@ -271,39 +251,10 @@ fn get_assignable_properties<'j>(
 /// same keys in the same order, read in one pass over the map rather
 /// than one lookup per key.
 fn object_entries_ref(map: &crate::value::JsObject) -> Vec<(Cow<'_, str>, &JsValue)> {
-    // Integer-like keys come first, in ascending order.
-    let mut indices: Vec<(u32, &String, &JsValue)> = map
-        .iter()
-        .filter_map(|(k, v)| {
-            k.parse::<u32>()
-                .ok()
-                .filter(|i| *i != u32::MAX && k == &i.to_string())
-                .map(|i| (i, k, v))
-        })
-        .collect();
-    if indices.is_empty() {
-        return map
-            .iter()
-            .map(|(k, v)| (Cow::Borrowed(k.as_str()), v))
-            .collect();
-    }
-    indices.sort_by_key(|(i, _, _)| *i);
-    let mut entries: Vec<(Cow<'_, str>, &JsValue)> = indices
+    js_key_order(map.iter(), |(k, _)| k.as_str())
         .into_iter()
-        .map(|(_, k, v)| (Cow::Borrowed(k.as_str()), v))
-        .collect();
-    let leading = entries.len();
-    let rest: Vec<_> = map
-        .iter()
-        .filter(|(k, _)| {
-            !entries[..leading]
-                .iter()
-                .any(|(seen, _)| seen == k.as_str())
-        })
         .map(|(k, v)| (Cow::Borrowed(k.as_str()), v))
-        .collect();
-    entries.extend(rest);
-    entries
+        .collect()
 }
 
 /// [`get_assignable_properties`], with each property's value
