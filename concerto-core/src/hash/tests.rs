@@ -38,9 +38,11 @@ fn fx_colliding(count: usize) -> Vec<String> {
 
 #[test]
 fn fast_seeded_state_is_foldhash_under_the_process_keys() {
-    let (k0, k1) = hash_keys();
-    let shared: &'static SharedSeed = Box::leak(Box::new(SharedSeed::from_u64(k1)));
-    let expected = SeedableRandomState::with_seed(k0, shared);
+    let keyed = SeededState::default();
+    let per_hasher = keyed.hash_one(("foldhash", 0_u8));
+    let shared = SharedSeed::from_u64(keyed.hash_one(("foldhash", 1_u8)));
+    let shared: &'static SharedSeed = Box::leak(Box::new(shared));
+    let expected = SeedableRandomState::with_seed(per_hasher, shared);
     let state = FastSeededState::default();
     for key in ["a", "org.example@1.0.0", "Person"] {
         assert_eq!(state.hash_one(key), expected.hash_one(key));
@@ -72,4 +74,19 @@ fn fx_colliding_names_hash_apart() {
     let seeded = SeededState::default();
     let distinct: HashSet<u64> = names.iter().map(|n| seeded.hash_one(n.as_str())).collect();
     assert_eq!(distinct.len(), NAMES);
+}
+
+/// foldhash is seeded through a derivation, never with the SipHash keys
+/// themselves, so its seeds give nothing away about the keyed tables.
+#[test]
+fn fold_seeds_are_not_the_siphash_keys() {
+    let (k0, k1) = hash_keys();
+    let (per_hasher, _) = fold_seed();
+    assert!(![k0, k1].contains(per_hasher));
+    let raw_keys: &'static SharedSeed = Box::leak(Box::new(SharedSeed::from_u64(k1)));
+    let raw = SeedableRandomState::with_seed(k0, raw_keys);
+    assert_ne!(
+        FastSeededState::default().hash_one("org.example@1.0.0"),
+        raw.hash_one("org.example@1.0.0")
+    );
 }

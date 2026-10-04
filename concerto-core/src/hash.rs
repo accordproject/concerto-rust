@@ -62,9 +62,17 @@ pub fn seed_hasher(k0: u64, k1: u64) -> bool {
 }
 
 /// The keys [`SeededState`] uses, set on first use when [`seed_hasher`]
-/// has not set them: two outputs of the OS-seeded [`RandomState`].
+/// has not set them: two outputs of the OS-seeded [`RandomState`]. On
+/// `wasm32-unknown-unknown` that fallback has fixed keys, so reaching it
+/// there means a seeded map was built before concerto-wasm's `start` ran:
+/// a debug build fails loudly rather than hash under keys anyone can
+/// compute.
 fn hash_keys() -> (u64, u64) {
     *HASH_KEYS.get_or_init(|| {
+        debug_assert!(
+            !cfg!(all(target_arch = "wasm32", target_os = "unknown")),
+            "a seeded map was built before seed_hasher set the hash keys"
+        );
         let state = RandomState::new();
         (state.hash_one(0_u64), state.hash_one(1_u64))
     })
@@ -97,25 +105,39 @@ impl BuildHasher for SeededState {
     }
 }
 
-/// foldhash's shared seed, derived once from the process-wide keys
-/// ([`hash_keys`]), so it is seeded from the OS natively and from
-/// `crypto.getRandomValues` on WASM ([`seed_hasher`]), never fixed.
-static FOLD_SEED: OnceLock<SharedSeed> = OnceLock::new();
+/// foldhash's seeds, the per-hasher seed and the shared seed, derived once
+/// from the process-wide keys ([`hash_keys`]), so they are seeded from the
+/// OS natively and from `crypto.getRandomValues` on WASM
+/// ([`seed_hasher`]), never fixed.
+static FOLD_SEED: OnceLock<(u64, SharedSeed)> = OnceLock::new();
 
-/// foldhash (`fast`) seeded from the [`SeededState`] keys ([`seed_hasher`]),
-/// for per-lookup tables keyed by model names, where SipHash is too slow.
-/// It resists HashDoS from keys chosen without the seed, but is not a keyed
-/// PRF, so instance keys keep SipHash. foldhash's own `RandomState` has no
-/// entropy on `wasm32-unknown-unknown`.
+/// [`FOLD_SEED`]'s two seeds: SipHash outputs under the process-wide keys
+/// over a foldhash-only domain tag, never the keys themselves. foldhash is
+/// not a keyed PRF, so recovering its seeds must not give away the keys of
+/// every [`SeededState`] table.
+fn fold_seed() -> &'static (u64, SharedSeed) {
+    FOLD_SEED.get_or_init(|| {
+        let keyed = SeededState::default();
+        let per_hasher = keyed.hash_one(("foldhash", 0_u8));
+        let shared = keyed.hash_one(("foldhash", 1_u8));
+        (per_hasher, SharedSeed::from_u64(shared))
+    })
+}
+
+/// foldhash (`fast`) seeded from the [`SeededState`] keys ([`seed_hasher`])
+/// through a domain-separated derivation ([`fold_seed`]), for per-lookup
+/// tables keyed by model names, where SipHash is too slow. It resists
+/// HashDoS from keys chosen without the seed, but is not a keyed PRF, so
+/// instance keys keep SipHash. foldhash's own `RandomState` has no entropy
+/// on `wasm32-unknown-unknown`.
 #[derive(Debug, Clone, Copy)]
 pub struct FastSeededState(SeedableRandomState);
 
 impl Default for FastSeededState {
     #[inline]
     fn default() -> Self {
-        let (k0, k1) = hash_keys();
-        let shared = FOLD_SEED.get_or_init(|| SharedSeed::from_u64(k1));
-        Self(SeedableRandomState::with_seed(k0, shared))
+        let (per_hasher, shared) = fold_seed();
+        Self(SeedableRandomState::with_seed(*per_hasher, shared))
     }
 }
 
