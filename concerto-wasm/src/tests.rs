@@ -878,3 +878,57 @@ fn system_model_header_is_only_for_the_exact_system_texts() {
     assert_eq!(system_model_header(""), None);
     assert_eq!(system_model_header(&format!("{} ", texts[1].1)), None);
 }
+
+/// One shared model file to stage, any number of times.
+fn staged_test_file() -> Arc<ModelFile> {
+    let ast = json!({
+        "$class": "concerto.metamodel@1.0.0.Model",
+        "namespace": "org.staged@1.0.0",
+        "imports": [],
+        "declarations": []
+    });
+    Arc::new(ModelFile::from_json(&ast, None).unwrap())
+}
+
+/// A batch larger than the staging slot keeps every one of its own files;
+/// the next ordinary insert evicts back down to the capacity, oldest first.
+#[test]
+fn a_staged_batch_larger_than_the_slot_keeps_its_files() {
+    let file = staged_test_file();
+    let mut staged = crate::staging::StagedModelFiles::default();
+    let batch = crate::staging::StagedModelFiles::CAPACITY + 44;
+    let ids: Vec<u32> = (0..batch)
+        .map(|_| staged.insert_shared_in_batch(Arc::clone(&file), batch))
+        .collect();
+    assert_eq!(staged.files.len(), batch);
+    assert!(ids.iter().all(|id| staged.files.contains_key(id)));
+    let last = staged.insert_shared(Arc::clone(&file));
+    assert_eq!(
+        staged.files.len(),
+        crate::staging::StagedModelFiles::CAPACITY
+    );
+    assert!(staged.files.contains_key(&last));
+    assert!(!staged.files.contains_key(&ids[0]));
+}
+
+/// Stage ids wrap around: the entry evicted is still the one staged
+/// longest ago, not the one with the smallest id.
+#[test]
+fn staging_evicts_the_oldest_stage_across_an_id_wrap() {
+    let file = staged_test_file();
+    let mut staged = crate::staging::StagedModelFiles {
+        next: u32::MAX - 1,
+        ..Default::default()
+    };
+    let ids: Vec<u32> = (0..crate::staging::StagedModelFiles::CAPACITY)
+        .map(|_| staged.insert_shared(Arc::clone(&file)))
+        .collect();
+    assert_eq!(ids[0], u32::MAX - 1);
+    assert_eq!(ids[2], 0);
+    staged.insert_shared(Arc::clone(&file));
+    assert!(
+        !staged.files.contains_key(&(u32::MAX - 1)),
+        "the oldest went"
+    );
+    assert!(staged.files.contains_key(&0), "a newer, smaller id stayed");
+}

@@ -163,17 +163,26 @@ pub(crate) const DCS_EXCLUDE_NS: [&str; 3] =
 /// `null` for a system file `fromAst` skips ([`DCS_EXCLUDE_NS`]), else a
 /// [`FlatStaged`]. The one helper [`stage_result`] and
 /// [`dcs_memo::DcsExtractKept::stage`] stage through; it never moves
-/// `target`'s epoch, and evicts as [`StagedModelFiles::insert_shared`] does.
+/// `target`'s epoch, and evicts as [`StagedModelFiles::insert_shared_in_batch`]
+/// does, sized to the batch.
 pub(crate) fn stage_shared<'h, 'a: 'h>(
     target: &mut ModelManagerHandle,
     files: impl Iterator<Item = (&'h Arc<ModelFile>, Option<&'h StagedHeader<'a>>)>,
 ) -> Vec<Value> {
+    let files: Vec<_> = files.collect();
+    // Sized to the batch: a result with more files than the slot holds
+    // still keeps every one of them staged.
+    let batch = files
+        .iter()
+        .filter(|(mf, _)| !DCS_EXCLUDE_NS.contains(&mf.namespace()))
+        .count();
     files
+        .into_iter()
         .map(|(mf, header)| {
             if DCS_EXCLUDE_NS.contains(&mf.namespace()) {
                 return Value::Null;
             }
-            let id = target.staged.insert_shared(Arc::clone(mf));
+            let id = target.staged.insert_shared_in_batch(Arc::clone(mf), batch);
             concerto_core::json::to_value(FlatStaged { id, header }).unwrap_or(Value::Null)
         })
         .collect()

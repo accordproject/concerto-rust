@@ -79,7 +79,7 @@ pub(crate) fn decode_wire_typed(map: &concerto_core::json::Map<String, Value>) -
         .get("fields")
         .and_then(Value::as_object)
         .ok_or_else(|| wire_error("a typed wire value without fields".to_string()))?;
-    let mut props = SerializerOptions::default();
+    let mut props = JsObject::default();
     for (key, value) in fields {
         props.insert(key.clone(), decode_wire(value)?);
     }
@@ -107,7 +107,7 @@ pub(crate) fn decode_wire(value: &Value) -> Result<CoreValue> {
             .map(CoreValue::Array),
         Value::Object(map) => match map.get(WIRE_TAG).and_then(Value::as_str) {
             None => {
-                let mut out = SerializerOptions::default();
+                let mut out = JsObject::default();
                 for (key, item) in map {
                     out.insert(key.clone(), decode_wire(item)?);
                 }
@@ -185,15 +185,15 @@ pub(crate) fn model_file_from_text(
     Ok(ModelFile::from_json_text(ast, definitions, file_name).map_err(json_syntax)??)
 }
 
-/// The options object a serializer call's `optionsText` decodes to
-/// (`JSON.stringify`d by the view, `"null"` for no options).
-pub(crate) fn decode_wire_options(text: &str) -> Result<Option<SerializerOptions>> {
-    let value = parse_json(text)?;
+/// The options object a serializer call's `optionsText` (`JSON.stringify`d
+/// by the view, `"null"` for no options) decodes to, from its parsed wire
+/// encoding.
+fn decode_wire_options_of(value: &Value) -> Result<Option<SerializerOptions>> {
     match value {
         Value::Null => Ok(None),
         Value::Object(map) => {
             let mut options = SerializerOptions::default();
-            for (key, item) in &map {
+            for (key, item) in map {
                 options.insert(key.clone(), decode_wire(item)?);
             }
             Ok(Some(options))
@@ -763,7 +763,7 @@ pub(crate) struct SerializerOptionsEntry {
     /// nothing.
     pub(crate) from_json: FromJsonOptions,
     /// The merged options as `validateInstance`'s walk reads them
-    /// ([`native_from_json_options`] of [`validator_options`]).
+    /// ([`native_from_json_options`] of [`validator_options_of`]).
     pub(crate) native: FromJsonOptions,
 }
 
@@ -772,11 +772,13 @@ impl SerializerOptionsEntry {
     /// path", or `"null"`): malformed JSON throws a JS `SyntaxError`, an
     /// unrecognised wire shape its [`wire_error`].
     pub(crate) fn new(text: &str) -> Result<Self> {
-        let options = decode_wire_options(text)?;
+        // Parsed once: the serializer's options and the walk's are both read
+        // from the one parse.
+        let wire = parse_json(text)?;
+        let options = decode_wire_options_of(&wire)?;
         let serializer = Serializer::new(true, true, options.as_ref())?;
         let from_json = populator::from_json_options(&serializer.default_options);
-        // The text has just decoded, so it reads as plain JSON too.
-        let native = native_from_json_options(&validator_options(text).unwrap_or(Value::Null));
+        let native = native_from_json_options(&validator_options_of(wire, options.as_ref()));
         Ok(Self {
             text: text.to_string(),
             serializer,
@@ -975,7 +977,7 @@ pub(crate) fn validator_readings(document: &CoreValue) -> Vec<Value> {
 pub(crate) fn without_undefined_fields(value: &CoreValue, found: &mut bool) -> CoreValue {
     match value {
         CoreValue::Object(map) => {
-            let mut out = SerializerOptions::default();
+            let mut out = JsObject::default();
             for (key, item) in map {
                 if matches!(item, CoreValue::Undefined) {
                     *found = true;
@@ -995,24 +997,23 @@ pub(crate) fn without_undefined_fields(value: &CoreValue, found: &mut bool) -> C
     }
 }
 
-/// The merged options `options_text` (a wire encoding, or `"null"`) as the
-/// plain JSON [`native_from_json_options`] reads: an `undefined` option is
-/// left out, as `Serializer.fromJSON` reads it (`options.x` is `undefined`
-/// either way).
-pub(crate) fn validator_options(options_text: &str) -> Option<Value> {
-    let wire = serde_json::from_str::<Value>(options_text).ok()?;
+/// The merged options, as the parsed wire encoding `wire` whose decoding is
+/// `decoded`, as the plain JSON [`native_from_json_options`] reads:
+/// `wire` itself when it holds no wire-tagged value, else each decoded
+/// option, an `undefined` one left out, as `Serializer.fromJSON` reads it
+/// (`options.x` is `undefined` either way).
+fn validator_options_of(wire: Value, decoded: Option<&SerializerOptions>) -> Value {
     if !has_wire_tag(&wire) {
-        return Some(wire);
+        return wire;
     }
-    let options = decode_wire_options(options_text).ok()?;
-    Some(Value::Object(
-        options
-            .iter()
+    Value::Object(
+        decoded
+            .into_iter()
             .flatten()
             .filter(|(_, v)| !matches!(v, CoreValue::Undefined))
             .map(|(k, v)| (k.clone(), v.to_validator_value()))
             .collect(),
-    ))
+    )
 }
 
 /// The document `Serializer.fromJSON` is given for the type `fqn` (the TS
@@ -1024,7 +1025,7 @@ pub(crate) fn with_class(object: CoreValue, fqn: Option<&str>) -> CoreValue {
         (Some(fqn), CoreValue::Object(map))
             if !map.get("$class").is_some_and(CoreValue::is_truthy) =>
         {
-            let mut out = SerializerOptions::default();
+            let mut out = JsObject::default();
             out.insert("$class".to_string(), CoreValue::String(fqn.to_string()));
             for (key, value) in map {
                 out.insert(key, value);

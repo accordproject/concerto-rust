@@ -62,6 +62,7 @@ use concerto_core::model_manager::{DeclId, ModelFileId, ModelFileSource, Node, P
 use concerto_core::model_manager::{ResolutionContext, ValidatedElement};
 use concerto_core::model_util as mu;
 use concerto_core::{Error as CoreError, ModelFile, ModelManager};
+use concerto_core_js::value::JsObject;
 use concerto_core_js::{Instance, InstanceKind, JsValue as CoreValue};
 use concerto_core_js::{Serializer, SerializerOptions, populator};
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;

@@ -318,9 +318,12 @@ impl ModelManagerHandle {
     ) -> Result<String> {
         let (file, imports) = loaded;
         let header = staged_header_from_parts(file.namespace(), imports.as_ref());
-        let text = flat_staged_text(self.staged.next_id(), header.as_ref()).map_err(internal)?;
-        self.staged.insert(file);
-        Ok(text)
+        let text = flat_staged_text(0, header.as_ref()).map_err(internal)?;
+        drop(header);
+        let stage = self.staged.insert(file);
+        // The text was written for stage 0 (`[0` or `[0,`), so that a write
+        // error leaves nothing staged; the id `insert` gave replaces it.
+        Ok(format!("[{stage}{}", &text[2..]))
     }
 
     /// Registers a staged model file, as [`Self::add_model_with_definitions`]
@@ -394,9 +397,11 @@ impl ModelManagerHandle {
         self.staged.proofs.remove(&stage);
         self.bump_epoch();
         run(|| {
-            let model_file = Arc::unwrap_or_clone(file);
-            let namespace = model_file.namespace().to_string();
-            let updated = self.manager.update_model_file(model_file, false)?;
+            let namespace = file.namespace().to_string();
+            // Shared, not copied: a stage from the commit, validate-and-
+            // commit, DecoratorManager and filter paths may be held
+            // elsewhere too.
+            let updated = self.manager.update_shared_model_file(file, false)?;
             self.manager.adopt(updated);
             self.file_handle(&namespace).map(Some)
         })
@@ -425,7 +430,10 @@ impl ModelManagerHandle {
         stage: u32,
         namespace: Option<String>,
     ) -> Option<String> {
-        model_file_view_snapshot_of(self.staged.files.get(&stage)?.ast(), namespace)
+        crate::properties::model_file_view_snapshot_of(
+            self.staged.files.get(&stage)?.ast(),
+            namespace,
+        )
     }
 
     /// `model_file_view_snapshot` of a loaded model file's AST, or
@@ -437,7 +445,7 @@ impl ModelManagerHandle {
         namespace: Option<String>,
     ) -> Option<String> {
         let file = self.manager.file(ModelFileId::from_index(model_file))?;
-        model_file_view_snapshot_of(file.ast(), namespace)
+        crate::properties::model_file_view_snapshot_of(file.ast(), namespace)
     }
 
     /// TS `BaseModelManager.addModelFile`'s validation and registration of a
@@ -739,6 +747,24 @@ impl ModelManagerHandle {
             .all(|stage| self.staged.files.contains_key(stage))
         {
             return Ok(false);
+        }
+        // A stage id given twice throws, as `commitStagedModelFiles` does,
+        // before any stage is consumed.
+        if let Some(stage) = stages.iter().enumerate().find_map(|(i, stage)| {
+            stages
+                .get(..i)
+                .is_some_and(|earlier| earlier.contains(stage))
+                .then_some(*stage)
+        }) {
+            return Err(throw(
+                ContractError::pre_port(
+                    ErrorKind::InvalidArgument,
+                    format!("the stage {stage} given twice"),
+                    None,
+                )
+                .into(),
+                None,
+            ));
         }
         let files: Vec<_> = stages
             .iter()

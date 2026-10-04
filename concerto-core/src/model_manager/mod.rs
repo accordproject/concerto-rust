@@ -1157,6 +1157,18 @@ impl ModelManager {
         /// `ModelManager::with_model_file_registered`'s scratch copy. Never
         /// mutates `self`: the caller adopts the result.
         pub fn update_model_file(&self, model_file: ModelFile, validate: bool) -> Result<Self> {
+            self.update_shared_model_file(Arc::new(model_file), validate)
+        }
+    }
+
+    js_compat_pub! {
+        /// [`ModelManager::update_model_file`] for a model file that may
+        /// also be held elsewhere: it is registered shared, not copied.
+        pub fn update_shared_model_file(
+            &self,
+            model_file: Arc<ModelFile>,
+            validate: bool,
+        ) -> Result<Self> {
             let namespace = model_file.namespace().to_string();
             if self.model_file(&namespace).is_none() {
                 return Err(ContractError::new(
@@ -1166,7 +1178,7 @@ impl ModelManager {
                 )
                 .into());
             }
-            let updated = self.with_model_file_registered(Arc::new(model_file))?;
+            let updated = self.with_model_file_registered(model_file)?;
             if validate {
                 let mf = updated
                     .model_file(&namespace)
