@@ -1,0 +1,210 @@
+name: Oracle Replay
+
+# Replays the canonical oracle corpus (every recorded concerto-core 5.0.0
+# behaviour) against concerto-core on the migration integration branch: on
+# pull requests into it and on pushes to it. The `Build and Test` workflow
+# opts out of the oracle (CONCERTO_ORACLE_SKIP=1) because it has no corpus;
+# this workflow restores one and fails if it cannot.
+on:
+  push:
+    branches: [claude/tender-pascal-ocwf9q]
+  pull_request:
+    branches: [claude/tender-pascal-ocwf9q]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  # The canonical corpus (recorded from concerto 06aa375a6) and the
+  # maintainer-approved supplement, both draft releases of this repository.
+  # The sha256s are the pinned tarballs; a mismatch fails the job.
+  CORPUS_TAG: oracle-corpus-p107-06aa375
+  CORPUS_SHA256: e8a2bf72c7775a2d45123dea7b6ff897823c74a108603f5412251ced2619fce1
+  SUPPLEMENT_TAG: oracle-corpus-supplement-d842c0ab7
+  SUPPLEMENT_SHA256: e2f6a2145843aca294edaafa33afc0ddfa46a8f28e96082af0c9ef5bceec27be
+  # Fixtures the canonical corpus plus the supplement hold. Fewer (or more)
+  # replayed fixtures fail the job, so a missing or partial corpus can never
+  # report ok.
+  EXPECTED_FIXTURES: "16242"
+  # accordproject/concerto's migration integration branch at the commit the
+  # concerto CI engine pin (.github/actions/concerto-engine) pairs with. It
+  # supplies migration/ledger (the harness reads owner labels from
+  # <fixtures>/../../ledger/SEAM_LEDGER.tsv) and build-cto-cache.js with its
+  # frozen reference package. Bump it together with that pin.
+  CONCERTO_REF: 220e0d02fdda6c5bb9a557d740f0dd9ba9c8c49f
+
+jobs:
+  # Fetches the two corpus tarballs from the draft releases. Draft releases
+  # are only visible to a token with push access, so this job alone gets
+  # `contents: write`; it runs no code from either repository, only curl and
+  # sha256sum, and hands the verified tarballs to the replay job through the
+  # Actions cache. A warm run finds them cached and downloads nothing.
+  corpus-tarballs:
+    name: Oracle corpus tarballs
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Look up cached tarballs
+        id: cache
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: corpus-tarballs
+          key: oracle-tarballs-${{ env.CORPUS_TAG }}-${{ env.SUPPLEMENT_TAG }}
+          lookup-only: true
+      - name: Download and verify the draft release tarballs
+        if: steps.cache.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          mkdir -p corpus-tarballs
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            "$GITHUB_API_URL/repos/$REPO/releases?per_page=100" > releases.json
+          fetch() {
+            tag="$1"; want="$2"
+            id=$(jq -r --arg tag "$tag" \
+              '[.[] | select(.tag_name == $tag) | .assets[] | select(.name | endswith(".tgz")) | .id][0] // empty' \
+              releases.json)
+            if [ -z "$id" ]; then
+              echo "::error::release $tag (or its .tgz asset) is not visible to GITHUB_TOKEN"
+              exit 1
+            fi
+            curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+              -H 'Accept: application/octet-stream' \
+              "$GITHUB_API_URL/repos/$REPO/releases/assets/$id" -o "corpus-tarballs/$tag.tgz"
+            echo "$want  corpus-tarballs/$tag.tgz" | sha256sum -c -
+          }
+          fetch "$CORPUS_TAG" "$CORPUS_SHA256"
+          fetch "$SUPPLEMENT_TAG" "$SUPPLEMENT_SHA256"
+      - name: Cache the tarballs
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: corpus-tarballs
+          key: oracle-tarballs-${{ env.CORPUS_TAG }}-${{ env.SUPPLEMENT_TAG }}
+
+  oracle:
+    name: Oracle replay
+    needs: corpus-tarballs
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Start the clock
+        run: echo "ORACLE_JOB_START=$(date +%s)" >> "$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: accordproject/concerto
+          ref: ${{ env.CONCERTO_REF }}
+          path: .concerto
+          sparse-checkout: |
+            migration/ledger
+            migration/oracle
+
+      # The extracted corpus and the CTO cache derived from it, keyed by the
+      # two release tags and by build-cto-cache.js (with the modules and the
+      # frozen reference package it builds the cache with): a change to any of
+      # them rebuilds the cache.
+      - name: Restore the corpus and CTO cache
+        id: corpus
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: |
+            .concerto/migration/oracle/fixtures
+            .concerto/migration/oracle/cto-cache
+          key: oracle-corpus-${{ env.CORPUS_TAG }}-${{ env.SUPPLEMENT_TAG }}-${{ hashFiles('.concerto/migration/oracle/bin/build-cto-cache.js', '.concerto/migration/oracle/lib/canon.js', '.concerto/migration/oracle/lib/store.js', '.concerto/migration/oracle/reference/package-lock.json') }}
+      - name: Restore the tarballs
+        if: steps.corpus.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: corpus-tarballs
+          key: oracle-tarballs-${{ env.CORPUS_TAG }}-${{ env.SUPPLEMENT_TAG }}
+          fail-on-cache-miss: true
+      - name: Extract the corpus and rebuild the CTO cache
+        if: steps.corpus.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          echo "$CORPUS_SHA256  corpus-tarballs/$CORPUS_TAG.tgz" | sha256sum -c -
+          echo "$SUPPLEMENT_SHA256  corpus-tarballs/$SUPPLEMENT_TAG.tgz" | sha256sum -c -
+          # Both tarballs extract at the concerto checkout root; the
+          # supplement only adds fixtures/supplement/ and cache entries.
+          tar xzf "corpus-tarballs/$CORPUS_TAG.tgz" -C .concerto
+          tar xzf "corpus-tarballs/$SUPPLEMENT_TAG.tgz" -C .concerto
+          # The canonical tarball also carries macOS AppleDouble `._*`
+          # entries, which are not fixtures (and not JSON): drop them.
+          find .concerto -name '._*' -delete
+          # The tarballs' cto-cache/ is stale: rebuild it with the pinned
+          # build-cto-cache.js. Its evidence manifest is not needed here.
+          (cd .concerto/migration/oracle/reference && npm ci)
+          node .concerto/migration/oracle/bin/build-cto-cache.js \
+            --manifest "$RUNNER_TEMP/cto-cache-manifest.json"
+      - name: Cache the corpus and CTO cache
+        if: steps.corpus.outputs.cache-hit != 'true'
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: |
+            .concerto/migration/oracle/fixtures
+            .concerto/migration/oracle/cto-cache
+          key: ${{ steps.corpus.outputs.cache-primary-key }}
+
+      - name: Install toolchain
+        run: rustup update stable && rustup default stable
+      - name: Restore the cargo cache
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: oracle-cargo-${{ runner.os }}-${{ hashFiles('rust-toolchain*', 'Cargo.lock') }}-${{ hashFiles('**/Cargo.toml') }}
+          restore-keys: |
+            oracle-cargo-${{ runner.os }}-${{ hashFiles('rust-toolchain*', 'Cargo.lock') }}-
+            oracle-cargo-${{ runner.os }}-
+
+      - name: Replay the oracle corpus
+        env:
+          CONCERTO_ORACLE_FIXTURES: ${{ github.workspace }}/.concerto/migration/oracle/fixtures
+        run: |
+          set -euo pipefail
+          # Never a skipped, filtered or baseline-rewriting run.
+          unset CONCERTO_ORACLE_SKIP ORACLE_OP ORACLE_UPDATE_BASELINE
+          rm -f target/oracle-report.json
+          cargo test -p accordproject-concerto-core --test oracle
+      - name: Check the fixture count
+        if: always()
+        run: |
+          set -euo pipefail
+          report=target/oracle-report.json
+          if [ ! -f "$report" ]; then
+            echo "::error::$report is missing: the oracle corpus was not replayed"
+            exit 1
+          fi
+          total=$(jq -r '.total_fixtures' "$report")
+          load_errors=$(jq -r '.load_errors' "$report")
+          filter=$(jq -r '.filter // ""' "$report")
+          summary=$(jq -r '"\(.total_fixtures) fixtures: \(.pass) pass, \(.fail) fail, \(.unsupported) unsupported, \(.harness_error) harness errors, \(.load_errors) load errors; \(.regressions) regressions against baseline.tsv"' "$report")
+          elapsed=$(( $(date +%s) - ORACLE_JOB_START ))
+          {
+            echo "### Oracle replay"
+            echo
+            echo "- $summary"
+            echo "- corpus: $CORPUS_TAG + $SUPPLEMENT_TAG (corpus cache hit: ${{ steps.corpus.outputs.cache-hit == 'true' }})"
+            echo "- replay job time to here: ${elapsed}s"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "oracle replay: $summary (${elapsed}s)"
+          if [ -n "$filter" ]; then
+            echo "::error::the replay was filtered (ORACLE_OP=$filter)"
+            exit 1
+          fi
+          if [ "$total" != "$EXPECTED_FIXTURES" ] || [ "$load_errors" != "0" ]; then
+            echo "::error::replayed $total fixtures with $load_errors load errors; expected $EXPECTED_FIXTURES and 0"
+            exit 1
+          fi

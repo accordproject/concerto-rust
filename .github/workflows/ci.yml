@@ -65,6 +65,8 @@ jobs:
       # accordproject/concerto checkout), and the oracle harness fails when it
       # finds none. Opt out explicitly: `replays_the_oracle_corpus` is then
       # reported as ignored, never as a pass (concerto-core/tests/oracle/main.rs).
+      # The Oracle Replay workflow (oracle.yml) restores the corpus and
+      # replays it on the migration integration branch.
       - name: Test
         run: cargo test --workspace
         env:
