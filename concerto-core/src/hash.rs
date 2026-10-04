@@ -69,10 +69,13 @@ pub fn seed_hasher(k0: u64, k1: u64) -> bool {
 /// compute.
 fn hash_keys() -> (u64, u64) {
     *HASH_KEYS.get_or_init(|| {
-        debug_assert!(
-            !cfg!(all(target_arch = "wasm32", target_os = "unknown")),
-            "a seeded map was built before seed_hasher set the hash keys"
-        );
+        if cfg!(all(
+            target_arch = "wasm32",
+            target_os = "unknown",
+            debug_assertions
+        )) {
+            panic!("a seeded map was built before seed_hasher set the hash keys");
+        }
         let state = RandomState::new();
         (state.hash_one(0_u64), state.hash_one(1_u64))
     })
