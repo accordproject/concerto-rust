@@ -7,7 +7,9 @@
 //! `js-compat` feature: no binding calls them, and the native API has its
 //! own forms.
 
-use super::*;
+use super::ModelManager;
+#[cfg(feature = "js-compat")]
+use super::{Arc, DeclId, Declaration, Error, ModelFile, Result, Value};
 #[cfg(feature = "js-compat")]
 use crate::introspect::DeclarationKind;
 
@@ -41,19 +43,21 @@ impl ModelManager {
 
     /// TS `BaseModelManager.isAssignableTo(fqn, baseFqn)`: `fqn` must resolve to
     /// a concrete type before [`ModelManager::derives_from`] is asked (an
-    /// abstract `fqn` is `false` even against itself), and a lookup failure is
-    /// caught. A map declaration answers, where TS 5.0.0 throws (DV-022).
+    /// abstract `fqn` is `false` even against itself). Only the lookup's
+    /// failure is caught, as `false`; `derives_from`'s errors (a super type
+    /// that does not resolve, BC-11's cycle) propagate. A map declaration
+    /// answers, where TS 5.0.0 throws (DV-022).
     #[cfg(feature = "js-compat")]
-    pub fn is_type_assignable_to(&self, fqn: &str, base_fqn: &str) -> bool {
+    pub fn is_type_assignable_to(&self, fqn: &str, base_fqn: &str) -> Result<bool> {
         let Ok(id) = self.get_type_declaration(fqn) else {
-            return false;
+            return Ok(false);
         };
         if self.declaration(id).is_some_and(|decl| {
             decl.is_scalar_declaration() || decl.as_class().is_some_and(|class| class.is_abstract())
         }) {
-            return false;
+            return Ok(false);
         }
-        self.derives_from(fqn, base_fqn).unwrap_or(false)
+        self.derives_from(fqn, base_fqn)
     }
 
     /// TS `BaseModelManager.getAssignableConcreteTypes(baseFqn)`

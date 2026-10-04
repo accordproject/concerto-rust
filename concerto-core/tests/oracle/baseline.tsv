@@ -7014,7 +7014,7 @@ ModelManager.addModel	6fc3133c5f453ee25b75c118	pass
 ModelManager.addModel	714bcb7373a736b81dcf6a04	pass
 ModelManager.addModel	71fbf7c65490ad1aaf9c65b7	pass
 ModelManager.addModel	7333c75f1b27ec1e079b7652	pass
-ModelManager.addModel	75ea10eea76396079fe879ff	fail:class-mismatch
+ModelManager.addModel	75ea10eea76396079fe879ff	pass
 ModelManager.addModel	781698523452a56ef7e0df3d	pass
 ModelManager.addModel	7a8e124cfb6938df779fafda	pass
 ModelManager.addModel	7af46481e993966cc41ed56c	pass

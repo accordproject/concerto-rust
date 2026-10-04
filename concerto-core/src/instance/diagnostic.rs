@@ -380,9 +380,6 @@ fn named_type_diagnostic(err: &Error, message: &Error) -> Diagnostic {
 /// table does not know (a JS-engine-shaped one) is
 /// [`DiagnosticCode::TypeViolation`], so a diagnostic is never dropped.
 fn classify_error(err: &Error) -> DiagnosticCode {
-    if err.is_pre_port_type_not_found() {
-        return DiagnosticCode::TypeNotFound;
-    }
     let ce = err.contract();
     if ce.validator.is_some() {
         return DiagnosticCode::ValidatorFailure;

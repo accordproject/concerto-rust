@@ -291,11 +291,18 @@ pub fn model_manager_from_meta_model(meta_model: &Value, validate: bool) -> Resu
 ///    (`modelfile-load-nodenotobject`).
 /// 2. `validateAst`'s strict check ([`validate_ast`]), its error re-thrown
 ///    as an `IllegalModelException` after a fixed prefix
-///    (`modelfile-load-astshape`).
+///    (`modelfile-load-astshape`), but for its metamodel version check's
+///    `MetamodelException`, thrown as it is, as TS 5.0.0's `validateAst`
+///    throws it (`basemodelmanager-validateast-versionmismatch`).
 ///
-/// **One tolerance.** concerto-cto 5.0.0 writes a string `defaultValue` on a
-/// `DateTimeProperty`, which the metamodel does not declare; so that such a
-/// model still loads, that value is left out of step 2.
+/// **Two tolerances.** concerto-cto 5.0.0 writes a string `defaultValue` on
+/// a `DateTimeProperty`, which the metamodel does not declare; so that such
+/// a model still loads, that value is left out of step 2. And
+/// `ModelFile.filter` builds the filtered file from its declarations'
+/// ASTs, as TS 5.0.0 does, which carry the default super type of an asset,
+/// participant, transaction or event with the `$class` `TypeIdentified`
+/// (not in the metamodel); so that the filtered file loads, step 2 checks
+/// that super type as a `TypeIdentifier`.
 ///
 /// The check reads only `ast`. It is folded into the typed read every load
 /// runs (`introspect::shape`): only an AST that read cannot vouch for is
@@ -323,6 +330,11 @@ pub(crate) fn check_ast_shape_exact(ast: &Value) -> Result<()> {
         validate_ast(ast)
     };
     result.map_err(|err| {
+        // R2F-5: a metamodel version mismatch stays TS 5.0.0's
+        // `MetamodelException`.
+        if err.code() == "basemodelmanager-validateast-versionmismatch" {
+            return err;
+        }
         ContractError::new(
             ErrorKind::IllegalModel,
             "modelfile-load-astshape",
@@ -343,12 +355,42 @@ fn has_parser_default(map: &serde_json::Map<String, Value>) -> bool {
         && map.get("defaultValue").is_some_and(Value::is_string)
 }
 
-/// Removes every value [`has_parser_default`] matches from `node`.
+/// Whether `map` is a declaration whose `superType` is exactly the default
+/// one TS 5.0.0 gives an asset, participant, transaction or event view
+/// (`ModelFile._declarationView`, with the `$class` `TypeIdentified`
+/// written there), which `ModelFile.filter` copies into the filtered file:
+/// [`check_ast_shape`] checks it as a `TypeIdentifier`.
+fn has_default_super_type(map: &serde_json::Map<String, Value>) -> bool {
+    let Some(super_type) = map.get("superType").and_then(Value::as_object) else {
+        return false;
+    };
+    let Some(name) = map
+        .get("$class")
+        .and_then(Value::as_str)
+        .and_then(|class| {
+            crate::introspect::model_file::default_super_type(&serde_json::json!({ "$class": class }))
+        })
+    else {
+        return false;
+    };
+    super_type.len() == 2
+        && super_type.get("$class").and_then(Value::as_str)
+            == Some(crate::introspect::model_file::DEFAULT_SUPER_TYPE_CLASS)
+        && super_type.get("name").and_then(Value::as_str) == Some(name)
+}
+
+/// Removes every value [`has_parser_default`] matches from `node`, and
+/// gives every super type [`has_default_super_type`] matches the
+/// metamodel's `TypeIdentifier` class.
 fn strip_parser_extras(node: &mut Value) {
     match node {
         Value::Object(map) => {
             if has_parser_default(map) {
                 map.remove("defaultValue");
+            }
+            if has_default_super_type(map) {
+                map["superType"]["$class"] =
+                    Value::String("concerto.metamodel@1.0.0.TypeIdentifier".to_string());
             }
             map.values_mut().for_each(strip_parser_extras);
         }
@@ -369,7 +411,7 @@ const NODE_KEYS: [&str; 4] = ["identified", "sizeValidator", "lengthValidator", 
 fn check_node_shapes(node: &Value, super_type: bool, parser_extras: &mut bool) -> Result<()> {
     match node {
         Value::Object(map) => {
-            *parser_extras |= has_parser_default(map);
+            *parser_extras |= has_parser_default(map) || has_default_super_type(map);
             if let Some(decorators) = map.get("decorators")
                 && !decorators.is_array()
                 && !decorators.is_null()
@@ -1370,8 +1412,6 @@ mod tests {
             "isOptional": false,
             "validator": {"$class": "concerto.metamodel@1.0.0.IntegerDomainValidator", "lower": "0"}
         });
-        let mut version = person_model();
-        version["$class"] = json!("concerto.metamodel@99.0.0.Model");
         // DV-017's typeless relationship and DV-018's `null` decorator: the
         // metamodel check rejects both first, so those rows' own errors are
         // raised only with the check off.
@@ -1384,15 +1424,48 @@ mod tests {
         });
         let mut null_decorator = person_model();
         null_decorator["declarations"][0]["decorators"] = json!([null]);
-        for ast in [unknown, bounds, version, relationship, null_decorator] {
+        for ast in [unknown, bounds, relationship, null_decorator] {
             assert_eq!(shape_code(&ast), Some("modelfile-load-astshape"), "{ast}");
         }
+        // R2F-5: a metamodel version mismatch stays TS 5.0.0's
+        // `MetamodelException`, not re-thrown.
         let mut version = person_model();
         version["$class"] = json!("concerto.metamodel@99.0.0.Model");
+        let err = check_ast_shape(&version).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::Metamodel);
+        assert_eq!(err.code(), "basemodelmanager-validateast-versionmismatch");
         assert_eq!(
-            check_ast_shape(&version).unwrap_err().contract().message(),
-            "Model AST does not conform to the metamodel: Model file version 99.0.0 does not match metamodel version 1.0.0"
+            err.contract().message(),
+            "Model file version 99.0.0 does not match metamodel version 1.0.0"
         );
+    }
+
+    /// R2A-4: the default super type TS 5.0.0's `ModelFile.filter` copies
+    /// from a declaration's AST (`TypeIdentified`) is checked as a
+    /// `TypeIdentifier`, on the declaration kind it belongs to only.
+    #[test]
+    fn check_ast_shape_tolerates_a_filtered_default_super_type() {
+        let default = |class: &str, name: &str| {
+            json!({ "$class": class, "name": "A", "isAbstract": false, "properties": [],
+                "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentified", "name": name } })
+        };
+        let mut model = person_model();
+        model["declarations"] = json!([
+            default("concerto.metamodel@1.0.0.AssetDeclaration", "Asset"),
+        ]);
+        model["declarations"][0]["identified"] =
+            json!({ "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": "id" });
+        model["declarations"][0]["properties"] = json!([{ "$class": "concerto.metamodel@1.0.0.StringProperty",
+            "name": "id", "isArray": false, "isOptional": false }]);
+        assert_eq!(shape_code(&model), None);
+        // Not on a concept, nor naming another type.
+        let mut concept = person_model();
+        concept["declarations"][0]["superType"] =
+            json!({ "$class": "concerto.metamodel@1.0.0.TypeIdentified", "name": "Concept" });
+        assert_eq!(shape_code(&concept), Some("modelfile-load-astshape"));
+        let mut other = model.clone();
+        other["declarations"][0]["superType"]["name"] = json!("Participant");
+        assert_eq!(shape_code(&other), Some("modelfile-load-astshape"));
     }
 
     #[test]

@@ -1517,7 +1517,7 @@ fn an_enum_derives_from_its_implicit_concept_super_type() {
     let concept = "concerto@1.0.0.Concept";
     assert!(mgr.derives_from(color, concept).unwrap());
     assert!(mgr.is_assignable_to(color, concept).unwrap());
-    assert!(mgr.is_type_assignable_to(color, concept));
+    assert!(mgr.is_type_assignable_to(color, concept).unwrap());
     assert!(!mgr.derives_from(color, "org.example@1.0.0.Person").unwrap());
     assert!(!mgr.derives_from("org.scalar@1.0.0.SSN", concept).unwrap());
 }
@@ -1563,15 +1563,15 @@ fn a_map_derives_only_from_itself_and_a_scalar_is_never_assignable() {
     assert!(!mgr.derives_from(map, concept).unwrap());
     assert!(!mgr.derives_from(map, person).unwrap());
     assert!(mgr.derives_from(map, map).unwrap());
-    assert!(!mgr.is_type_assignable_to(map, concept));
-    assert!(!mgr.is_type_assignable_to(map, person));
-    assert!(mgr.is_type_assignable_to(map, map));
+    assert!(!mgr.is_type_assignable_to(map, concept).unwrap());
+    assert!(!mgr.is_type_assignable_to(map, person).unwrap());
+    assert!(mgr.is_type_assignable_to(map, map).unwrap());
 
     // Scalar: TS parity.
     assert!(!mgr.derives_from(scalar, concept).unwrap());
     assert!(mgr.derives_from(scalar, scalar).unwrap());
-    assert!(!mgr.is_type_assignable_to(scalar, concept));
-    assert!(!mgr.is_type_assignable_to(scalar, scalar));
+    assert!(!mgr.is_type_assignable_to(scalar, concept).unwrap());
+    assert!(!mgr.is_type_assignable_to(scalar, scalar).unwrap());
 }
 
 fn concept_with(name: &str, super_type: Option<&str>, properties: Value) -> Value {
@@ -1740,11 +1740,26 @@ fn base_manager_is_assignable_to_matches_ts_including_the_abstract_check() {
         )
         .unwrap();
 
-    assert!(!mgr.is_type_assignable_to("org.abs@1.0.0.Base", "org.abs@1.0.0.Base"));
-    assert!(mgr.is_type_assignable_to("org.example@1.0.0.Employee", "org.example@1.0.0.Employee"));
-    assert!(mgr.is_type_assignable_to("org.example@1.0.0.Employee", "org.example@1.0.0.Person"));
-    assert!(!mgr.is_type_assignable_to("org.example@1.0.0.Person", "org.example@1.0.0.Employee"));
-    assert!(!mgr.is_type_assignable_to("org.example@1.0.0.Nope", "org.example@1.0.0.Person"));
+    assert!(
+        !mgr.is_type_assignable_to("org.abs@1.0.0.Base", "org.abs@1.0.0.Base")
+            .unwrap()
+    );
+    assert!(
+        mgr.is_type_assignable_to("org.example@1.0.0.Employee", "org.example@1.0.0.Employee")
+            .unwrap()
+    );
+    assert!(
+        mgr.is_type_assignable_to("org.example@1.0.0.Employee", "org.example@1.0.0.Person")
+            .unwrap()
+    );
+    assert!(
+        !mgr.is_type_assignable_to("org.example@1.0.0.Person", "org.example@1.0.0.Employee")
+            .unwrap()
+    );
+    assert!(
+        !mgr.is_type_assignable_to("org.example@1.0.0.Nope", "org.example@1.0.0.Person")
+            .unwrap()
+    );
 }
 
 #[test]
@@ -2941,4 +2956,265 @@ fn external_models_are_shared_with_the_list_returned() {
     assert!(Arc::ptr_eq(&added[2], &held("org.ext.a@1.0.0")));
     assert!(mgr.get_declaration("org.ext.a@1.0.0.A2").is_ok());
     assert!(mgr.get_declaration("org.ext.a@1.0.0.A").is_err());
+}
+
+/// A concept declaration AST, with a super type named `sup` when given.
+fn concept_ast(name: &str, sup: Option<&str>, properties: Value) -> Value {
+    let mut decl = serde_json::json!({ "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+        "name": name, "isAbstract": false, "properties": properties });
+    if let Some(sup) = sup {
+        decl["superType"] =
+            serde_json::json!({ "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": sup });
+    }
+    decl
+}
+
+/// R2A-1: TS `ModelFile.getLocalType` prefixes the namespace only when the
+/// name does not start with it, so a super type or a property type written
+/// as its own namespace's fully-qualified name resolves, for validation,
+/// `derivesFrom` and the AST's resolution alike.
+#[test]
+fn a_type_written_with_its_own_namespace_resolves() {
+    let mut mgr = ModelManager::new().unwrap();
+    mgr.load_model(
+        &serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.Model",
+            "namespace": "d@1.0.0",
+            "declarations": [
+                concept_ast("A", Some("d@1.0.0.B"), serde_json::json!([])),
+                concept_ast("B", None, serde_json::json!([])),
+                concept_ast("C", None, serde_json::json!([
+                    { "$class": "concerto.metamodel@1.0.0.ObjectProperty", "name": "b",
+                      "isArray": false, "isOptional": false,
+                      "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "d@1.0.0.B" } }
+                ]))
+            ]
+        }),
+        None,
+    )
+    .unwrap();
+    mgr.validate_models().unwrap();
+    assert!(mgr.derives_from("d@1.0.0.A", "d@1.0.0.B").unwrap());
+    assert_eq!(
+        mgr.resolve_type_name("d@1.0.0", "d@1.0.0.B").unwrap(),
+        "d@1.0.0.B"
+    );
+    assert_eq!(
+        mgr.model_file_fully_qualified_type_name("d@1.0.0", "d@1.0.0.B")
+            .as_deref(),
+        Some("d@1.0.0.B")
+    );
+}
+
+/// `A extends B`, `B extends Missing`, loaded without validation.
+fn broken_chain() -> ModelManager {
+    let mut mgr = ModelManager::new().unwrap();
+    mgr.load_model(
+        &serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.Model",
+            "namespace": "d@1.0.0",
+            "declarations": [
+                concept_ast("A", Some("B"), serde_json::json!([])),
+                concept_ast("B", Some("Missing"), serde_json::json!([]))
+            ]
+        }),
+        None,
+    )
+    .unwrap();
+    mgr
+}
+
+/// R2A-3: TS `derivesFrom` walks `getSuperTypeDeclaration()` step by step
+/// and stops at the first match, so a super type that does not resolve
+/// above the target is never reached. R2A-2: `isAssignableTo` catches only
+/// `getType`'s failure; `derivesFrom`'s error propagates. R2B-5: the
+/// hierarchy walk's "Could not find super type" is the catalogue entry.
+#[test]
+fn derives_from_resolves_the_chain_only_up_to_the_target() {
+    let mgr = broken_chain();
+    assert!(mgr.derives_from("d@1.0.0.A", "d@1.0.0.B").unwrap());
+    assert!(mgr.derives_from("d@1.0.0.A", "d@1.0.0.A").unwrap());
+    let err = mgr
+        .derives_from("d@1.0.0.A", "concerto@1.0.0.Concept")
+        .unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::IllegalModel);
+    assert_eq!(err.code(), "classdeclaration-resolvesupertype-notfound");
+    assert_eq!(err.to_string(), "Could not find super type Missing");
+
+    #[cfg(feature = "js-compat")]
+    {
+        let err = mgr
+            .is_type_assignable_to("d@1.0.0.A", "concerto@1.0.0.Concept")
+            .unwrap_err();
+        assert_eq!(err.code(), "classdeclaration-resolvesupertype-notfound");
+        assert!(mgr.is_type_assignable_to("d@1.0.0.A", "d@1.0.0.B").unwrap());
+        assert!(
+            !mgr.is_type_assignable_to("d@1.0.0.Nope", "d@1.0.0.B")
+                .unwrap()
+        );
+    }
+    // The whole chain, as `getProperties` resolves it, fails the same way.
+    let err = mgr.properties("d@1.0.0.A").unwrap_err();
+    assert_eq!(err.code(), "classdeclaration-resolvesupertype-notfound");
+}
+
+/// BC-11 still holds on the lazy walk: a cycle is the circular-inheritance
+/// error even when the target is met in it first.
+#[test]
+fn derives_from_reports_a_cycle_that_contains_the_target() {
+    let mut mgr = ModelManager::new().unwrap();
+    mgr.load_model(
+        &serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.Model",
+            "namespace": "org.cycle@1.0.0",
+            "declarations": [
+                concept_ast("A", Some("B"), serde_json::json!([])),
+                concept_ast("B", Some("A"), serde_json::json!([]))
+            ]
+        }),
+        None,
+    )
+    .unwrap();
+    let err = mgr
+        .derives_from("org.cycle@1.0.0.A", "org.cycle@1.0.0.B")
+        .unwrap_err();
+    assert_eq!(err.code(), "classdeclaration-circularinheritance");
+}
+
+/// R2A-7: an imported super type naming a declaration its loaded
+/// namespace lacks fails the subclass pass, as TS `getSuperType()` throws
+/// `getType`'s `TypeNotFoundException`, the same error the chain walk
+/// raises.
+#[test]
+fn a_missing_imported_super_type_fails_the_subclass_pass() {
+    let mut mgr = ModelManager::new().unwrap();
+    mgr.load_model(
+        &serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.Model",
+            "namespace": "b@1.0.0",
+            "declarations": [concept_ast("Other", None, serde_json::json!([]))]
+        }),
+        None,
+    )
+    .unwrap();
+    mgr.load_model(
+        &serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.Model",
+            "namespace": "a@1.0.0",
+            "imports": [
+                { "$class": "concerto.metamodel@1.0.0.ImportTypes",
+                  "namespace": "b@1.0.0", "types": ["Missing"] }
+            ],
+            "declarations": [concept_ast("A", Some("Missing"), serde_json::json!([]))]
+        }),
+        None,
+    )
+    .unwrap();
+    let err = mgr.direct_subclass_names("b@1.0.0.Other").unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::TypeNotFound);
+    let chain_err = mgr.properties("a@1.0.0.A").unwrap_err();
+    assert_eq!(chain_err.kind(), ErrorKind::TypeNotFound);
+    assert_eq!(err.code(), chain_err.code());
+}
+
+/// R2B-5: `Error::type_not_found` is the catalogue's
+/// `TypeNotFoundException` default message, with `typeName`.
+#[test]
+fn type_not_found_is_the_catalogue_default_message() {
+    let err = Error::type_not_found("org.acme@1.0.0.Doge");
+    assert_eq!(err.kind(), ErrorKind::TypeNotFound);
+    assert_eq!(err.code(), "typenotfounderror-defaultmessage");
+    assert_eq!(err.to_string(), "Type \"org.acme@1.0.0.Doge\" not found.");
+}
+
+/// R2F-10: as TS's `filter` rebuilds the manager with `addMetamodel`, the
+/// metamodel a manager was given is held from the start and kept whole
+/// (BC-53): the predicate is not asked about it.
+#[test]
+fn filter_keeps_the_metamodel_a_manager_was_given() {
+    let mut mgr = manager();
+    mgr.add_metamodel().unwrap();
+    let filtered = mgr
+        .filter(|fqn, _| !fqn.starts_with("concerto.metamodel@"))
+        .unwrap();
+    let metamodel = filtered.model_file("concerto.metamodel@1.0.0").unwrap();
+    assert_eq!(
+        metamodel.declarations().len(),
+        mgr.model_file("concerto.metamodel@1.0.0")
+            .unwrap()
+            .declarations()
+            .len()
+    );
+    // A manager not given the metamodel does not gain it.
+    let plain = manager().filter(|_, _| true).unwrap();
+    assert!(plain.model_file("concerto.metamodel@1.0.0").is_none());
+}
+
+/// R2A-4: as TS 5.0.0's `ModelFile.filter` builds the filtered file from
+/// each declaration's `ast`, an asset or participant with no super type
+/// gets the default super type its view was given (`TypeIdentified`), so
+/// such a file is rebuilt even when the filter keeps it whole; a file with
+/// none keeps its own AST.
+#[test]
+fn filter_writes_the_default_super_types_of_the_declaration_asts() {
+    let mut mgr = ModelManager::new().unwrap();
+    let identified = |name: &str, class: &str| {
+        serde_json::json!({ "$class": class, "name": name, "isAbstract": false,
+            "identified": { "$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": "id" },
+            "properties": [{ "$class": "concerto.metamodel@1.0.0.StringProperty",
+                "name": "id", "isArray": false, "isOptional": false }] })
+    };
+    mgr.load_model(
+        &serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.Model",
+            "namespace": "a@1.0.0",
+            "declarations": [
+                identified("A", "concerto.metamodel@1.0.0.AssetDeclaration"),
+                identified("P", "concerto.metamodel@1.0.0.ParticipantDeclaration"),
+                concept_ast("C", None, serde_json::json!([]))
+            ]
+        }),
+        None,
+    )
+    .unwrap();
+    mgr.load_model(
+        &serde_json::json!({
+            "$class": "concerto.metamodel@1.0.0.Model",
+            "namespace": "b@1.0.0",
+            "declarations": [concept_ast("D", None, serde_json::json!([]))]
+        }),
+        None,
+    )
+    .unwrap();
+    let filtered = mgr.filter(|_, _| true).unwrap();
+    let ast = filtered.model_file("a@1.0.0").unwrap().ast();
+    let super_types: Vec<&Value> = ast["declarations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| &d["superType"])
+        .collect();
+    assert_eq!(
+        super_types,
+        [
+            &serde_json::json!({ "$class": "concerto.metamodel@1.0.0.TypeIdentified", "name": "Asset" }),
+            &serde_json::json!({ "$class": "concerto.metamodel@1.0.0.TypeIdentified", "name": "Participant" }),
+            &Value::Null,
+        ]
+    );
+    // The source file's AST is unchanged, and a file with no default super
+    // type is kept, shared.
+    assert!(
+        mgr.model_file("a@1.0.0").unwrap().ast()["declarations"][0]
+            .get("superType")
+            .is_none()
+    );
+    assert!(std::ptr::eq(
+        filtered.model_file("b@1.0.0").unwrap(),
+        mgr.model_file("b@1.0.0").unwrap()
+    ));
+    // The filtered file validates and passes BC-19's shape check.
+    filtered.validate_models().unwrap();
+    #[cfg(feature = "js-compat")]
+    crate::instance::check_ast_shape(ast).unwrap();
 }

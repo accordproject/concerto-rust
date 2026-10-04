@@ -113,26 +113,6 @@ impl serde::Serialize for ModelAstsView<'_> {
     }
 }
 
-/// TS: `DecoratorManager.falsyOrEqual`. `values` is always a plain string
-/// array (every call site passes one).
-#[wasm_bindgen(js_name = decoratorManagerFalsyOrEqual)]
-pub fn decorator_manager_falsy_or_equal(test: JsValue, values: JsValue) -> JsResult<bool> {
-    run(|| {
-        let test_json = to_json(&test)?;
-        let values_json = to_json(&values)?.unwrap_or(Value::Array(Vec::new()));
-        let values_vec: Vec<String> = values_json
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(str::to_string))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let values_refs: Vec<&str> = values_vec.iter().map(String::as_str).collect();
-        Ok(dcs::falsy_or_equal(test_json.as_ref(), &values_refs))
-    })
-}
-
 /// TS: `DecoratorManager.migrateTo` (the unused `version` parameter is
 /// dropped, as [`dcs::migrate_to`]'s doc comment explains). Mutates a clone
 /// of `decorator_command_set` and returns it; the view assigns the result

@@ -1426,8 +1426,8 @@ export function runChecks(engine) {
 
   // P5-101 (D-9): with `metamodel`, validateAstStaged's check runs first in
   // the same call: an AST the metamodel rejects throws what
-  // validateAstStaged throws, marked `metamodelCheck` (not enumerable), and
-  // stays staged.
+  // validateAstStaged throws, its payload marked `metamodelCheck` (which the
+  // error factory turns into a non-enumerable flag), and stays staged.
   check('validateAndCommitStagedModelFile runs the metamodel check first (P5-101)', () => {
     const h = new engine.ModelManagerHandle();
     const text = JSON.stringify({ ...MODEL, namespace: 'org.mm@1.0.0' });
@@ -1439,7 +1439,7 @@ export function runChecks(engine) {
     const viaCommit = thrown(() => h.validateAndCommitStagedModelFile(s1, true));
     const viaStaged = thrown(() => h.validateAstStaged(s2));
     assert(viaCommit && viaStaged && viaCommit.constructor === viaStaged.constructor, `${viaCommit} vs ${viaStaged}`);
-    assert(viaCommit.metamodelCheck === true && !Object.keys(viaCommit).includes('metamodelCheck'), 'marked, not enumerable');
+    assert(viaCommit.payload?.metamodelCheck === true && viaStaged.payload?.metamodelCheck === undefined, 'marked in the payload');
     assert(thrown(() => h.validateAstStaged(s1)) !== undefined, 'still staged');
     assert(h.modelFileId('org.v@1.0.0') === undefined, 'not registered');
     h.free();

@@ -3583,7 +3583,10 @@ fn model_manager_query(r: &Replayed, member: &str, args: &[Arg]) -> Dispatch {
             else {
                 return unsupported("isAssignableTo with an argument that is not a string");
             };
-            ran(Ok(Value::Bool(r.mm.is_type_assignable_to(&fqn, &base_fqn))))
+            match r.mm.is_type_assignable_to(&fqn, &base_fqn) {
+                Ok(result) => ran(Ok(Value::Bool(result))),
+                Err(e) => ran(Err(to_oracle_error(&e))),
+            }
         }
         // P2-08b: `BaseModelManager.getAssignableConcreteTypes(baseFqn)`.
         "getAssignableConcreteTypes" => {

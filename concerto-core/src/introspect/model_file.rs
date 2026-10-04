@@ -41,6 +41,20 @@ const SHARED_HASH: usize = usize::MAX;
 /// them, with no `local_types` map.
 const LOCAL_SCAN_MAX: usize = 8;
 
+/// What a type name written in a model file names
+/// ([`ModelFile::type_target`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TypeTarget<'a> {
+    /// A primitive type, named by itself.
+    Primitive,
+    /// A named import: the namespace it is imported from and its declared
+    /// name there (never an alias).
+    Imported { namespace: &'a str, name: &'a str },
+    /// This file's own declaration at this position in
+    /// [`ModelFile::declarations`].
+    Local(usize),
+}
+
 /// A parsed model file for one namespace.
 #[derive(Debug, Clone)]
 pub struct ModelFile {
@@ -587,22 +601,22 @@ impl ModelFile {
         self.namespace.starts_with("concerto@")
     }
 
-    /// Resolves a short name from the primitives, this file's named imports and
-    /// its own declarations, imports first, as TS `getType`/`resolveType` do.
-    /// A name is both only under
+    /// What `type_name`, as written in this file, names: the one resolver
+    /// behind TS `ModelFile.getType`, `getFullyQualifiedTypeName` and
+    /// `resolveType`, which all try a primitive, then a named import, then a
+    /// local declaration. A local name may be written short or qualified
+    /// with this file's namespace (`getLocalType`). A name is both imported
+    /// and local only under
     /// `dangerouslyAllowReservedSystemTypeNamesInUserModels`, where a local
     /// `Asset` must still resolve its implicit super type to the system one.
-    pub fn resolve_local_type(&self, short: &str) -> Option<String> {
-        if is_primitive_type(short) {
-            return Some(short.to_string());
+    pub(crate) fn type_target(&self, type_name: &str) -> Option<TypeTarget<'_>> {
+        if is_primitive_type(type_name) {
+            return Some(TypeTarget::Primitive);
         }
-        if let Some(fqn) = self.find_import(short) {
-            return Some(fqn);
+        if let Some((namespace, name)) = self.import_target(type_name) {
+            return Some(TypeTarget::Imported { namespace, name });
         }
-        if self.local_index(short).is_some() {
-            return Some(qualify(&self.namespace, short));
-        }
-        None
+        self.local_type_index(type_name).map(TypeTarget::Local)
     }
 
     /// TS: `ModelFile.getConcertoVersion` — the AST's own `concertoVersion`
@@ -628,9 +642,11 @@ impl ModelFile {
     /// TS: `ModelFile.getImportURI`: the URI an import was given (`import
     /// ns.Name from 'uri'`), keyed as TS's `importUriMap` is, by the first
     /// fully-qualified name the import brings in
-    /// (`ModelUtil.importFullyQualifiedNames(imp)[0]`).
+    /// (`ModelUtil.importFullyQualifiedNames(imp)[0]`). TS assigns the map
+    /// once per import, so the last import with the key wins, as in
+    /// [`ModelFile::external_imports`].
     pub fn import_uri(&self, key: &str) -> Option<&str> {
-        self.imports.iter().find_map(|imp| {
+        self.imports.iter().rev().find_map(|imp| {
             let uri = imp.uri()?;
             let first = imp.imported_names().first()?;
             (qualify(imp.namespace(), first) == key).then_some(uri)
@@ -695,11 +711,13 @@ impl ModelFile {
 
     /// The position in [`ModelFile::declarations`] of
     /// [`ModelFile::local_type`]'s declaration.
+    /// `type_name` is prefixed with the namespace unless it already starts
+    /// with it, so what follows the namespace must be a dot and a name.
     pub(crate) fn local_type_index(&self, type_name: &str) -> Option<usize> {
-        let short = type_name
-            .strip_prefix(self.namespace.as_str())
-            .and_then(|rest| rest.strip_prefix('.'))
-            .unwrap_or(type_name);
+        let short = match type_name.strip_prefix(self.namespace.as_str()) {
+            Some(rest) => rest.strip_prefix('.')?,
+            None => type_name,
+        };
         self.local_index(short)
     }
 
@@ -778,21 +796,28 @@ impl ModelFile {
     /// TS: `ModelFile.getFullyQualifiedTypeName`, entirely local: a
     /// primitive's own name, an imported name's target FQN, or a local
     /// type's FQN; `None` (TS `null`) otherwise.
+    /// Also how the engine resolves a type name written in this file (a
+    /// super type, a property's or map's type), a local one short or
+    /// qualified ([`ModelFile::type_target`]).
     pub fn fully_qualified_type_name(&self, type_name: &str) -> Option<String> {
-        if is_primitive_type(type_name) {
-            return Some(type_name.to_string());
-        }
-        if let Some(fqn) = self.find_import(type_name) {
-            return Some(fqn);
-        }
-        self.local_type(type_name)
-            .map(|d| qualify(&self.namespace, d.name()))
+        Some(match self.type_target(type_name)? {
+            TypeTarget::Primitive => type_name.to_string(),
+            TypeTarget::Imported { namespace, name } => qualify(namespace, name),
+            TypeTarget::Local(index) => qualify(&self.namespace, self.declarations[index].name()),
+        })
     }
 
     /// Deprecated name of [`ModelFile::fully_qualified_type_name`].
     #[deprecated(since = "0.1.0", note = "use `fully_qualified_type_name`")]
     pub fn get_fully_qualified_type_name(&self, type_name: &str) -> Option<String> {
         self.fully_qualified_type_name(type_name)
+    }
+
+    /// Deprecated: [`ModelFile::fully_qualified_type_name`] resolves a short
+    /// name the same way, and a qualified local one too.
+    #[deprecated(since = "0.1.0", note = "use `fully_qualified_type_name`")]
+    pub fn resolve_local_type(&self, short: &str) -> Option<String> {
+        self.fully_qualified_type_name(short)
     }
 
     /// TS: `ModelFile.getAssetDeclaration`.
@@ -1031,15 +1056,24 @@ impl ModelFile {
             (Some(original), Some(kept)) => original == kept,
             _ => true,
         };
-        if all_declarations_kept && imports_unchanged {
+        // A file is kept as it is only when no kept declaration is given a
+        // default super type, so the filtered AST is the source's.
+        if all_declarations_kept
+            && imports_unchanged
+            && ast_declarations
+                .iter()
+                .all(|ast| default_super_type(ast).is_none())
+        {
             return Ok(FilterOutcome::Unchanged);
         }
 
+        // TS builds the filtered file from each kept declaration's own
+        // `ast`, which carries the default super type its view was given.
         let declarations: Vec<serde_json::Value> = ast_declarations
             .iter()
             .zip(&keep)
             .filter(|(_, keep)| **keep)
-            .map(|(ast, _)| ast.clone())
+            .map(|(ast, _)| with_default_super_type(ast).unwrap_or_else(|| ast.clone()))
             .collect();
         let mut filtered = self.ast().clone();
         filtered["declarations"] = serde_json::Value::Array(declarations);
@@ -1068,6 +1102,36 @@ js_compat_pub! {
         /// The filtered file.
         Filtered(Box<ModelFile>),
     }
+}
+
+/// The `$class` TS 5.0.0 gives a default super type
+/// (`ModelFile._declarationView`), as written there: `TypeIdentified`, not
+/// the metamodel's `TypeIdentifier`.
+pub(crate) const DEFAULT_SUPER_TYPE_CLASS: &str = "concerto.metamodel@1.0.0.TypeIdentified";
+
+/// The name of the default super type TS `ModelFile._declarationView` gives
+/// a declaration AST `ast` (an asset, participant, transaction or event
+/// declaration, by its exact `$class`, whose `superType` is falsy), or
+/// `None` when it gives none.
+pub(crate) fn default_super_type(ast: &serde_json::Value) -> Option<&'static str> {
+    let name = match ast.get("$class")?.as_str()? {
+        "concerto.metamodel@1.0.0.AssetDeclaration" => "Asset",
+        "concerto.metamodel@1.0.0.TransactionDeclaration" => "Transaction",
+        "concerto.metamodel@1.0.0.EventDeclaration" => "Event",
+        "concerto.metamodel@1.0.0.ParticipantDeclaration" => "Participant",
+        _ => return None,
+    };
+    (!ast.get("superType").is_some_and(crate::ecma::is_truthy)).then_some(name)
+}
+
+/// A copy of the declaration AST `ast` with the default super type TS gives
+/// its view ([`default_super_type`]), as TS's `Object.assign({}, thing)`
+/// then `thing.superType = …` writes it; `None` when it gets none.
+fn with_default_super_type(ast: &serde_json::Value) -> Option<serde_json::Value> {
+    let name = default_super_type(ast)?;
+    let mut ast = ast.clone();
+    ast["superType"] = serde_json::json!({ "$class": DEFAULT_SUPER_TYPE_CLASS, "name": name });
+    Some(ast)
 }
 
 /// One import of [`ModelFile::filter_outcome`]: kept as it is, kept with
