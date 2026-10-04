@@ -184,7 +184,7 @@ impl ModelManagerHandle {
                 "namespace": file.namespace(),
                 "version": file.version(),
                 "fileName": file.file_name(),
-                "ast": file.ast(),
+                "ast": self.manager.file_ast(id).unwrap_or(file.ast()),
             }))
         })
     }
@@ -337,11 +337,15 @@ impl ModelManagerHandle {
             return Ok(None);
         };
         // A file staged shared from a manager that validated it carries that
-        // manager's proof, so `validateModelFiles` may skip it.
-        let proof = self.staged.proofs.remove(&stage);
+        // manager's proof, so `validateModelFiles` may skip it; one `filter`
+        // kept whole is read in TS's filtered form.
+        let (proof, filtered) = self.staged.take_extras(stage);
         self.bump_epoch();
         run(|| {
             let id = self.manager.add_shared_model_file_with_proof(file, proof)?;
+            if filtered {
+                self.manager.read_in_filtered_form(id);
+            }
             Ok(Some(ModelFileId::index(id)))
         })
     }
@@ -377,8 +381,11 @@ impl ModelManagerHandle {
                     None,
                 ));
             };
-            let proof = self.staged.proofs.remove(&stage);
+            let (proof, filtered) = self.staged.take_extras(stage);
             let id = run(|| Ok(self.manager.add_shared_model_file_with_proof(file, proof)?))?;
+            if filtered {
+                self.manager.read_in_filtered_form(id);
+            }
             *slot = ModelFileId::index(id);
         }
         Ok(true)
@@ -394,7 +401,7 @@ impl ModelManagerHandle {
         let Some(file) = self.staged.files.remove(&stage) else {
             return Ok(None);
         };
-        self.staged.proofs.remove(&stage);
+        let (_, filtered) = self.staged.take_extras(stage);
         self.bump_epoch();
         run(|| {
             let namespace = file.namespace().to_string();
@@ -403,7 +410,12 @@ impl ModelManagerHandle {
             // elsewhere too.
             let updated = self.manager.update_shared_model_file(file, false)?;
             self.manager.adopt(updated);
-            self.file_handle(&namespace).map(Some)
+            let handle = self.file_handle(&namespace)?;
+            if filtered {
+                self.manager
+                    .read_in_filtered_form(ModelFileId::from_index(handle));
+            }
+            Ok(Some(handle))
         })
     }
 
@@ -417,7 +429,8 @@ impl ModelManagerHandle {
         };
         self.bump_epoch();
         run(|| {
-            self.manager.validate_ast_value(file.ast())?;
+            let ast = self.staged.read_ast(stage, &file);
+            self.manager.validate_ast_value(&ast)?;
             Ok(true)
         })
     }
@@ -463,13 +476,19 @@ impl ModelManagerHandle {
         let Some(file) = self.staged.files.remove(&stage) else {
             return Ok(None);
         };
+        // The proof is not used: the file is validated here. Whether it is
+        // read in TS's filtered form stays with the stage until it is
+        // registered or gone.
         self.staged.proofs.remove(&stage);
         // With `metamodel`, `validateAst`'s check runs first, over the
         // staged AST ([`Self::validate_ast_staged`]'s check): its error is
         // thrown as that binding throws it, and the file stays staged.
         if metamodel == Some(true) {
             self.bump_epoch();
-            if let Err(err) = self.manager.validate_ast_value(file.ast()) {
+            let checked = self
+                .manager
+                .validate_ast_value(&self.staged.read_ast(stage, &file));
+            if let Err(err) = checked {
                 self.staged.files.insert(stage, file);
                 // Marked (`metamodelCheck`), so the caller throws it as
                 // `validateAst` does, not re-wrapped.
@@ -483,6 +502,9 @@ impl ModelManagerHandle {
         match self.manager.validate_and_add_shared_model_file(file) {
             Ok(id) => {
                 self.bump_epoch();
+                if self.staged.filtered.remove(&stage) {
+                    self.manager.read_in_filtered_form(id);
+                }
                 Ok(Some(ModelFileId::index(id)))
             }
             Err((err, Some(file))) => {
@@ -490,6 +512,7 @@ impl ModelManagerHandle {
                 Err(throw(err.into(), None))
             }
             Err((err, None)) => {
+                self.staged.filtered.remove(&stage);
                 self.bump_epoch();
                 Err(throw(err.into(), None))
             }
@@ -515,7 +538,7 @@ impl ModelManagerHandle {
     #[wasm_bindgen(js_name = dropStagedModelFile)]
     pub fn drop_staged_model_file(&mut self, stage: u32) {
         self.staged.files.remove(&stage);
-        self.staged.proofs.remove(&stage);
+        self.staged.forget(stage);
     }
 
     /// TS `BaseModelManager.resolveType(context, type)`
@@ -769,7 +792,7 @@ impl ModelManagerHandle {
         let files: Vec<_> = stages
             .iter()
             .filter_map(|stage| {
-                self.staged.proofs.remove(stage);
+                self.staged.forget(*stage);
                 self.staged.files.remove(stage)
             })
             .collect();
@@ -890,14 +913,21 @@ impl ModelManagerHandle {
                     .manager
                     .shared_file(id)
                     .ok_or_else(|| unknown(Node::ModelFile(id)))?;
+                // TS 5.0.0's filtered file has the default super types its
+                // declarations' views were given (R2A-4). Returned as an AST,
+                // it is written in; staged, the file is shared and read in
+                // that form once registered, built on first read.
                 let Some(target) = target else {
-                    return snapshot(&json!({ "ast": file.ast() })).map(Some);
+                    let ast = file.filtered_ast();
+                    return snapshot(&json!({ "ast": ast.as_ref().unwrap_or(file.ast()) }))
+                        .map(Some);
                 };
                 let proof = self.manager.validity_proof(file.namespace());
                 let stage = target.staged.insert_shared(Arc::clone(file));
                 if let Some(proof) = proof {
                     target.staged.proofs.insert(stage, proof);
                 }
+                target.staged.filtered.insert(stage);
                 Ok(Some(format!("{{\"stage\":{stage}}}")))
             }
             FilterOutcome::Filtered(filtered) => {

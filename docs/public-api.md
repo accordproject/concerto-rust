@@ -604,6 +604,7 @@ impl ModelManager {
     pub fn property_path(&self, fqn: &str, path: &str) -> Result<(String, &Property)>;   // [get_nested_property]
     pub fn identifier_field(&self, fqn: &str) -> Result<Option<&str>>;      // [identifier_field_name]
     pub fn ast(&self, options: AstOptions) -> Result<Value>;                // [get_ast(resolve, include_concerto)]
+    pub fn model_file_ast(&self, namespace: &str) -> Option<&Value>;       // TS ModelFile.getAst() (P5-123)
     pub fn filter(&self, keep: impl Fn(&str, &Declaration) -> bool) -> Result<ModelManager>;
 }
 
@@ -637,7 +638,11 @@ impl ModelFile {                                                            // e
   (rule 2 of 5.5).
 - **`filter` takes a predicate over the name and the declaration,** as TS's
   predicate over a `Declaration` that knows its name. The FQN-set form the
-  oracle uses goes to the seam (`filter_by_fqn`).
+  oracle uses goes to the seam (`filter_by_fqn`). A file the filter keeps
+  whole is shared with the source manager, so its `ModelFile::ast()` is the
+  source's; `model_file_ast` (and `ast`) read it as TS 5.0.0's filtered file
+  has it, with the default super types of its assets, participants,
+  transactions and events written in (R2A-4, P5-123).
 - **`ast` returns `Result`,** because resolving the names can fail, as TS's
   `getAst(true)` throws.
 - **`#[non_exhaustive]`** on `Declaration`, `Property`, `ClassKind`,

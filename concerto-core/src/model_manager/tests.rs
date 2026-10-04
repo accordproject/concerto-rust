@@ -3133,13 +3133,10 @@ fn filter_keeps_the_metamodel_a_manager_was_given() {
     assert!(plain.model_file("concerto.metamodel@1.0.0").is_none());
 }
 
-/// R2A-4: as TS 5.0.0's `ModelFile.filter` builds the filtered file from
-/// each declaration's `ast`, an asset or participant with no super type
-/// gets the default super type its view was given (`TypeIdentified`), so
-/// such a file is rebuilt even when the filter keeps it whole; a file with
-/// none keeps its own AST.
-#[test]
-fn filter_writes_the_default_super_types_of_the_declaration_asts() {
+/// A manager with `a@1.0.0` (an asset `A` and a participant `P` with no
+/// super type, and a concept `C`) and `b@1.0.0` (a concept `D`), for the
+/// R2A-4 filter checks.
+fn default_super_type_manager() -> ModelManager {
     let mut mgr = ModelManager::new().unwrap();
     let identified = |name: &str, class: &str| {
         crate::json!({ "$class": class, "name": name, "isAbstract": false,
@@ -3169,37 +3166,219 @@ fn filter_writes_the_default_super_types_of_the_declaration_asts() {
         None,
     )
     .unwrap();
-    let filtered = mgr.filter(|_, _| true).unwrap();
-    let ast = filtered.model_file("a@1.0.0").unwrap().ast();
-    let super_types: Vec<&Value> = ast["declarations"]
+    mgr
+}
+
+/// The `superType` of each declaration of the model AST `ast`.
+fn declaration_super_types(ast: &Value) -> Vec<&Value> {
+    ast["declarations"]
         .as_array()
         .unwrap()
         .iter()
         .map(|d| &d["superType"])
-        .collect();
+        .collect()
+}
+
+/// R2A-4: TS 5.0.0's `ModelFile.filter` builds the filtered file from each
+/// declaration's `ast`, so an asset or participant with no super type gets
+/// the default super type its view was given (`TypeIdentified`). A filter
+/// that keeps the file whole shares the source's file, and the AST
+/// is read in that form ([`ModelManager::model_file_ast`],
+/// [`ModelManager::ast`]), built on first read; the source's own AST is
+/// unchanged. A partial filter rebuilds the file with the form written in.
+#[test]
+fn filter_shares_a_kept_file_and_reads_the_default_super_types_of_the_declaration_asts() {
+    let mgr = default_super_type_manager();
+    let filtered = mgr.filter(|_, _| true).unwrap();
+    let tagged = |name: &str| crate::json!({ "$class": "concerto.metamodel@1.0.0.TypeIdentified", "name": name });
+    let expected = [&tagged("Asset"), &tagged("Participant"), &Value::Null];
+
+    // Shared: the filtered manager holds the source's own files, `a@1.0.0`
+    // (which takes default super types) and `b@1.0.0` (which takes none).
+    for ns in ["a@1.0.0", "b@1.0.0"] {
+        assert!(
+            Arc::ptr_eq(
+                filtered.shared_model_file(ns).unwrap(),
+                mgr.shared_model_file(ns).unwrap()
+            ),
+            "{ns}"
+        );
+    }
+    // Read in TS's filtered form, while the shared file's own AST and the
+    // source manager's reads are unchanged.
+    let ast = filtered.model_file_ast("a@1.0.0").unwrap();
+    assert_eq!(declaration_super_types(ast), expected);
     assert_eq!(
-        super_types,
-        [
-            &crate::json!({ "$class": "concerto.metamodel@1.0.0.TypeIdentified", "name": "Asset" }),
-            &crate::json!({ "$class": "concerto.metamodel@1.0.0.TypeIdentified", "name": "Participant" }),
-            &Value::Null,
-        ]
+        declaration_super_types(mgr.model_file_ast("a@1.0.0").unwrap()),
+        [&Value::Null; 3]
     );
-    // The source file's AST is unchanged, and a file with no default super
-    // type is kept, shared.
     assert!(
         mgr.model_file("a@1.0.0").unwrap().ast()["declarations"][0]
             .get("superType")
             .is_none()
     );
     assert!(std::ptr::eq(
-        filtered.model_file("b@1.0.0").unwrap(),
-        mgr.model_file("b@1.0.0").unwrap()
+        filtered.model_file_ast("b@1.0.0").unwrap(),
+        mgr.model_file("b@1.0.0").unwrap().ast()
     ));
-    // The filtered file validates and passes BC-19's shape check.
+    // Built once, then the same value.
+    assert!(std::ptr::eq(
+        ast,
+        filtered.model_file_ast("a@1.0.0").unwrap()
+    ));
+    // `getAst()` reads the same form, resolved or not.
+    for resolve in [false, true] {
+        let models = filtered
+            .ast(AstOptions {
+                resolve,
+                include_system_models: false,
+            })
+            .unwrap();
+        let a = models["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["namespace"] == "a@1.0.0")
+            .unwrap();
+        assert_eq!(declaration_super_types(a).len(), 3, "{resolve}");
+        assert_eq!(a["declarations"][0]["superType"]["name"], "Asset");
+        assert_eq!(a["declarations"][1]["superType"]["name"], "Participant");
+    }
+    let source_models = mgr
+        .ast(AstOptions {
+            resolve: false,
+            include_system_models: false,
+        })
+        .unwrap();
+    assert!(
+        source_models["models"][0]["declarations"][0]
+            .get("superType")
+            .is_none()
+    );
+
+    // A filter of the filtered manager shares the file and reads it the
+    // same way.
+    let again = filtered.filter(|_, _| true).unwrap();
+    assert!(Arc::ptr_eq(
+        again.shared_model_file("a@1.0.0").unwrap(),
+        mgr.shared_model_file("a@1.0.0").unwrap()
+    ));
+    assert_eq!(
+        declaration_super_types(again.model_file_ast("a@1.0.0").unwrap()),
+        expected
+    );
+
+    // A partial filter rebuilds the file from the declarations' ASTs.
+    let some = mgr.filter(|fqn, _| fqn != "a@1.0.0.C").unwrap();
+    assert!(!Arc::ptr_eq(
+        some.shared_model_file("a@1.0.0").unwrap(),
+        mgr.shared_model_file("a@1.0.0").unwrap()
+    ));
+    assert_eq!(
+        declaration_super_types(some.model_file("a@1.0.0").unwrap().ast()),
+        expected[..2]
+    );
+
+    // The filtered manager validates, and its filtered form passes BC-19's
+    // shape check.
     filtered.validate_models().unwrap();
     #[cfg(feature = "js-compat")]
     crate::instance::check_ast_shape(ast).unwrap();
+}
+
+/// R2A-4: what reads a filtered manager's models reads a shared file in
+/// TS's filtered form after the manager changes too: a fork, and a manager
+/// with another file updated or deleted.
+#[test]
+fn filter_reads_the_filtered_form_after_a_fork_update_or_delete() {
+    let mgr = default_super_type_manager();
+    let filtered = mgr.filter(|_, _| true).unwrap();
+    let super_type = |m: &ModelManager| {
+        m.model_file_ast("a@1.0.0").unwrap()["declarations"][0]["superType"]["name"].clone()
+    };
+    assert_eq!(super_type(&filtered), "Asset");
+    #[cfg(feature = "js-compat")]
+    assert_eq!(super_type(&filtered.fork()), "Asset");
+    let d2 = ModelFile::from_json(
+        &crate::json!({
+            "$class": "concerto.metamodel@1.0.0.Model",
+            "namespace": "b@1.0.0",
+            "declarations": [concept_ast("D2", None, crate::json!([]))]
+        }),
+        None,
+    )
+    .unwrap();
+    let updated = filtered.update_model_file(d2, true).unwrap();
+    assert_eq!(super_type(&updated), "Asset");
+    let deleted = filtered.delete_model_file("b@1.0.0").unwrap();
+    assert_eq!(super_type(&deleted), "Asset");
+}
+
+/// R2A-4: `DecoratorManager.decorateModels` reads a filtered manager's
+/// models through `getAst`, so its result carries the filtered form: an
+/// empty command set list shares the files, still read in that form, and a
+/// command set decorates the filtered form.
+#[test]
+fn decorate_models_reads_a_filtered_manager_in_the_filtered_form() {
+    use crate::dcs::{DecorateOptions, decorate_models};
+    let filtered = default_super_type_manager().filter(|_, _| true).unwrap();
+    let shared = decorate_models(&filtered, &mut [], &mut DecorateOptions::default()).unwrap();
+    assert!(Arc::ptr_eq(
+        shared.shared_model_file("a@1.0.0").unwrap(),
+        filtered.shared_model_file("a@1.0.0").unwrap()
+    ));
+    assert_eq!(
+        shared.model_file_ast("a@1.0.0").unwrap()["declarations"][0]["superType"]["name"],
+        "Asset"
+    );
+    let mut command_set = crate::json!({
+        "$class": "org.accordproject.decoratorcommands@0.4.0.DecoratorCommandSet",
+        "name": "s", "version": "1.0.0",
+        "commands": [{
+            "$class": "org.accordproject.decoratorcommands@0.4.0.Command",
+            "type": "UPSERT",
+            "target": {
+                "$class": "org.accordproject.decoratorcommands@0.4.0.CommandTarget",
+                "namespace": "a@1.0.0", "declaration": "C"
+            },
+            "decorator": {
+                "$class": "concerto.metamodel@1.0.0.Decorator",
+                "name": "Term", "arguments": []
+            }
+        }]
+    });
+    let decorated = decorate_models(
+        &filtered,
+        std::slice::from_mut(&mut command_set),
+        &mut DecorateOptions::default(),
+    )
+    .unwrap();
+    let ast = decorated.model_file("a@1.0.0").unwrap().ast();
+    // Resolved, as `getAst(true, true)` resolves it.
+    assert_eq!(
+        ast["declarations"][0]["superType"],
+        crate::json!({ "$class": "concerto.metamodel@1.0.0.TypeIdentified", "name": "Asset",
+            "namespace": "concerto@1.0.0" })
+    );
+    assert_eq!(ast["declarations"][2]["decorators"][0]["name"], "Term");
+}
+
+/// R2A-4: `ModelFile::filter` keeping every declaration returns a file of
+/// its own, built from TS 5.0.0's filtered form.
+#[test]
+fn model_file_filter_keeping_everything_writes_the_default_super_types() {
+    let mgr = default_super_type_manager();
+    let source = mgr.model_file("a@1.0.0").unwrap();
+    let all = source.filter(|_| true, &mgr).unwrap().unwrap();
+    assert_eq!(all.ast()["declarations"][0]["superType"]["name"], "Asset");
+    assert_eq!(
+        Some(all.ast()),
+        source.filtered_ast().as_ref(),
+        "the standalone filter and the shared read agree"
+    );
+    let b = mgr.model_file("b@1.0.0").unwrap();
+    assert_eq!(b.filtered_ast(), None);
+    assert_eq!(b.filter(|_| true, &mgr).unwrap().unwrap().ast(), b.ast());
 }
 
 /// Two files, `org.lib@1.0.0` (`Address`, `Phone`) and `org.app@1.0.0`

@@ -5,7 +5,8 @@
 //! falls back to sending its AST). Staging never changes the manager, so it
 //! never moves the epoch (the rule on `ModelManagerHandle::epoch`).
 
-use std::collections::BTreeMap;
+use std::borrow::Cow;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use concerto_core::ModelFile;
@@ -24,6 +25,12 @@ pub(crate) struct StagedModelFiles {
     /// registered with the file
     /// ([`crate::ModelManagerHandle::commit_staged_model_file`]).
     pub(crate) proofs: BTreeMap<u32, Arc<ValidityProof>>,
+    /// The stage ids of the files staged shared by
+    /// [`crate::ModelManagerHandle::model_file_filter_staged`]: each is read,
+    /// once registered, in TS 5.0.0's filtered form
+    /// (`ModelManager::read_in_filtered_form`), and its AST checked in that
+    /// form.
+    pub(crate) filtered: BTreeSet<u32>,
     pub(crate) next: u32,
 }
 
@@ -59,12 +66,39 @@ impl StagedModelFiles {
                 break;
             };
             self.files.remove(&evicted);
-            self.proofs.remove(&evicted);
+            self.forget(evicted);
         }
         let id = self.next;
         self.next = self.next.wrapping_add(1);
         self.files.insert(id, file);
         id
+    }
+
+    /// Takes what is kept with the file staged under `stage` (it is being
+    /// registered, or is gone): its source manager's proof, and whether it
+    /// is read in TS's filtered form.
+    pub(crate) fn take_extras(&mut self, stage: u32) -> (Option<Arc<ValidityProof>>, bool) {
+        (self.proofs.remove(&stage), self.filtered.remove(&stage))
+    }
+
+    /// Drops what is kept with the file staged under `stage`
+    /// ([`Self::take_extras`]).
+    pub(crate) fn forget(&mut self, stage: u32) {
+        self.take_extras(stage);
+    }
+
+    /// The AST of the file staged under `stage` as it is read once
+    /// registered: TS 5.0.0's filtered form for a file staged by `filter`,
+    /// else its own.
+    pub(crate) fn read_ast<'a>(
+        &self,
+        stage: u32,
+        file: &'a ModelFile,
+    ) -> Cow<'a, concerto_core::json::Value> {
+        match self.filtered.contains(&stage).then(|| file.filtered_ast()) {
+            Some(Some(filtered)) => Cow::Owned(filtered),
+            _ => Cow::Borrowed(file.ast()),
+        }
     }
 
     /// The id staged longest ago. Ids are handed out in order but wrap

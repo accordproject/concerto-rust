@@ -132,9 +132,8 @@ impl DcsExtractKept {
     pub(crate) fn stage(&self, target: &mut ModelManagerHandle) -> Vec<Value> {
         stage_shared(
             target,
-            self.result
-                .shared_model_files()
-                .zip(self.headers.iter().map(Option::as_ref)),
+            &self.result,
+            self.headers.iter().map(Option::as_ref),
         )
     }
 
