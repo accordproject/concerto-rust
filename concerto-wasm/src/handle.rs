@@ -129,9 +129,10 @@ impl ModelManagerHandle {
         })
     }
 
-    /// The handle's mutation counter (the rule on the field): anything read
-    /// from the handle is current while it is unchanged. A JS number (exact
-    /// up to 2^53). The smoke checks read it; the TS views do not.
+    /// The handle's mutation counter (the rule on the field): it stamps this
+    /// handle's own caches and moves iff the manager may have changed. A JS
+    /// number (exact up to 2^53), exported for the smoke checks; the TS
+    /// views key on `EngineState.version` instead. A fork restarts it at 0.
     pub fn epoch(&self) -> f64 {
         // Precision loss only past 2^53 mutations.
         #[allow(clippy::cast_precision_loss)]
@@ -940,7 +941,9 @@ impl ModelManagerHandle {
     /// A new handle over the same models ([`ModelManager::fork`]): the same
     /// options, model files (shared), handles and warmed caches, validated
     /// as before. Later changes to either never reach the other. The staging
-    /// slot and the extract memo are not carried over.
+    /// slot and the extract memo are not carried over, and the fork's epoch
+    /// restarts at 0: every epoch stamp is per handle, so the fork's own
+    /// caches start empty and nothing compares epochs across handles.
     pub fn fork(&self) -> ModelManagerHandle {
         ModelManagerHandle {
             manager: self.manager.fork(),

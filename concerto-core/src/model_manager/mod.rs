@@ -19,10 +19,12 @@
 //! (`update_model_file`, `delete_model_file`, `update_model_ast`,
 //! `remove_model`) rebuilds the arena from the surviving files, and every
 //! handle handed out before it is invalid after it.
-//! `ModelManager::state_version` counts the mutations, so a binding caching
-//! a snapshot knows when to drop it. Within one uninterrupted history it
-//! never returns to an earlier value for a different state; a rolled back
-//! batch restores the count, so the next mutation can reuse a value.
+//! The manager counts its mutations internally (its state version), which
+//! keys its own once-per-state checks; it is not exported, and a binding
+//! that caches snapshots keeps its own counter (concerto-wasm's epoch).
+//! For the same manager, outside a rolled-back batch, the count never
+//! returns to an earlier value for a different state; a rolled back batch
+//! restores it, so the next mutation can reuse a value.
 //!
 //! A ported member reaches its collaborators through the
 //! `ResolutionContext` trait, which the manager implements over the arena.
@@ -898,8 +900,8 @@ impl ModelManager {
     /// Whether this manager holds the same decorator and root model files
     /// as `other`: the same shared file (the usual case, as both managers
     /// hold `system_model_files`' own), or else the same AST, which is all
-    /// a model file's lookups are built from. Answered once per
-    /// [`ModelManager::state_version`].
+    /// a model file's lookups are built from. Answered once per state
+    /// version.
     fn has_system_files_of(&self, other: &ModelManager) -> bool {
         use std::sync::atomic::Ordering;
         // `state_version + 1`, so that the default 0 means "not checked".
@@ -946,16 +948,14 @@ impl ModelManager {
         Ok(())
     }
 
-    /// The version of the manager's state, increased by every mutation: a
-    /// snapshot taken at one version is current while it is unchanged.
-    /// Within one uninterrupted history it never repeats an earlier value
-    /// for a different state, and an adopted rebuild
-    /// ([`ModelManager::adopt`]) continues the count. A rolled back batch
-    /// restores the count with the state, so the next mutation after it can
-    /// reuse a value an undone one had: a snapshot taken inside a batch that
-    /// was rolled back is not covered.
-    #[cfg(feature = "js-compat")]
-    pub fn state_version(&self) -> u64 {
+    /// The version of the manager's state, increased by every mutation,
+    /// for the tests: for the same manager, outside a rolled-back batch, it
+    /// never repeats an earlier value for a different state, and an adopted
+    /// rebuild ([`ModelManager::adopt`]) continues the count. A rolled back
+    /// batch restores the count with the state, so the next mutation after
+    /// it can reuse a value an undone one had.
+    #[cfg(test)]
+    pub(crate) fn state_version(&self) -> u64 {
         self.state_version
     }
 
@@ -963,8 +963,8 @@ impl ModelManager {
         /// Replaces this manager with `next`, one built from it
         /// ([`ModelManager::update_model_file`],
         /// [`ModelManager::delete_model_file`]), as one mutation: `next`
-        /// continues this manager's [`ModelManager::state_version`], so a
-        /// snapshot taken before is never taken as current after.
+        /// continues this manager's state version, so a check answered
+        /// before is never taken as current after.
         pub fn adopt(&mut self, mut next: Self) {
             next.state_version = self.state_version.wrapping_add(1);
             next.system_files_checked = std::sync::atomic::AtomicU64::new(0);

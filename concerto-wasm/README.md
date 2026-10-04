@@ -61,8 +61,12 @@ or deleted. `epoch()` is the handle's mutation counter: it moves iff the
 manager may have changed (staging and the extract memo never move it), and
 it stamps the handle's own caches (the `validatePropertyById` slots and the
 extract memo). The TS views key their caches on their own
-`EngineState.version`, not on `epoch()`. `fork()` gives an independent
-copy; `free()` releases the handle (a `FinalizationRegistry` does it
+`EngineState.version`, not on `epoch()`, which is exported for the smoke
+checks (`scripts/checks.mjs`, `scripts/chromium-smoke.mjs`). So there are
+two counters: the TS `EngineState.version` and the handle's epoch;
+concerto-core's own state version is internal. `fork()` gives an
+independent copy whose epoch restarts at 0 (every epoch stamp is per
+handle); `free()` releases the handle (a `FinalizationRegistry` does it
 anyway).
 
 | Group | Members |
