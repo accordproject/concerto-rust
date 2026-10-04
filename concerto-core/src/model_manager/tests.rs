@@ -3182,7 +3182,7 @@ fn declaration_super_types(ast: &Value) -> Vec<&Value> {
 /// R2A-4: TS 5.0.0's `ModelFile.filter` builds the filtered file from each
 /// declaration's `ast`, so an asset or participant with no super type gets
 /// the default super type its view was given (`TypeIdentified`). A filter
-/// that keeps the file whole shares the source's file (P5-123), and the AST
+/// that keeps the file whole shares the source's file, and the AST
 /// is read in that form ([`ModelManager::model_file_ast`],
 /// [`ModelManager::ast`]), built on first read; the source's own AST is
 /// unchanged. A partial filter rebuilds the file with the form written in.
