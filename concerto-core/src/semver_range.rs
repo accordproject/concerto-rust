@@ -38,7 +38,7 @@
 use std::cmp::Ordering;
 use std::sync::LazyLock;
 
-use crate::model_util::{PrereleaseIdentifier, SemVer, semver_parse};
+use crate::model_util::{MAX_SAFE_INTEGER, PrereleaseIdentifier, SemVer, semver_parse};
 
 /// A partial version's major/minor/patch component: a concrete number, or a
 /// wildcard (`x`, `X`, `*`, or simply omitted — node-semver's X-Ranges treat
@@ -81,6 +81,12 @@ static PARTIAL_VERSION_REGEX: LazyLock<regress::Regex> = LazyLock::new(|| {
     regress::Regex::new(PARTIAL_VERSION_PATTERN).expect("PARTIAL_VERSION_PATTERN is valid")
 });
 
+/// A partial version, or `None` when it does not parse. As node-semver's
+/// `SemVer` constructor, which throws "Invalid major version" (so
+/// `satisfies` answers `false`), a major, minor or patch above
+/// `Number.MAX_SAFE_INTEGER` fails the parse, as in
+/// [`semver_parse`]; a numeric prerelease identifier becomes a number only
+/// below it, and stays a string otherwise.
 fn parse_partial(s: &str) -> Option<Partial> {
     let s = s.trim();
     if s.is_empty() {
@@ -89,9 +95,13 @@ fn parse_partial(s: &str) -> Option<Partial> {
     let m = PARTIAL_VERSION_REGEX.find(s)?;
     let group = |i: usize| m.group(i).map(|range| &s[range]);
     let part = |i: usize| match group(i) {
-        None => Part::Wild,
-        Some("x" | "X" | "*") => Part::Wild,
-        Some(digits) => digits.parse::<f64>().map_or(Part::Wild, Part::Num),
+        None => Some(Part::Wild),
+        Some("x" | "X" | "*") => Some(Part::Wild),
+        Some(digits) => match digits.parse::<f64>() {
+            Ok(n) if n > MAX_SAFE_INTEGER => None,
+            Ok(n) => Some(Part::Num(n)),
+            Err(_) => Some(Part::Wild),
+        },
     };
     let prerelease = match group(4) {
         None | Some("") => Vec::new(),
@@ -101,6 +111,7 @@ fn parse_partial(s: &str) -> Option<Partial> {
                 if !id.is_empty()
                     && id.bytes().all(|b| b.is_ascii_digit())
                     && let Ok(n) = id.parse::<f64>()
+                    && (0.0..MAX_SAFE_INTEGER).contains(&n)
                 {
                     return PrereleaseIdentifier::Number(n);
                 }
@@ -110,9 +121,9 @@ fn parse_partial(s: &str) -> Option<Partial> {
         // group(5) (build metadata) plays no part in ordering or bounds.
     };
     Some(Partial {
-        major: part(1),
-        minor: part(2),
-        patch: part(3),
+        major: part(1)?,
+        minor: part(2)?,
+        patch: part(3)?,
         prerelease,
     })
 }
@@ -553,56 +564,4 @@ pub(crate) fn satisfies(version: &str, range: &str, include_prerelease: bool) ->
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn partial_version_pattern_compiles() {
-        LazyLock::force(&PARTIAL_VERSION_REGEX);
-    }
-
-    #[test]
-    fn caret_and_tilde() {
-        assert!(satisfies("5.0.0", "^5.0.0", true));
-        assert!(satisfies("5.9.9", "^5.0.0", true));
-        assert!(!satisfies("6.0.0", "^5.0.0", true));
-        assert!(!satisfies("5.0.0", "^0.80", true)); // 5.0.0 is well outside ^0.80.x
-        assert!(satisfies("0.80.4", "^0.80", true));
-        assert!(!satisfies("0.81.0", "^0.80", true));
-        assert!(satisfies("1.2.9", "~1.2.3", true));
-        assert!(!satisfies("1.3.0", "~1.2.3", true));
-    }
-
-    #[test]
-    fn space_separated_and_and_or() {
-        assert!(satisfies("5.0.0", ">=3.0.0 <6.0.0", true));
-        assert!(!satisfies("6.0.0", ">=3.0.0 <6.0.0", true));
-        assert!(satisfies("5.0.0", "^1.0.0 || ^5.0.0", true));
-    }
-
-    #[test]
-    fn hyphen_ranges() {
-        assert!(satisfies("5.0.0", "3.0.0 - 6.0.0", true));
-        assert!(satisfies("5.0.0", "3.0.0 - 5", true));
-        assert!(!satisfies("6.0.0", "3.0.0 - 5", true));
-    }
-
-    #[test]
-    fn bare_version_is_exact_not_caret() {
-        assert!(satisfies("5.1.0", "5.1.0", true));
-        assert!(!satisfies("5.1.1", "5.1.0", true));
-    }
-
-    #[test]
-    fn x_ranges() {
-        assert!(satisfies("5.4.0", "5.x", true));
-        assert!(!satisfies("6.0.0", "5.x", true));
-        assert!(satisfies("5.4.9", "5.4", true));
-        assert!(satisfies("5.4.0", "*", true));
-    }
-
-    #[test]
-    fn an_unparseable_range_is_not_satisfied() {
-        assert!(!satisfies("5.0.0", "not a range", true));
-    }
-}
+mod tests;

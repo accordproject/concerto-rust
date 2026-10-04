@@ -241,26 +241,27 @@ export function runChecks(engine) {
     assert(invalid instanceof EngineError, `detached validate threw ${invalid}`);
   });
 
-  check('modelFileFilter keeps only the predicate\'s declarations', () => {
-    const target = new engine.ModelManagerHandle();
-    const kept = mm.modelFileFilter(file, (fqn) => fqn === 'org.example@1.0.0.Person', target);
-    assert(typeof kept === 'number', `filter returned ${kept}`);
-    const declarations = JSON.parse(target.modelFileSnapshot(kept)).ast.declarations;
+  check('modelFileFilterAst keeps only the predicate\'s declarations', () => {
+    const kept = mm.modelFileFilterAst(file, (fqn) => fqn === 'org.example@1.0.0.Person');
+    assert(typeof kept === 'string', `filter returned ${kept}`);
+    const declarations = JSON.parse(kept).ast.declarations;
     assert(declarations.length === 1, `filtered declarations ${declarations.length}`);
     assert(declarations[0].name === 'Person', 'kept declaration');
-    const other = new engine.ModelManagerHandle();
-    const dropped = mm.modelFileFilter(file, () => false, other);
+    const dropped = mm.modelFileFilterAst(file, () => false);
     assert(dropped === undefined, `filter-to-nothing returned ${dropped}`);
-    const threw = thrown(() => mm.modelFileFilter(file, () => { throw new Error('nope'); }, other));
+    const threw = thrown(() => mm.modelFileFilterAst(file, () => { throw new Error('nope'); }));
     assert(threw.message === 'nope', `predicate error propagated as ${threw}`);
+    // The staged form gives the same filtered AST for a changed file.
+    const target = new engine.ModelManagerHandle();
+    const staged = JSON.parse(mm.modelFileFilterStaged(file, (fqn) => fqn === 'org.example@1.0.0.Person', target));
+    assert(staged.ast.declarations.length === 1, `staged filter ${JSON.stringify(staged)}`);
     target.free();
-    other.free();
     // The source manager (and the file's own handle within it) is unchanged.
     assert(mm.modelFileId('org.example@1.0.0') === file, 'source manager untouched');
     assert(JSON.parse(mm.modelFileSnapshot(file)).ast.declarations.length === 3, 'source file untouched');
   });
 
-  check('modelFileFilter gives the predicate the imported declaration\'s own FQN', () => {
+  check('modelFileFilterAst gives the predicate the imported declaration\'s own FQN', () => {
     // A real cross-file import: `org.example@1.0.0.Person` is not the
     // relevant namespace here — `Person` belongs to `org.other@1.0.0`
     // (already loaded above), and `ModelFile::filter` calls the predicate
@@ -288,19 +289,27 @@ export function runChecks(engine) {
     };
     const importerFile = mm.addModel(JSON.stringify(importer), 'importer.cto');
     const seen = [];
-    const target = new engine.ModelManagerHandle();
-    const kept = mm.modelFileFilter(importerFile, (fqn) => {
+    const kept = mm.modelFileFilterAst(importerFile, (fqn) => {
       seen.push(fqn);
       return true;
-    }, target);
-    assert(typeof kept === 'number', `filter returned ${kept}`);
+    });
+    assert(typeof kept === 'string', `filter returned ${kept}`);
     assert(seen.includes('org.other@1.0.0.Person'), `predicate saw ${JSON.stringify(seen)}`);
     assert(!seen.includes('org.importer@1.0.0.Person'), `predicate wrongly saw ${JSON.stringify(seen)}`);
-    const snap = JSON.parse(target.modelFileSnapshot(kept));
+    const snap = JSON.parse(kept);
     assert(
       snap.ast.imports.some((imp) => imp.namespace === 'org.other@1.0.0' && imp.name === 'Person'),
       `import kept ${JSON.stringify(snap.ast.imports)}`,
     );
+    // Kept unchanged: staged in a distinct target, with the same calls.
+    const target = new engine.ModelManagerHandle();
+    const again = [];
+    const staged = JSON.parse(mm.modelFileFilterStaged(importerFile, (fqn) => {
+      again.push(fqn);
+      return true;
+    }, target));
+    assert(typeof staged.stage === 'number', `staged filter ${JSON.stringify(staged)}`);
+    assert(JSON.stringify(again) === JSON.stringify(seen), `staged predicate saw ${JSON.stringify(again)}`);
     target.free();
   });
 
@@ -1528,6 +1537,19 @@ export function runChecks(engine) {
     assert(h.serializerToJson(JSON.stringify(built), 'null') === h.serializerToJsonBytes(compact(built), 'null'), 'toJSON');
     const notLayout = thrown(() => h.serializerToJsonBytes(new Uint8Array([9]), 'null'));
     assert(notLayout.payload?.fastPathUnsupported === true, `not the layout: ${JSON.stringify(notLayout.payload)}`);
+    // validateInstance over the compact layout: the same report, and the
+    // same thrown error, as over the text.
+    for (const mode of [1, 2]) {
+      const viaText = h.validateInstance(JSON.stringify(doc), 'null', undefined, mode);
+      const viaBytes = h.validateInstanceBytes(compact(doc), 'null', undefined, mode);
+      assert(viaText === viaBytes, `validateInstance mode ${mode}: ${viaText} vs ${viaBytes}`);
+    }
+    assert(h.validateInstanceBytes(compact(plain), 'null', undefined, 0) === '', 'valid: no error');
+    const throwText = thrown(() => h.validateInstance(JSON.stringify(doc), 'null', undefined, 0));
+    const throwBytes = thrown(() => h.validateInstanceBytes(compact(doc), 'null', undefined, 0));
+    assert(throwText && throwBytes && JSON.stringify(throwText.payload) === JSON.stringify(throwBytes.payload), `${throwText} vs ${throwBytes}`);
+    const notLayoutDoc = thrown(() => h.validateInstanceBytes(new Uint8Array([9]), 'null', undefined, 1));
+    assert(notLayoutDoc.payload?.fastPathUnsupported === true, `not the layout: ${JSON.stringify(notLayoutDoc.payload)}`);
     h.free();
   });
 

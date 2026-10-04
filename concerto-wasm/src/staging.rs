@@ -24,7 +24,7 @@ pub(crate) struct StagedModelFiles {
     /// registered with the file
     /// ([`crate::ModelManagerHandle::commit_staged_model_file`]).
     pub(crate) proofs: BTreeMap<u32, Arc<ValidityProof>>,
-    next: u32,
+    pub(crate) next: u32,
 }
 
 /// [`crate::ModelManagerHandle::stage_model_file_bytes`]'s flag: BC-19's AST
@@ -38,11 +38,6 @@ impl StagedModelFiles {
     /// The most staged files kept at once.
     pub(crate) const CAPACITY: usize = 256;
 
-    /// The id the next [`Self::insert`] gives.
-    pub(crate) fn next_id(&self) -> u32 {
-        self.next
-    }
-
     pub(crate) fn insert(&mut self, file: ModelFile) -> u32 {
         self.insert_shared(Arc::new(file))
     }
@@ -50,14 +45,35 @@ impl StagedModelFiles {
     /// [`Self::insert`] for a model file that may also be held
     /// elsewhere: the file is shared, not copied.
     pub(crate) fn insert_shared(&mut self, file: Arc<ModelFile>) -> u32 {
-        while self.files.len() >= Self::CAPACITY {
-            if let Some((evicted, _)) = self.files.pop_first() {
-                self.proofs.remove(&evicted);
-            }
+        self.insert_shared_in_batch(file, 0)
+    }
+
+    /// [`Self::insert_shared`] for one file of a batch of `batch` files
+    /// staged together (a DecoratorManager result): the oldest entry is
+    /// evicted only past the larger of [`Self::CAPACITY`] and `batch`, so a
+    /// batch larger than the slot never evicts its own earlier files. A
+    /// later insert evicts back down to the capacity.
+    pub(crate) fn insert_shared_in_batch(&mut self, file: Arc<ModelFile>, batch: usize) -> u32 {
+        while self.files.len() >= Self::CAPACITY.max(batch) {
+            let Some(evicted) = self.oldest() else {
+                break;
+            };
+            self.files.remove(&evicted);
+            self.proofs.remove(&evicted);
         }
         let id = self.next;
         self.next = self.next.wrapping_add(1);
         self.files.insert(id, file);
         id
+    }
+
+    /// The id staged longest ago. Ids are handed out in order but wrap
+    /// around, so the oldest is the one furthest behind the next id, not
+    /// the smallest.
+    fn oldest(&self) -> Option<u32> {
+        self.files
+            .keys()
+            .copied()
+            .max_by_key(|id| self.next.wrapping_sub(*id))
     }
 }

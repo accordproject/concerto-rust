@@ -129,9 +129,10 @@ impl ModelManagerHandle {
         })
     }
 
-    /// The handle's mutation counter (the rule on the field): anything read
-    /// from the handle is current while it is unchanged. A JS number (exact
-    /// up to 2^53). The smoke checks read it; the TS views do not.
+    /// The handle's mutation counter (the rule on the field): it stamps this
+    /// handle's own caches and moves iff the manager may have changed. A JS
+    /// number (exact up to 2^53), exported for the smoke checks; the TS
+    /// views key on `EngineState.version` instead. A fork restarts it at 0.
     pub fn epoch(&self) -> f64 {
         // Precision loss only past 2^53 mutations.
         #[allow(clippy::cast_precision_loss)]
@@ -317,9 +318,12 @@ impl ModelManagerHandle {
     ) -> Result<String> {
         let (file, imports) = loaded;
         let header = staged_header_from_parts(file.namespace(), imports.as_ref());
-        let text = flat_staged_text(self.staged.next_id(), header.as_ref()).map_err(internal)?;
-        self.staged.insert(file);
-        Ok(text)
+        let text = flat_staged_text(0, header.as_ref()).map_err(internal)?;
+        drop(header);
+        let stage = self.staged.insert(file);
+        // The text was written for stage 0 (`[0` or `[0,`), so that a write
+        // error leaves nothing staged; the id `insert` gave replaces it.
+        Ok(format!("[{stage}{}", &text[2..]))
     }
 
     /// Registers a staged model file, as [`Self::add_model_with_definitions`]
@@ -393,9 +397,11 @@ impl ModelManagerHandle {
         self.staged.proofs.remove(&stage);
         self.bump_epoch();
         run(|| {
-            let model_file = Arc::unwrap_or_clone(file);
-            let namespace = model_file.namespace().to_string();
-            let updated = self.manager.update_model_file(model_file, false)?;
+            let namespace = file.namespace().to_string();
+            // Shared, not copied: a stage from the commit, validate-and-
+            // commit, DecoratorManager and filter paths may be held
+            // elsewhere too.
+            let updated = self.manager.update_shared_model_file(file, false)?;
             self.manager.adopt(updated);
             self.file_handle(&namespace).map(Some)
         })
@@ -424,7 +430,10 @@ impl ModelManagerHandle {
         stage: u32,
         namespace: Option<String>,
     ) -> Option<String> {
-        model_file_view_snapshot_of(self.staged.files.get(&stage)?.ast(), namespace)
+        crate::properties::model_file_view_snapshot_of(
+            self.staged.files.get(&stage)?.ast(),
+            namespace,
+        )
     }
 
     /// `model_file_view_snapshot` of a loaded model file's AST, or
@@ -436,7 +445,7 @@ impl ModelManagerHandle {
         namespace: Option<String>,
     ) -> Option<String> {
         let file = self.manager.file(ModelFileId::from_index(model_file))?;
-        model_file_view_snapshot_of(file.ast(), namespace)
+        crate::properties::model_file_view_snapshot_of(file.ast(), namespace)
     }
 
     /// TS `BaseModelManager.addModelFile`'s validation and registration of a
@@ -739,6 +748,24 @@ impl ModelManagerHandle {
         {
             return Ok(false);
         }
+        // A stage id given twice throws, as `commitStagedModelFiles` does,
+        // before any stage is consumed.
+        if let Some(stage) = stages.iter().enumerate().find_map(|(i, stage)| {
+            stages
+                .get(..i)
+                .is_some_and(|earlier| earlier.contains(stage))
+                .then_some(*stage)
+        }) {
+            return Err(throw(
+                ContractError::pre_port(
+                    ErrorKind::InvalidArgument,
+                    format!("the stage {stage} given twice"),
+                    None,
+                )
+                .into(),
+                None,
+            ));
+        }
         let files: Vec<_> = stages
             .iter()
             .filter_map(|stage| {
@@ -782,81 +809,11 @@ impl ModelManagerHandle {
         })
     }
 
-    /// TS: `ModelFile.filter(predicate, modelManager)` for a file this manager
-    /// holds, into `target`. `predicate` gets each candidate's fqn, imported
-    /// declarations included; a throw propagates. A file with a surviving
-    /// declaration is added to `target` as `addModel` would and its handle
-    /// returned; `undefined` (TS `null`) otherwise.
-    #[wasm_bindgen(js_name = modelFileFilter)]
-    pub fn model_file_filter(
-        &self,
-        model_file: u32,
-        predicate: Function,
-        target: &mut ModelManagerHandle,
-    ) -> JsResult<Option<u32>> {
-        target.bump_epoch();
-        run(|| {
-            let file = self.require_file(model_file)?;
-            // The predicate is also called on declarations of imported
-            // files, so each reachable declaration's fully-qualified name is
-            // looked up by identity up front.
-            let fqn_by_decl: HashMap<*const concerto_core::introspect::Declaration, String> = self
-                .manager
-                .model_files()
-                .flat_map(|mf| {
-                    let namespace = mf.namespace();
-                    mf.declarations().iter().map(move |decl| {
-                        (
-                            decl as *const concerto_core::introspect::Declaration,
-                            mu::qualify(namespace, decl.name()),
-                        )
-                    })
-                })
-                .collect();
-            let file_namespace = file.namespace().to_string();
-            let js_err: RefCell<Option<Error>> = RefCell::new(None);
-            let filtered = file.filter(
-                |decl| {
-                    if js_err.borrow().is_some() {
-                        return false;
-                    }
-                    let fqn = fqn_by_decl
-                        .get(&(decl as *const concerto_core::introspect::Declaration))
-                        .cloned()
-                        .unwrap_or_else(|| mu::qualify(&file_namespace, decl.name()));
-                    match predicate.call1(&JsValue::NULL, &JsValue::from_str(&fqn)) {
-                        Ok(v) => v.is_truthy(),
-                        Err(e) => {
-                            *js_err.borrow_mut() = Some(Error::Js(e));
-                            false
-                        }
-                    }
-                },
-                &self.manager,
-            )?;
-            if let Some(err) = js_err.into_inner() {
-                return Err(err);
-            }
-            let Some(filtered) = filtered else {
-                return Ok(None);
-            };
-            let ast = filtered.ast().clone();
-            let ns = filtered.namespace().to_string();
-            let new_file_name = filtered.file_name().map(str::to_string);
-            target
-                .manager
-                .add_model_with_definitions(&ast, None, new_file_name)?;
-            target.file_handle(&ns).map(Some)
-        })
-    }
-}
-
-#[wasm_bindgen]
-impl ModelManagerHandle {
-    /// TS `ModelFile.filter`, as [`Self::model_file_filter`], for
-    /// `BaseModelManager.filter`'s result manager `target`, with the same
-    /// predicate calls and errors. `undefined` when nothing is kept (TS
-    /// `null`), and otherwise JSON text:
+    /// TS `ModelFile.filter(predicate, modelManager)` for a file this manager
+    /// holds, for a result manager whose handle is `target`, never this one.
+    /// `predicate` gets each candidate's fully-qualified name, imported
+    /// declarations included; a throw propagates. `undefined` when nothing
+    /// is kept (TS `null`), and otherwise JSON text:
     ///
     /// - `{"stage": <id>}` when the file is kept unchanged: it is staged in
     ///   `target`, shared, with this manager's
@@ -872,75 +829,28 @@ impl ModelManagerHandle {
         predicate: Function,
         target: &mut ModelManagerHandle,
     ) -> JsResult<Option<String>> {
-        run(|| {
-            let id = ModelFileId::from_index(model_file);
-            self.require_file(model_file)?;
-            let file = self
-                .manager
-                .shared_model_files()
-                .nth(id.index() as usize)
-                .ok_or_else(|| unknown(Node::ModelFile(id)))?;
-            // The fully-qualified name of every declaration the predicate can
-            // be handed, by identity, as `model_file_filter` builds it.
-            let fqn_by_decl: HashMap<*const concerto_core::introspect::Declaration, String> = self
-                .manager
-                .model_files()
-                .flat_map(|mf| {
-                    let namespace = mf.namespace();
-                    mf.declarations().iter().map(move |decl| {
-                        (
-                            decl as *const concerto_core::introspect::Declaration,
-                            mu::qualify(namespace, decl.name()),
-                        )
-                    })
-                })
-                .collect();
-            let file_namespace = file.namespace().to_string();
-            let js_err: RefCell<Option<Error>> = RefCell::new(None);
-            let outcome = file.filter_outcome(
-                |decl| {
-                    if js_err.borrow().is_some() {
-                        return false;
-                    }
-                    let fqn = fqn_by_decl
-                        .get(&(decl as *const concerto_core::introspect::Declaration))
-                        .cloned()
-                        .unwrap_or_else(|| mu::qualify(&file_namespace, decl.name()));
-                    match predicate.call1(&JsValue::NULL, &JsValue::from_str(&fqn)) {
-                        Ok(v) => v.is_truthy(),
-                        Err(e) => {
-                            *js_err.borrow_mut() = Some(Error::Js(e));
-                            false
-                        }
-                    }
-                },
-                &self.manager,
-            )?;
-            if let Some(err) = js_err.into_inner() {
-                return Err(err);
-            }
-            use concerto_core::introspect::model_file::FilterOutcome;
-            match outcome {
-                FilterOutcome::Empty => Ok(None),
-                FilterOutcome::Unchanged => {
-                    let proof = self.manager.validity_proof(&file_namespace);
-                    let stage = target.staged.insert_shared(Arc::clone(file));
-                    if let Some(proof) = proof {
-                        target.staged.proofs.insert(stage, proof);
-                    }
-                    Ok(Some(format!("{{\"stage\":{stage}}}")))
-                }
-                FilterOutcome::Filtered(filtered) => {
-                    snapshot(&json!({ "ast": filtered.ast() })).map(Some)
-                }
-            }
-        })
+        run(|| self.filter_to_json(model_file, &predicate, Some(target)))
+    }
+
+    /// [`Self::model_file_filter_staged`] with no target, for a result
+    /// manager whose handle is this one (a handle cannot be borrowed twice):
+    /// `undefined` when nothing is kept, and otherwise `{"ast": <ast>}`, the
+    /// filtered file's AST, or the file's own when it is kept unchanged.
+    #[wasm_bindgen(js_name = modelFileFilterAst)]
+    pub fn model_file_filter_ast(
+        &self,
+        model_file: u32,
+        predicate: Function,
+    ) -> JsResult<Option<String>> {
+        run(|| self.filter_to_json(model_file, &predicate, None))
     }
 
     /// A new handle over the same models ([`ModelManager::fork`]): the same
     /// options, model files (shared), handles and warmed caches, validated
     /// as before. Later changes to either never reach the other. The staging
-    /// slot and the extract memo are not carried over.
+    /// slot and the extract memo are not carried over, and the fork's epoch
+    /// restarts at 0: every epoch stamp is per handle, so the fork's own
+    /// caches start empty and nothing compares epochs across handles.
     pub fn fork(&self) -> ModelManagerHandle {
         ModelManagerHandle {
             manager: self.manager.fork(),
@@ -960,6 +870,68 @@ impl ModelManagerHandle {
             .model_file_id(namespace)
             .map(ModelFileId::index)
             .ok_or_else(|| CoreError::type_not_found(namespace.to_string()).into())
+    }
+
+    /// The filter bindings' one body ([`Self::model_file_filter_staged`],
+    /// [`Self::model_file_filter_ast`]): a file kept unchanged is staged in
+    /// `target` when one is given, and returned as its own AST otherwise.
+    fn filter_to_json(
+        &self,
+        model_file: u32,
+        predicate: &Function,
+        target: Option<&mut ModelManagerHandle>,
+    ) -> Result<Option<String>> {
+        use concerto_core::introspect::model_file::FilterOutcome;
+        let id = ModelFileId::from_index(model_file);
+        match self.filter_with_predicate(id, predicate)? {
+            FilterOutcome::Empty => Ok(None),
+            FilterOutcome::Unchanged => {
+                let file = self
+                    .manager
+                    .shared_file(id)
+                    .ok_or_else(|| unknown(Node::ModelFile(id)))?;
+                let Some(target) = target else {
+                    return snapshot(&json!({ "ast": file.ast() })).map(Some);
+                };
+                let proof = self.manager.validity_proof(file.namespace());
+                let stage = target.staged.insert_shared(Arc::clone(file));
+                if let Some(proof) = proof {
+                    target.staged.proofs.insert(stage, proof);
+                }
+                Ok(Some(format!("{{\"stage\":{stage}}}")))
+            }
+            FilterOutcome::Filtered(filtered) => {
+                snapshot(&json!({ "ast": filtered.ast() })).map(Some)
+            }
+        }
+    }
+
+    /// [`ModelManager::filter_model_file`] for the file `id` names, with a
+    /// JS predicate over each candidate's fully-qualified name. The first
+    /// throw is kept and returned once the filter is done; the predicate is
+    /// not called again after it.
+    fn filter_with_predicate(
+        &self,
+        id: ModelFileId,
+        predicate: &Function,
+    ) -> Result<concerto_core::introspect::model_file::FilterOutcome> {
+        let js_err: RefCell<Option<Error>> = RefCell::new(None);
+        let outcome = self.manager.filter_model_file(id, |fqn| {
+            if js_err.borrow().is_some() {
+                return false;
+            }
+            match predicate.call1(&JsValue::NULL, &JsValue::from_str(fqn)) {
+                Ok(v) => v.is_truthy(),
+                Err(e) => {
+                    *js_err.borrow_mut() = Some(Error::Js(e));
+                    false
+                }
+            }
+        });
+        match js_err.into_inner() {
+            Some(err) => Err(err),
+            None => Ok(outcome?),
+        }
     }
 
     /// A model file, by its handle; the same [`unknown`] `TypeNotFound` every

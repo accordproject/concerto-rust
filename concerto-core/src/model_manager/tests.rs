@@ -2114,7 +2114,7 @@ fn with_model_file_registered_appends_exactly_as_a_rebuild_would() {
         .with_model_file_registered(Arc::new(fresh.clone()))
         .unwrap();
 
-    let mut rebuilt = ModelManager::default();
+    let mut rebuilt = ModelManager::empty();
     for existing in mgr.model_files() {
         rebuilt.insert(existing.clone()).unwrap();
     }
@@ -3213,4 +3213,196 @@ fn filter_writes_the_default_super_types_of_the_declaration_asts() {
     filtered.validate_models().unwrap();
     #[cfg(feature = "js-compat")]
     crate::instance::check_ast_shape(ast).unwrap();
+}
+
+/// Two files, `org.lib@1.0.0` (`Address`, `Phone`) and `org.app@1.0.0`
+/// (`Person`, importing both), each built from JSON text, so neither has
+/// built its AST value yet. `app_imports` is the importer's `imports`.
+fn text_built_filter_manager(app_imports: crate::json::Value) -> ModelManager {
+    let concept = |name: &str| {
+        crate::json!({
+            "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+            "name": name, "isAbstract": false, "properties": []
+        })
+    };
+    let lib = crate::json!({
+        "$class": "concerto.metamodel@1.0.0.Model",
+        "namespace": "org.lib@1.0.0",
+        "imports": [],
+        "declarations": [concept("Address"), concept("Phone")]
+    });
+    let app = crate::json!({
+        "$class": "concerto.metamodel@1.0.0.Model",
+        "namespace": "org.app@1.0.0",
+        "imports": app_imports,
+        "declarations": [concept("Person")]
+    });
+    let mut mm = ModelManager::new().unwrap();
+    for ast in [lib, app] {
+        let file = ModelFile::from_json_text(&ast.to_string(), None, None)
+            .unwrap()
+            .unwrap();
+        assert!(!file.ast_is_built());
+        mm.add_model_file(file).unwrap();
+    }
+    mm
+}
+
+/// `filter_model_file` decides `Empty` and `Unchanged` from the typed
+/// declarations and imports, so a file built from text keeps its AST
+/// unbuilt; only a `Filtered` result reads it. The predicate sees the
+/// arena's fully-qualified names, and is asked the same questions, in the
+/// same order, whichever way the decision goes.
+#[test]
+fn filter_model_file_decides_without_building_the_ast() {
+    use crate::introspect::model_file::FilterOutcome;
+    let imports = crate::json!([{
+        "$class": "concerto.metamodel@1.0.0.ImportTypes",
+        "namespace": "org.lib@1.0.0",
+        "types": ["Address", "Phone"]
+    }]);
+    let mm = text_built_filter_manager(imports);
+    let app = mm.model_file_id("org.app@1.0.0").unwrap();
+    let asked = &std::cell::RefCell::new(Vec::new());
+    let ask = |keep: &'static [&'static str]| {
+        asked.borrow_mut().clear();
+        move |fqn: &str| {
+            asked.borrow_mut().push(fqn.to_string());
+            !keep.contains(&fqn)
+        }
+    };
+
+    let outcome = mm.filter_model_file(app, ask(&[])).unwrap();
+    assert!(matches!(outcome, FilterOutcome::Unchanged));
+    assert_eq!(
+        *asked.borrow(),
+        [
+            "org.app@1.0.0.Person",
+            "org.lib@1.0.0.Address",
+            "org.lib@1.0.0.Phone"
+        ]
+    );
+    let outcome = mm
+        .filter_model_file(app, ask(&["org.app@1.0.0.Person"]))
+        .unwrap();
+    assert!(matches!(outcome, FilterOutcome::Empty));
+    assert_eq!(*asked.borrow(), ["org.app@1.0.0.Person"]);
+    for ns in ["org.lib@1.0.0", "org.app@1.0.0"] {
+        assert!(!mm.model_file(ns).unwrap().ast_is_built(), "{ns}");
+    }
+
+    // A pruned import: the remembered answers are reused, not asked again.
+    let outcome = mm
+        .filter_model_file(app, ask(&["org.lib@1.0.0.Phone"]))
+        .unwrap();
+    let FilterOutcome::Filtered(filtered) = outcome else {
+        panic!("an import is pruned");
+    };
+    assert_eq!(
+        *asked.borrow(),
+        [
+            "org.app@1.0.0.Person",
+            "org.lib@1.0.0.Address",
+            "org.lib@1.0.0.Phone"
+        ]
+    );
+    assert_eq!(
+        filtered.ast()["imports"][0]["types"],
+        crate::json!(["Address"])
+    );
+}
+
+/// An import entry the typed read skips (a `types` entry that is not a
+/// string, an alias of a name the import does not list) is one the filter
+/// prunes from the AST, so such a file is decided from its AST, as before:
+/// keeping every declaration still gives a `Filtered` file.
+#[test]
+fn filter_model_file_reads_the_ast_of_an_import_the_typed_read_skipped_part_of() {
+    use crate::introspect::model_file::FilterOutcome;
+    for imports in [
+        crate::json!([{
+            "$class": "concerto.metamodel@1.0.0.ImportTypes",
+            "namespace": "org.lib@1.0.0",
+            "types": ["Address", 7]
+        }]),
+        crate::json!([{
+            "$class": "concerto.metamodel@1.0.0.ImportTypes",
+            "namespace": "org.lib@1.0.0",
+            "types": ["Address"],
+            "aliasedTypes": [{
+                "$class": "concerto.metamodel@1.0.0.AliasedType",
+                "name": "Phone", "aliasedName": "Tel"
+            }]
+        }]),
+    ] {
+        let mm = text_built_filter_manager(imports.clone());
+        let app = mm.model_file_id("org.app@1.0.0").unwrap();
+        let outcome = mm.filter_model_file(app, |_| true).unwrap();
+        let FilterOutcome::Filtered(filtered) = outcome else {
+            panic!("{imports} is pruned");
+        };
+        assert_eq!(
+            filtered.ast()["imports"][0]["types"],
+            crate::json!(["Address"])
+        );
+        assert_ne!(filtered.ast()["imports"], imports);
+    }
+}
+
+/// A name imported more than once (twice in one multi-type import, or by a
+/// single-type import and a multi-type import) is asked of the predicate
+/// once per occurrence, as TS 5.0.0 `ModelFile.filter` asks it, whether the
+/// file is kept unchanged or an import is pruned (the AST pass replaying
+/// the typed pass's answers in call order).
+#[test]
+fn filter_model_file_asks_a_name_imported_twice_twice() {
+    use crate::introspect::model_file::FilterOutcome;
+    let types = |names: &[&str]| {
+        crate::json!({
+            "$class": "concerto.metamodel@1.0.0.ImportTypes",
+            "namespace": "org.lib@1.0.0",
+            "types": names
+        })
+    };
+    let single = crate::json!({
+        "$class": "concerto.metamodel@1.0.0.ImportType",
+        "namespace": "org.lib@1.0.0",
+        "name": "Address"
+    });
+    for imports in [
+        crate::json!([types(&["Address", "Address"])]),
+        crate::json!([single, types(&["Address"])]),
+        crate::json!([types(&["Address", "Phone", "Address"])]),
+    ] {
+        let mm = text_built_filter_manager(imports.clone());
+        let app = mm.model_file_id("org.app@1.0.0").unwrap();
+        let expected: Vec<String> = std::iter::once("org.app@1.0.0.Person".to_string())
+            .chain(
+                imports
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .flat_map(|imp| match imp.get("types") {
+                        Some(t) => t.as_array().unwrap().clone(),
+                        None => vec![imp["name"].clone()],
+                    })
+                    .map(|n| format!("org.lib@1.0.0.{}", n.as_str().unwrap())),
+            )
+            .collect();
+        for (reject, unchanged) in [(None, true), (Some("org.lib@1.0.0.Address"), false)] {
+            let asked = std::cell::RefCell::new(Vec::new());
+            let outcome = mm
+                .filter_model_file(app, |fqn| {
+                    asked.borrow_mut().push(fqn.to_string());
+                    Some(fqn) != reject
+                })
+                .unwrap();
+            assert_eq!(
+                matches!(outcome, FilterOutcome::Unchanged),
+                unchanged,
+                "{imports} {reject:?}"
+            );
+            assert_eq!(*asked.borrow(), expected, "{imports} {reject:?}");
+        }
+    }
 }

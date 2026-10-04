@@ -226,6 +226,15 @@ impl ClassDeclaration {
         class_field!(&self.node, d => d.super_type.as_ref()).or(self.implicit_super_type)
     }
 
+    /// Whether this is an asset, participant, transaction or event with no
+    /// explicit super type: one TS `ModelFile._declarationView` gives a
+    /// default super type, so `filter` rewrites its AST. (The AST check,
+    /// `model_file::default_super_type`, also requires the exact metamodel
+    /// `$class`; this one may say yes where it says no, never the reverse.)
+    pub(crate) fn may_take_default_super_type(&self) -> bool {
+        self.implicit_super_type.is_some() && self.kind() != ClassKind::Concept
+    }
+
     /// The properties declared directly on this type. Inherited properties are
     /// not included; those are gathered separately by walking the supertype
     /// chain.

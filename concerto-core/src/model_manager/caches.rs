@@ -44,6 +44,9 @@ pub(super) struct DeclFacts {
     /// The declarations that directly extend it (TS `getDirectSubclasses`),
     /// in load order, filled for every declaration at once.
     pub(super) direct_subclasses: Option<Arc<[DeclId]>>,
+    /// For a map declaration, what the populators resolve for its entries
+    /// ([`crate::instance::model::map_entries`]).
+    pub(super) map_entries: Option<Arc<crate::instance::model::MapEntries>>,
 }
 
 /// The per-declaration cache of a [`ModelManager`]: one slot of
@@ -239,18 +242,56 @@ impl ModelManager {
         )
     }
 
+    /// Map declaration `id`'s resolved entries
+    /// ([`crate::instance::model::map_entries`]): `compute`'s answer,
+    /// computed on first use and then cached until the registered files
+    /// change.
+    pub(crate) fn cached_map_entries(
+        &self,
+        id: DeclId,
+        compute: impl FnOnce() -> crate::instance::model::MapEntries,
+    ) -> Arc<crate::instance::model::MapEntries> {
+        let cached: std::result::Result<_, std::convert::Infallible> =
+            self.decl_cache.get_or_try_insert_with(
+                id,
+                |facts| &mut facts.map_entries,
+                || Ok(Arc::new(compute())),
+            );
+        match cached {
+            Ok(entries) => entries,
+        }
+    }
+
     /// The caches an append ([`ModelManager::insert_shared`]) leaves valid: an
     /// append changes no registered file, so only answers built from
     /// successful resolutions are kept (inheritance chains, field defaults,
-    /// settled validation plans); direct subclasses are dropped. So a fork of
+    /// settled validation plans and map entries); direct subclasses are
+    /// dropped. So a fork of
     /// a warmed manager stays warm. Any other change drops everything
     /// ([`ModelManager::invalidate_caches`]).
     pub(super) fn keep_caches_for_append(&mut self) {
-        for facts in self.decl_cache.facts_mut() {
+        let declarations = &self.declarations;
+        let files = &self.files;
+        for (slot, facts) in self.decl_cache.facts_mut().iter_mut().enumerate() {
             if !matches!(&facts.plan, Some(Some(plan)) if plan.is_settled()) {
                 facts.plan = None;
             }
             facts.direct_subclasses = None;
+            if let Some(entries) = &facts.map_entries {
+                let settled = declarations
+                    .get(slot)
+                    .and_then(|d| {
+                        files
+                            .get(d.model_file.slot())?
+                            .model_file
+                            .declarations()
+                            .get(d.index)
+                    })
+                    .is_some_and(|decl| entries.is_settled(decl));
+                if !settled {
+                    facts.map_entries = None;
+                }
+            }
         }
     }
 

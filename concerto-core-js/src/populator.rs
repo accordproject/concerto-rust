@@ -532,27 +532,17 @@ impl<'a> Populator<'a> {
         let Declaration::Map(map) = map_declaration.decl else {
             unreachable!("visit_map_declaration is only reached for a map");
         };
-        let key_type = map.key_type_name().to_string();
-        let value_type = map.value_type_name().to_string();
+        let key_type = map.key_type_name();
+        let value_type = map.value_type_name();
         // BC-05, DV-007: a relationship-typed value is read as a
         // relationship property is, not as an embedded concept. Its target
-        // type, and its slot, are resolved once; an error resolving them is
-        // raised at the first value, as TS resolves it there.
-        let relationship = model::is_relationship_map(map_declaration).then(|| {
-            let target = model::map_relationship_target(map_declaration)?
-                .expect("is_relationship_map was checked");
-            let (default_namespace, default_type) =
-                relationship_defaults(&model::map_relationship_slot(map_declaration, &target))?;
-            Ok::<_, Error>((target, default_namespace, default_type))
-        });
-        let slot = match &relationship {
-            Some(Ok((target, _, _))) => Some(model::map_relationship_slot(map_declaration, target)),
-            _ => None,
-        };
-        // `processMapType`'s declaration for a key or value with no `$class`
-        // of its own: the same for every entry, so resolved once.
-        let mut key_declaration = None;
-        let mut value_declaration = None;
+        // type and slot, and `processMapType`'s declarations for a key or
+        // value with no `$class` of its own, are the same for every value of
+        // the map type, so they are resolved once per declaration and kept
+        // on the manager (`model::map_entries`); an error resolving the
+        // target is raised at the first value, as TS resolves it there.
+        let entries = model::map_entries(map_declaration);
+        let slot = entries.relationship_slot(map_declaration);
         let mut result: Vec<(JsValue, JsValue)> = Vec::new();
         // `new Map(Object.entries(jsonObj))`. The keys are an object's, so
         // each is new, and each `map.set` appends: a key's
@@ -565,43 +555,40 @@ impl<'a> Populator<'a> {
                 result.push((key, value));
                 continue;
             }
-            let key = if model_util::is_primitive_type(&key_type) {
+            let key = if model_util::is_primitive_type(key_type) {
                 key
             } else {
-                self.process_map_type(map_declaration, &key, &key_type, &mut key_declaration)?
+                self.process_map_type(map_declaration, &key, entries.key_declaration)?
             };
-            let value = match &relationship {
+            let value = match &entries.relationship {
                 Some(resolved) => {
-                    let (_, default_namespace, default_type) =
-                        resolved.as_ref().map_err(Clone::clone)?;
+                    let resolved = resolved.as_ref().map_err(Clone::clone)?;
+                    let (default_namespace, default_type) =
+                        (&resolved.default_namespace, &resolved.default_type);
                     let slot = slot.as_ref().expect("resolved with the target");
                     self.convert_relationship(slot, default_namespace, default_type, &value)?
                 }
-                None if model_util::is_primitive_type(&value_type) => value,
-                None => self.process_map_type(
-                    map_declaration,
-                    &value,
-                    &value_type,
-                    &mut value_declaration,
-                )?,
+                None if model_util::is_primitive_type(value_type) => value,
+                None => {
+                    self.process_map_type(map_declaration, &value, entries.value_declaration)?
+                }
             };
             result.push((key, value));
         }
         Ok(JsValue::Map(result))
     }
 
-    /// TS: JSONPopulator.processMapType. `declaration` holds the
-    /// declaration `type_name` names in the map's model file, resolved at
-    /// the first entry that needs it.
+    /// TS: JSONPopulator.processMapType. `declaration` is the declaration
+    /// the key or value type names in the map's model file, if any
+    /// ([`model::MapEntries`]).
     fn process_map_type(
         &mut self,
         map_declaration: &TypeRef,
         value: &JsValue,
-        type_name: &str,
-        declaration: &mut Option<Option<TypeRef<'a>>>,
+        declaration: Option<concerto_core::model_manager::DeclId>,
     ) -> Result<JsValue> {
-        let namespace = map_declaration.namespace();
         let mm = self.mm;
+        debug_assert!(std::ptr::eq(mm, map_declaration.mm));
         // `try { ... } catch (err) { decl = undefined; }`
         let class_name = match value {
             JsValue::Object(_) | JsValue::Instance(_) | JsValue::Array(_) | JsValue::Map(_) => {
@@ -614,10 +601,7 @@ impl<'a> Populator<'a> {
         let found = match class_name {
             Some(JsValue::String(s)) => model::get_type(mm, &s).ok(),
             Some(_) => None,
-            None => *declaration.get_or_insert_with(|| {
-                mm.model_file_fully_qualified_type_name(namespace, type_name)
-                    .and_then(|name| model::get_type(mm, &name).ok())
-            }),
+            None => declaration.and_then(|id| model::type_ref(mm, id)),
         };
         if let Some(declaration) = found
             && declaration.is_class_declaration()
@@ -728,7 +712,7 @@ impl<'a> Populator<'a> {
         let slot = relationship
             .relationship_slot()
             .expect("visit_relationship_declaration is only reached for a relationship");
-        let (default_namespace, default_type) = relationship_defaults(&slot)?;
+        let (default_namespace, default_type) = model::relationship_defaults(&slot)?;
 
         if slot.is_array {
             let JsValue::Array(items) = json else {
@@ -844,21 +828,6 @@ impl<'a> Populator<'a> {
     }
 }
 
-/// `visitRelationshipDeclaration`'s `defaultNamespace` and `defaultType`:
-/// the target type's namespace (else the owner's) and short name, which a
-/// URI without them takes.
-fn relationship_defaults(slot: &RelationshipSlot) -> Result<(String, String)> {
-    let type_fqn = slot.target_fqn;
-    let mut default_namespace = model_util::get_namespace(Some(type_fqn))?.to_string();
-    if default_namespace.is_empty() {
-        default_namespace = model_util::get_namespace(Some(slot.owner_fqn))?.to_string();
-    }
-    Ok((
-        default_namespace,
-        model_util::short_name(type_fqn).to_string(),
-    ))
-}
-
 /// What `utcOffset(this.utcOffset)` receives: a string as it is, anything
 /// else through `Math.abs`'s `ToNumber`.
 fn utc_offset_input(value: &JsValue) -> UtcOffset {
@@ -897,129 +866,4 @@ pub fn from_json_options(options: &JsObject) -> FromJsonOptions {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// `object_entries_ref` gives `object_keys_ref`'s keys, in its order
-    /// (integer-like keys first, ascending), each with its value.
-    #[test]
-    fn object_entries_ref_matches_object_keys_ref() {
-        for keys in [
-            vec!["b", "a", "c"],
-            vec!["b", "10", "a", "2", "01", "4294967295", "0"],
-            vec![],
-        ] {
-            let mut map = crate::value::JsObject::default();
-            for (i, key) in keys.iter().enumerate() {
-                map.insert((*key).to_string(), JsValue::Number(i as f64));
-            }
-            let entries = object_entries_ref(&map);
-            let object = JsValue::Object(map.clone());
-            let expected = object_keys_ref(&object).unwrap_or_default();
-            let got: Vec<&str> = entries.iter().map(|(k, _)| &**k).collect();
-            let want: Vec<&str> = expected.iter().map(|k| &**k).collect();
-            assert_eq!(got, want);
-            for (key, value) in &entries {
-                assert_eq!(Some(*value), map.get(&**key));
-            }
-        }
-    }
-
-    /// `ResourceValidator.checkItem`'s switch has no `default:` arm and
-    /// starts from `invalid = false`, so a type name it does not list is
-    /// valid.
-    #[test]
-    fn primitive_field_valid_matches_the_ts_switch() {
-        assert!(primitive_field_valid(
-            "String",
-            &JsValue::String("x".into())
-        ));
-        assert!(!primitive_field_valid("String", &JsValue::Number(1.0)));
-        assert!(primitive_field_valid("Double", &JsValue::Number(1.5)));
-        assert!(!primitive_field_valid("Double", &JsValue::Number(f64::NAN)));
-        assert!(!primitive_field_valid(
-            "Integer",
-            &JsValue::Number(f64::INFINITY)
-        ));
-        assert!(primitive_field_valid("Boolean", &JsValue::Bool(false)));
-        assert!(!primitive_field_valid(
-            "DateTime",
-            &JsValue::String("x".into())
-        ));
-        assert!(primitive_field_valid("Unknown", &JsValue::Number(1.0)));
-        assert!(primitive_field_valid("Unknown", &JsValue::Null));
-    }
-
-    /// BC-07: `strictQualifiedDateTimes: false` opens no lenient path. An
-    /// embedded NUL (DV-009), a date-only string or an impossible
-    /// date is rejected with or without the flag, with the same
-    /// `ValidationException` as strict mode; a strict string is accepted
-    /// either way, with `utcOffset` applied only when the flag is not set.
-    #[test]
-    fn datetime_strings_are_strict_either_way() {
-        let non_strict = FromJsonOptions {
-            accept_resources_for_relationships: false,
-            utc_offset: UtcOffset::Number(60.0),
-            strict_qualified_date_times: false,
-            ..FromJsonOptions::default()
-        };
-        let strict = FromJsonOptions {
-            strict_qualified_date_times: true,
-            ..non_strict.clone()
-        };
-        for s in [
-            "1970-01-01T00:00:00.000+00:00\u{0}",
-            "2020-01-01",
-            "2016-10-20T05:34:03.519",
-            "2024-02-30T00:00:00Z",
-            "2024-01-02T24:00:00Z",
-        ] {
-            for options in [&non_strict, &strict] {
-                let result =
-                    convert_primitive("DateTime", &JsValue::String(s.into()), options, "$.t");
-                let err = result.expect_err(s);
-                assert_eq!(err.kind().ts_class(), "ValidationException", "{s:?}: {err}");
-            }
-        }
-        let s = JsValue::String("2021-01-01T00:00:00Z".into());
-        let Ok(JsValue::DateTime(d)) = convert_primitive("DateTime", &s, &non_strict, "$.t") else {
-            panic!("non-strict should accept a strict string");
-        };
-        assert_eq!(d.utc_offset(), 60.0);
-        let Ok(JsValue::DateTime(d)) = convert_primitive("DateTime", &s, &strict, "$.t") else {
-            panic!("strict should accept a strict string");
-        };
-        assert!(d.is_utc());
-    }
-
-    /// BC-10, DV-012: `±Infinity` is not an Integer or a Long,
-    /// whatever the options; the same `ValidationException` as a
-    /// fractional number. `NaN` was already rejected.
-    #[test]
-    fn non_finite_integers_and_longs_are_rejected() {
-        let options = FromJsonOptions::default();
-        for type_name in ["Integer", "Long"] {
-            for n in [f64::INFINITY, f64::NEG_INFINITY, f64::NAN, 1.5] {
-                let err = convert_primitive(type_name, &JsValue::Number(n), &options, "$.i")
-                    .expect_err(&format!("{type_name} {n}"));
-                assert_eq!(err.kind().ts_class(), "ValidationException", "{n}: {err}");
-                assert_eq!(
-                    err.to_string(),
-                    format!("Expected value at path `$.i` to be of type `{type_name}`")
-                );
-            }
-            for n in [0.0, -3.0, 9_007_199_254_740_993.0, 1e300] {
-                assert_eq!(
-                    convert_primitive(type_name, &JsValue::Number(n), &options, "$.i").ok(),
-                    Some(JsValue::Number(n)),
-                    "{type_name} {n}"
-                );
-            }
-        }
-        // A Double keeps them: BC-10 is about Integer and Long only.
-        assert_eq!(
-            convert_primitive("Double", &JsValue::Number(f64::INFINITY), &options, "$.d").ok(),
-            Some(JsValue::Number(f64::INFINITY))
-        );
-    }
-}
+mod tests;

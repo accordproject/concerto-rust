@@ -81,21 +81,55 @@ impl ModelManagerHandle {
             // A document nested past serde_json's recursion limit is
             // routed to `fromJSON` ([`wire_text_error`]).
             let wire = serde_json::from_str::<Value>(json_text).map_err(wire_text_error)?;
-            // The options are read once per options text, and the serializer built
-            // from them reused, as `serializerFromJsonCompact` reuses them
-            // ([`with_serializer_options`]).
-            with_serializer_options(options_text, |entry| {
-                validate_wire(
-                    &self.manager,
-                    &wire,
-                    &entry.serializer,
-                    &entry.from_json,
-                    &entry.native,
-                    fqn.as_deref(),
-                    mode,
-                )
-            })?
+            self.validate_wire_with_options(&wire, options_text, fqn.as_deref(), mode)
         })
+    }
+
+    /// [`Self::validate_instance`] with the wire document in the compact
+    /// binary layout the TS writer (src/engine/wire.ts) writes from the live
+    /// object, as `serializerFromJsonCompactBytes` takes it: the same result
+    /// and errors as its JSON text. Bytes not in the layout are a fast path
+    /// fallback (`fastPathUnsupported`), routed to `fromJSON` by the caller.
+    #[wasm_bindgen(js_name = validateInstanceBytes)]
+    pub fn validate_instance_bytes(
+        &self,
+        bytes: &[u8],
+        options_text: &str,
+        fqn: Option<String>,
+        mode: u32,
+    ) -> JsResult<String> {
+        run(|| {
+            let wire = concerto_core::introspect::compact_value(bytes)
+                .map_err(|e| wire_error(format!("a binary wire document: {e}")))?;
+            self.validate_wire_with_options(&wire, options_text, fqn.as_deref(), mode)
+        })
+    }
+}
+
+impl ModelManagerHandle {
+    /// The body of [`Self::validate_instance`] and
+    /// [`Self::validate_instance_bytes`] once the document is read. The
+    /// options are read once per options text, and the serializer built from
+    /// them reused, as `serializerFromJsonCompact` reuses them
+    /// ([`with_serializer_options`]).
+    fn validate_wire_with_options(
+        &self,
+        wire: &Value,
+        options_text: &str,
+        fqn: Option<&str>,
+        mode: u32,
+    ) -> Result<String> {
+        with_serializer_options(options_text, |entry| {
+            validate_wire(
+                &self.manager,
+                wire,
+                &entry.serializer,
+                &entry.from_json,
+                &entry.native,
+                fqn,
+                mode,
+            )
+        })?
     }
 }
 

@@ -19,10 +19,12 @@
 //! (`update_model_file`, `delete_model_file`, `update_model_ast`,
 //! `remove_model`) rebuilds the arena from the surviving files, and every
 //! handle handed out before it is invalid after it.
-//! `ModelManager::state_version` counts the mutations, so a binding caching
-//! a snapshot knows when to drop it. Within one uninterrupted history it
-//! never returns to an earlier value for a different state; a rolled back
-//! batch restores the count, so the next mutation can reuse a value.
+//! The manager counts its mutations internally (its state version), which
+//! keys its own once-per-state checks; it is not exported, and a binding
+//! that caches snapshots keeps its own counter (concerto-wasm's epoch).
+//! For the same manager, outside a rolled-back batch, the count never
+//! returns to an earlier value for a different state; a rolled back batch
+//! restores it, so the next mutation can reuse a value.
 //!
 //! A ported member reaches its collaborators through the
 //! `ResolutionContext` trait, which the manager implements over the arena.
@@ -180,8 +182,10 @@ struct ManagerOptions {
     add_metamodel: bool,
 }
 
-/// Owns a set of model files and resolves types across them.
-#[derive(Debug, Default)]
+/// Owns a set of model files and resolves types across them. There is no
+/// `Default`: an empty manager would lack the system models every manager
+/// holds, so [`ModelManager::new`] is the way to make one.
+#[derive(Debug)]
 pub struct ModelManager {
     files: Vec<FileSlot>,
     /// Keyed by namespaces from user models, so hashed with the per-process
@@ -351,6 +355,22 @@ fn system_model_files() -> Result<(Arc<ModelFile>, Arc<ModelFile>)> {
 }
 
 impl ModelManager {
+    /// A manager with no model file at all, not even the system models: what
+    /// [`ModelManager::new`] and the scratch copies, which register their
+    /// files themselves, start from.
+    pub(crate) fn empty() -> Self {
+        Self {
+            files: Vec::new(),
+            namespaces: FastSeededHashMap::default(),
+            declarations: Vec::new(),
+            properties: Vec::new(),
+            state_version: 0,
+            options: ManagerOptions::default(),
+            decl_cache: DeclCache::default(),
+            system_files_checked: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
     /// A fresh manager with both system models already loaded: the decorator
     /// model, then the root model.
     ///
@@ -358,7 +378,7 @@ impl ModelManager {
     /// `addRootModel()`, each adding a vendored AST with validation disabled;
     /// a load here never validates.
     pub fn new() -> Result<Self> {
-        let mut mgr = Self::default();
+        let mut mgr = Self::empty();
         // TS: the vendored `.cto` file names `addDecoratorModel`/
         // `addRootModel` pass to `addModelFile`, which `getName()` returns.
         let (decorator, root) = system_model_files()?;
@@ -432,6 +452,15 @@ impl ModelManager {
         /// ([`ModelManager::add_shared_model_file`]) without copying it.
         pub fn shared_model_files(&self) -> impl Iterator<Item = &Arc<ModelFile>> {
             self.files.iter().map(|slot| &slot.model_file)
+        }
+    }
+
+    js_compat_pub! {
+        /// The model file a handle names, as the shared handle this manager
+        /// keeps it in ([`ModelManager::shared_model_files`]).
+        #[cfg_attr(not(feature = "js-compat"), expect(dead_code, reason = "js-compat seam only"))]
+        pub fn shared_file(&self, id: ModelFileId) -> Option<&Arc<ModelFile>> {
+            self.files.get(id.slot()).map(|slot| &slot.model_file)
         }
     }
 
@@ -603,7 +632,7 @@ impl ModelManager {
             !self.namespaces.contains_key(namespace) && self.namespaces.len() == self.files.len();
         let mut scratch = Self {
             options: self.options.clone(),
-            ..Self::default()
+            ..Self::empty()
         };
         if appended {
             scratch.files = self.files.clone();
@@ -643,9 +672,6 @@ impl ModelManager {
     /// be allocated. The file may already be registered in another manager:
     /// it is shared, not copied.
     fn insert_shared(&mut self, model_file: Arc<ModelFile>) -> Result<ModelFileId> {
-        // An append keeps every cached answer that cannot change
-        // (`keep_caches_for_append`).
-        self.keep_caches_for_append();
         let file_id = ModelFileId(next_index(self.files.len())?);
         let mut declarations = Vec::new();
         let mut properties = Vec::new();
@@ -671,6 +697,10 @@ impl ModelManager {
         let first = next_index(self.declarations.len())?;
         let end = next_index(self.declarations.len() + declarations.len())?;
 
+        // Every handle is allocated: from here on the append happens. It
+        // keeps every cached answer that cannot change
+        // (`keep_caches_for_append`).
+        self.keep_caches_for_append();
         self.namespaces
             .insert(model_file.namespace().to_string(), file_id);
         self.files.push(FileSlot {
@@ -898,8 +928,8 @@ impl ModelManager {
     /// Whether this manager holds the same decorator and root model files
     /// as `other`: the same shared file (the usual case, as both managers
     /// hold `system_model_files`' own), or else the same AST, which is all
-    /// a model file's lookups are built from. Answered once per
-    /// [`ModelManager::state_version`].
+    /// a model file's lookups are built from. Answered once per state
+    /// version.
     fn has_system_files_of(&self, other: &ModelManager) -> bool {
         use std::sync::atomic::Ordering;
         // `state_version + 1`, so that the default 0 means "not checked".
@@ -946,16 +976,14 @@ impl ModelManager {
         Ok(())
     }
 
-    /// The version of the manager's state, increased by every mutation: a
-    /// snapshot taken at one version is current while it is unchanged.
-    /// Within one uninterrupted history it never repeats an earlier value
-    /// for a different state, and an adopted rebuild
-    /// ([`ModelManager::adopt`]) continues the count. A rolled back batch
-    /// restores the count with the state, so the next mutation after it can
-    /// reuse a value an undone one had: a snapshot taken inside a batch that
-    /// was rolled back is not covered.
-    #[cfg(feature = "js-compat")]
-    pub fn state_version(&self) -> u64 {
+    /// The version of the manager's state, increased by every mutation,
+    /// for the tests: for the same manager, outside a rolled-back batch, it
+    /// never repeats an earlier value for a different state, and an adopted
+    /// rebuild ([`ModelManager::adopt`]) continues the count. A rolled back
+    /// batch restores the count with the state, so the next mutation after
+    /// it can reuse a value an undone one had.
+    #[cfg(test)]
+    pub(crate) fn state_version(&self) -> u64 {
         self.state_version
     }
 
@@ -963,8 +991,8 @@ impl ModelManager {
         /// Replaces this manager with `next`, one built from it
         /// ([`ModelManager::update_model_file`],
         /// [`ModelManager::delete_model_file`]), as one mutation: `next`
-        /// continues this manager's [`ModelManager::state_version`], so a
-        /// snapshot taken before is never taken as current after.
+        /// continues this manager's state version, so a check answered
+        /// before is never taken as current after.
         pub fn adopt(&mut self, mut next: Self) {
             next.state_version = self.state_version.wrapping_add(1);
             next.system_files_checked = std::sync::atomic::AtomicU64::new(0);
@@ -983,6 +1011,37 @@ impl ModelManager {
     /// TS: `BaseModelManager.filter(predicate)`.
     pub fn filter(&self, keep: impl Fn(&str, &Declaration) -> bool) -> Result<Self> {
         self.filter_declarations(keep, false)
+    }
+
+    js_compat_pub! {
+        /// TS `ModelFile.filter(predicate, modelManager)` for the file `id`
+        /// names here ([`ModelFile::filter_outcome`]), with `keep` handed
+        /// each candidate's fully-qualified name, borrowed from the arena:
+        /// the file's own declarations, then those its imports name in
+        /// their source files here.
+        #[cfg_attr(not(feature = "js-compat"), expect(dead_code, reason = "js-compat seam only"))]
+        pub fn filter_model_file(
+            &self,
+            id: ModelFileId,
+            keep: impl Fn(&str) -> bool,
+        ) -> Result<crate::introspect::model_file::FilterOutcome> {
+            let file = self.file(id).ok_or_else(|| unknown(Node::ModelFile(id)))?;
+            file.filter_outcome_at(
+                |namespace, index, decl| match self.decl_id_in(namespace, index) {
+                    Some(id) => keep(&self.declarations[id.slot()].fqn),
+                    None => keep(&qualify(namespace, decl.name())),
+                },
+                self,
+            )
+        }
+    }
+
+    /// The handle of the declaration at `index` in the file registered
+    /// under `namespace`, if there is one.
+    fn decl_id_in(&self, namespace: &str, index: usize) -> Option<DeclId> {
+        let slot = self.files.get(self.model_file_id(namespace)?.slot())?;
+        self.decl_id_at(slot, index)
+            .filter(|id| slot.declarations.contains(&id.index()))
     }
 
     /// [`ModelManager::filter_by_fqn`] over a predicate on the declaration too.
@@ -1017,13 +1076,8 @@ impl ModelManager {
             }
         }
         let is_kept = |namespace: &str, index: usize, _: &Declaration| {
-            self.model_file_id(namespace)
-                .and_then(|file| self.files.get(file.slot()))
-                .and_then(|slot| {
-                    let id = slot.declarations.start as usize + index;
-                    (id < slot.declarations.end as usize).then_some(id)
-                })
-                .and_then(|id| kept.get(id).copied())
+            self.decl_id_in(namespace, index)
+                .and_then(|id| kept.get(id.slot()).copied())
                 .unwrap_or(false)
         };
 
@@ -1103,6 +1157,18 @@ impl ModelManager {
         /// `ModelManager::with_model_file_registered`'s scratch copy. Never
         /// mutates `self`: the caller adopts the result.
         pub fn update_model_file(&self, model_file: ModelFile, validate: bool) -> Result<Self> {
+            self.update_shared_model_file(Arc::new(model_file), validate)
+        }
+    }
+
+    js_compat_pub! {
+        /// [`ModelManager::update_model_file`] for a model file that may
+        /// also be held elsewhere: it is registered shared, not copied.
+        pub fn update_shared_model_file(
+            &self,
+            model_file: Arc<ModelFile>,
+            validate: bool,
+        ) -> Result<Self> {
             let namespace = model_file.namespace().to_string();
             if self.model_file(&namespace).is_none() {
                 return Err(ContractError::new(
@@ -1112,7 +1178,7 @@ impl ModelManager {
                 )
                 .into());
             }
-            let updated = self.with_model_file_registered(Arc::new(model_file))?;
+            let updated = self.with_model_file_registered(model_file)?;
             if validate {
                 let mf = updated
                     .model_file(&namespace)
@@ -1139,7 +1205,7 @@ impl ModelManager {
             }
             let mut scratch = Self {
                 options: self.options.clone(),
-                ..Self::default()
+                ..Self::empty()
             };
             for existing in self.shared_model_files() {
                 if existing.namespace() != namespace {

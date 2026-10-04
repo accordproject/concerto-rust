@@ -4,7 +4,8 @@
 //! **Transports.** Each `ModelManager` is a [`ModelManagerHandle`] over its
 //! arena; model files, declarations and properties cross as their dense `u32`
 //! handles, and their state as one JSON snapshot per element or file, which
-//! a view caches until the handle's epoch moves. A model file is staged
+//! a TS view caches until the engine's own `EngineState.version` moves (the
+//! handle's epoch stamps only the handle's own caches). A model file is staged
 //! once at construction (`staging`), from JSON text as UTF-8 or the compact
 //! binary layout, and later calls refer to the stage or file by id.
 //! Instances cross as the serializer's wire encoding, as JSON text or the
@@ -34,7 +35,6 @@
 
 use std::borrow::Cow;
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use concerto_core::dcs;
@@ -62,6 +62,7 @@ use concerto_core::model_manager::{DeclId, ModelFileId, ModelFileSource, Node, P
 use concerto_core::model_manager::{ResolutionContext, ValidatedElement};
 use concerto_core::model_util as mu;
 use concerto_core::{Error as CoreError, ModelFile, ModelManager};
+use concerto_core_js::value::JsObject;
 use concerto_core_js::{Instance, InstanceKind, JsValue as CoreValue};
 use concerto_core_js::{Serializer, SerializerOptions, populator};
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;

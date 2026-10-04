@@ -61,18 +61,22 @@ or deleted. `epoch()` is the handle's mutation counter: it moves iff the
 manager may have changed (staging and the extract memo never move it), and
 it stamps the handle's own caches (the `validatePropertyById` slots and the
 extract memo). The TS views key their caches on their own
-`EngineState.version`, not on `epoch()`. `fork()` gives an independent
-copy; `free()` releases the handle (a `FinalizationRegistry` does it
+`EngineState.version`, not on `epoch()`, which is exported for the smoke
+checks (`scripts/checks.mjs`, `scripts/chromium-smoke.mjs`). So there are
+two counters: the TS `EngineState.version` and the handle's epoch;
+concerto-core's own state version is internal. `fork()` gives an
+independent copy whose epoch restarts at 0 (every epoch stamp is per
+handle); `free()` releases the handle (a `FinalizationRegistry` does it
 anyway).
 
 | Group | Members |
 |---|---|
 | Loading | `addModel`, `addModelWithDefinitions`, `updateModelFile`, `deleteModelFile`, `updateExternalModels`, `validateModelFiles`, `validateAstValue`, `throwAlreadyExists`, `setDecoratorValidation`, `setDangerouslyAllowReservedSystemTypeNamesInUserModels` |
 | Staging | `stageModelFileBytes` (a model file loaded once, from UTF-8 JSON text or the compact binary layout, with the AST shape check folded in), `commitStagedModelFile(s)`, `validateAndCommitStagedModelFile`, `updateStagedModelFile`, `updateExternalModelsStaged`, `validateAstStaged`, `modelFileValidateStaged`, `dropStagedModelFile`, `stagedModelFileViewSnapshot`, `modelFileViewSnapshotOf` |
-| Lookups | `modelFileId`, `declarationId`, `modelFileSnapshot`, `getNamespaces`, `getTypeName`, `resolveType`, `derivesFrom`, `isAssignableTo`, `modelManagerGetModelFileByFileName`, and the `modelFile*` members by file handle (`GetImports`, `IsLocalType`, `GetTypeName`, `GetFullyQualifiedTypeName`, `ResolveType`, `Validate`, `ValidateDetached`, `Filter`, `FilterStaged`) |
+| Lookups | `modelFileId`, `declarationId`, `modelFileSnapshot`, `getNamespaces`, `getTypeName`, `resolveType`, `derivesFrom`, `isAssignableTo`, `modelManagerGetModelFileByFileName`, and the `modelFile*` members by file handle (`GetImports`, `IsLocalType`, `GetTypeName`, `GetFullyQualifiedTypeName`, `ResolveType`, `Validate`, `ValidateDetached`, `FilterStaged`, `FilterAst`) |
 | Arena answers (BC-52) | `modelUtilIsAssignableTo`, `modelUtilIsEnum`, `modelUtilIsMap`, `modelUtilIsScalar`, `modelUtilIsValidMapKeyScalar`, `scalarDeclarationValidate`, `decoratorValidate`, `classDeclarationGetAssignableClassDeclarations`, `classDeclarationGetDirectSubclasses` |
 | Serializer | `serializerFromJsonCompact(Bytes)`, `serializerToJson(Bytes)`: `Serializer.fromJSON`/`toJSON` in one call, over the wire encoding as JSON text or the compact layout |
-| Instances | `validateInstance` (the collect-all diagnostics), `validateResourceBinary`, `validatePropertyBinary`, `validationPropertySlot`, `validatePropertyById` (`ValidatedResource` validation in one call) |
+| Instances | `validateInstance` and `validateInstanceBytes` (the collect-all diagnostics, over the wire text or the compact layout), `validateResourceBinary`, `validatePropertyBinary`, `validationPropertySlot`, `validatePropertyById` (`ValidatedResource` validation in one call) |
 | DecoratorManager | `dcsValidate`, `dcsDecorateModels`, `dcsExtract` |
 
 **`DcsManagerHandle`**: the input manager of a `DecoratorManager` call whose

@@ -91,6 +91,10 @@ pub struct ModelFile {
     /// TS `ModelFile.external`: [`ModelFile::file_name`] starts with `@`, a
     /// model downloaded from an external URI.
     external: bool,
+    /// Whether every AST import reads into `imports` without dropping an
+    /// entry ([`imports_read_verbatim`]), so that a filter keeping every
+    /// name of every import leaves the AST's imports as they are.
+    imports_verbatim: bool,
 }
 
 impl Decorated for ModelFile {
@@ -364,12 +368,15 @@ impl ModelFile {
         let version_start =
             namespace.len() - parse_namespace_version(&namespace, &file_name)?.len();
 
+        let mut imports_verbatim = true;
         let mut imports = match &header.imports {
             None => Vec::new(),
-            Some(crate::json::Value::Array(arr)) => arr
-                .iter()
-                .map(Import::try_from)
-                .collect::<Result<Vec<_>>>()?,
+            Some(crate::json::Value::Array(arr)) => {
+                imports_verbatim = imports_read_verbatim(arr);
+                arr.iter()
+                    .map(Import::try_from)
+                    .collect::<Result<Vec<_>>>()?
+            }
             Some(_) => {
                 return Err(Error::illegal_model(
                     "model 'imports' must be an array",
@@ -468,6 +475,7 @@ impl ModelFile {
             concerto_version,
             definitions,
             external,
+            imports_verbatim,
         })
     }
 
@@ -544,6 +552,13 @@ impl ModelFile {
     #[cfg(test)]
     pub(crate) fn built_by_typed_path(&self) -> bool {
         self.ast.text().is_some()
+    }
+
+    /// Whether [`ModelFile::ast`]'s value has been built, from the kept
+    /// text or compact layout, or was given.
+    #[cfg(test)]
+    pub(crate) fn ast_is_built(&self) -> bool {
+        self.ast.value.get().is_some()
     }
 
     /// Whether this file and `other` were built from equal ASTs
@@ -1021,26 +1036,78 @@ impl ModelFile {
     /// [`ModelFile::filter_outcome`], with a predicate also handed the
     /// declaring file's namespace and the declaration's position there, by
     /// which the model manager keys its kept set.
+    ///
+    /// `Empty` and `Unchanged` are decided from the typed declarations and
+    /// imports; the AST is read (and, for a file built from text, parsed
+    /// and kept) only to build a `Filtered` file, or where the typed form
+    /// cannot tell (an import entry the typed read skipped).
     pub(crate) fn filter_outcome_at(
         &self,
         predicate: impl Fn(&str, usize, &Declaration) -> bool,
         source_manager: &crate::model_manager::ModelManager,
     ) -> Result<FilterOutcome> {
-        let ast_declarations: &[crate::json::Value] = self
-            .ast()
-            .get("declarations")
-            .and_then(|v| v.as_array())
-            .map_or(&[], Vec::as_slice);
-        let keep: Vec<bool> = ast_declarations
+        let keep: Vec<bool> = self
+            .declarations
             .iter()
-            .zip(self.declarations.iter().enumerate())
-            .map(|(_, (index, decl))| predicate(&self.namespace, index, decl))
+            .enumerate()
+            .map(|(index, decl)| predicate(&self.namespace, index, decl))
             .collect();
         let kept = keep.iter().filter(|k| **k).count();
 
         if kept == 0 {
             return Ok(FilterOutcome::Empty);
         }
+
+        // The typed decision: every declaration kept, none given a default
+        // super type, and every import read verbatim. Then the AST's imports
+        // are unchanged iff every name they import is kept, which the typed
+        // imports answer with the same predicate calls `filter_import` makes,
+        // in the same order. Those answers are recorded in call order, one
+        // per call (a name imported twice is asked twice, as TS asks it),
+        // and replayed in that order if the AST pass runs, so a pruned
+        // import does not call the predicate again below.
+        let mut answers: Vec<((*const u8, usize), bool)> = Vec::new();
+        if kept == self.declarations.len()
+            && self.imports_verbatim
+            && !self.declarations.iter().any(|decl| {
+                matches!(decl, Declaration::Class(class) if class.may_take_default_super_type())
+            })
+        {
+            let mut recorded = |namespace: &str, index: usize, decl: &Declaration| {
+                let answer = predicate(namespace, index, decl);
+                answers.push(((namespace.as_ptr(), index), answer));
+                answer
+            };
+            if typed_imports_all_kept(&self.imports, &mut recorded, source_manager) {
+                return Ok(FilterOutcome::Unchanged);
+            }
+        }
+        // The AST pass asks the same questions in the same order, so each
+        // call takes the next recorded answer. Should a question ever differ
+        // from the recorded one, the replay stops and the predicate is asked.
+        let replay = std::cell::Cell::new(Some(0_usize));
+        let predicate = |namespace: &str, index: usize, decl: &Declaration| {
+            if let Some(next) = replay.get() {
+                match answers.get(next) {
+                    Some(&(key, answer)) if key == (namespace.as_ptr(), index) => {
+                        replay.set(Some(next + 1));
+                        return answer;
+                    }
+                    Some(_) => {
+                        debug_assert!(false, "filter: the AST pass asked a different question");
+                        replay.set(None);
+                    }
+                    None => replay.set(None),
+                }
+            }
+            predicate(namespace, index, decl)
+        };
+
+        let ast_declarations: &[crate::json::Value] = self
+            .ast()
+            .get("declarations")
+            .and_then(|v| v.as_array())
+            .map_or(&[], Vec::as_slice);
         let all_declarations_kept =
             kept == ast_declarations.len() && kept == self.declarations.len();
 
@@ -1193,6 +1260,65 @@ fn filter_import(
     }
 }
 
+/// Whether a filter keeps every name of every typed import (the built-in
+/// import and the other system imports always), asking `predicate` exactly
+/// what [`filter_import`] asks it of the same imports read verbatim, in the
+/// same order: every name of a multi-type import, without stopping at the
+/// first rejected one.
+fn typed_imports_all_kept(
+    imports: &[Import],
+    predicate: &mut impl FnMut(&str, usize, &Declaration) -> bool,
+    source_manager: &crate::model_manager::ModelManager,
+) -> bool {
+    let mut all_kept = true;
+    for import in imports {
+        let namespace = import.namespace();
+        if namespace.starts_with("concerto@") || namespace == "concerto" {
+            continue;
+        }
+        let Some(source_file) = source_manager.model_file(namespace) else {
+            continue;
+        };
+        for name in import.imported_names() {
+            if let Some(index) = source_file.local_type_index(name) {
+                all_kept &= predicate(
+                    source_file.namespace(),
+                    index,
+                    &source_file.declarations[index],
+                );
+            }
+        }
+    }
+    all_kept
+}
+
+/// Whether each import node of an AST reads into its [`Import`] without
+/// the typed read skipping anything [`filter_import`] would drop: a
+/// multi-type import's `types` a non-empty array of strings, and each of
+/// its `aliasedTypes` entries naming one of them by a string `name`.
+fn imports_read_verbatim(imports: &[crate::json::Value]) -> bool {
+    imports.iter().all(|imp| {
+        if short_name(imp.get("$class").and_then(|v| v.as_str()).unwrap_or("")) != "ImportTypes" {
+            return true;
+        }
+        let Some(types) = imp.get("types").and_then(|v| v.as_array()) else {
+            return false;
+        };
+        if types.is_empty() || !types.iter().all(crate::json::Value::is_string) {
+            return false;
+        }
+        imp.get("aliasedTypes")
+            .and_then(|v| v.as_array())
+            .is_none_or(|aliased| {
+                aliased.iter().all(|a| {
+                    a.get("name")
+                        .and_then(|v| v.as_str())
+                        .is_some_and(|name| types.iter().any(|t| t.as_str() == Some(name)))
+                })
+            })
+    })
+}
+
 /// Whether [`filter_import`] keeps the import of `name` from `source_file`:
 /// unless `predicate` rejects the declaration it names there (a name the
 /// file does not declare is kept).
@@ -1244,7 +1370,10 @@ enum AstSource {
     Text(Arc<str>),
     /// The AST in the compact binary layout
     /// ([`ModelFile::from_compact_with_imports`]).
-    #[cfg_attr(not(feature = "js-compat"), allow(dead_code))]
+    #[cfg_attr(
+        not(feature = "js-compat"),
+        expect(dead_code, reason = "js-compat seam only")
+    )]
     Compact(Arc<[u8]>),
 }
 
