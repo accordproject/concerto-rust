@@ -29,21 +29,13 @@ impl ModelManager {
         self.load_models(models)
     }
 
-    /// The name of the field that gives `fqn` its identity: its own, if it
-    /// declares one (explicit `identified by field`, giving that field's
-    /// name, or system `identified`, giving `$identifier`), otherwise its
-    /// nearest super type's, walking up the chain. `None` if nothing from
-    /// `fqn` up to the root declares an identity.
+    /// The name of the field that gives `fqn` its identity, its own (`identified
+    /// by field`, or `$identifier` when system-identified) or its nearest super
+    /// type's; `None` if nothing up the chain declares one. TS
+    /// `isIdentified`/`isSystemIdentified` compare this result. Contrast
+    /// [`ClassDeclaration::identifier_field_name`], which reads only `fqn`.
     ///
-    /// TS: ClassDeclaration.getIdentifierFieldName
-    /// (src/introspect/classdeclaration.ts) — including its two callers that
-    /// are themselves inherited, `isIdentified` (`!!getIdentifierFieldName()`)
-    /// and `isSystemIdentified` (`getIdentifierFieldName() === '$identifier'`),
-    /// which have no separate Rust method: a caller after either compares
-    /// this result directly, the same way TS's own body does. Contrast
-    /// [`ClassDeclaration::identifier_field_name`] and
-    /// [`ClassDeclaration::is_identified`], which read only `fqn`'s own AST,
-    /// the same as TS's own (non-inherited) `idField`.
+    /// TS: ClassDeclaration.getIdentifierFieldName (src/introspect/classdeclaration.ts)
     #[deprecated(since = "0.1.0", note = "use `identifier_field`")]
     pub fn identifier_field_name(&self, fqn: &str) -> Result<Option<String>> {
         Ok(self.identifier_field(fqn)?.map(str::to_string))
@@ -94,14 +86,11 @@ impl ModelManager {
         self.super_type_name(fqn)
     }
 
-    /// Every super type of `fqn`, from its direct super type up to the root,
-    /// as fully-qualified names.
+    /// Every super type of `fqn`, from its direct super type up to the root.
+    /// A cyclic chain is BC-11's `IllegalModelException` naming the cycle (TS
+    /// 5.0.0 runs out of memory, DV-013).
     ///
-    /// TS: `ClassDeclaration.getAllSuperTypeDeclarations`, inherited unchanged
-    /// by `EnumDeclaration`. On a cyclic inheritance chain this walks
-    /// `class_info`, so it returns the same `IllegalModelException` naming
-    /// the cycle as `getProperties`/`getProperty`/`getIdentifierFieldName`
-    /// (BC-11, R1; TS 5.0.0 loops until it runs out of memory, DV-013).
+    /// TS: `ClassDeclaration.getAllSuperTypeDeclarations`
     #[deprecated(since = "0.1.0", note = "use `super_types`")]
     pub fn get_all_super_type_names(&self, fqn: &str) -> Result<Vec<String>> {
         self.super_type_names(fqn)
@@ -126,14 +115,11 @@ impl ModelManager {
         self.direct_subclass_names(fqn)
     }
 
-    /// TS `BaseModelManager.getAst(resolve, includeConcertoNamespaces)`
-    /// (basemodelmanager.ts): every registered model file's own AST
-    /// ([`ModelFile::ast`]), in [`ModelManager::model_files`] order, wrapped
-    /// in the metamodel's `Models` envelope; a system namespace
-    /// (`EXCLUDE_NS`) is left out unless `include_concerto_namespaces`.
-    /// `resolve` runs each model through [`ModelManager::resolve_meta_model`]
-    /// first — the only way this can fail, the same as TS's uncaught throw
-    /// from `resolveMetaModel`.
+    /// TS `BaseModelManager.getAst(resolve, includeConcertoNamespaces)`: every
+    /// registered file's AST in [`ModelManager::model_files`] order, in the
+    /// `Models` envelope, system namespaces only with
+    /// `include_concerto_namespaces`. `resolve` runs
+    /// [`ModelManager::resolve_meta_model`] first, the only possible failure.
     #[deprecated(since = "0.1.0", note = "use `ast`")]
     pub fn get_ast(&self, resolve: bool, include_concerto_namespaces: bool) -> Result<Value> {
         self.models_ast(resolve, include_concerto_namespaces)

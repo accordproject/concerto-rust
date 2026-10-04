@@ -32,11 +32,11 @@ fn manager() -> ModelManager {
     mgr
 }
 
-/// P5-77 (accordproject/concerto-rust#419): a file registered shared
-/// in a second manager is the same file, with the same duplicate
-/// namespace error as `add_model_file`; `compact_model_asts` returns
-/// each file's AST text, compacts a file only this manager holds and
-/// leaves a shared one as it is, and every AST reads back equal.
+/// A file registered shared in a second manager is the same file,
+/// with the same duplicate namespace error as `add_model_file`;
+/// `compact_model_asts` returns each file's AST text, compacts a
+/// file only this manager holds and leaves a shared one as it is,
+/// and every AST reads back equal.
 #[test]
 fn shared_model_files_and_compact_model_asts() {
     let mut source = manager();
@@ -244,9 +244,9 @@ fn a_user_asset_is_the_only_direct_subclass_of_asset() {
     );
 }
 
-/// P5-106 (BC-52): the subclass queries by handle answer from the
-/// cached subclass map, and a model change (here an appended file)
-/// drops it.
+/// BC-52: the subclass queries by handle answer from the cached
+/// subclass map, and a model change (here an appended file) drops
+/// it.
 #[test]
 fn subclass_queries_by_handle_follow_an_appended_file() {
     let mut mgr = manager();
@@ -309,7 +309,7 @@ fn subclass_queries_by_handle_follow_an_appended_file() {
     );
 }
 
-/// P5-106 (BC-52, BC-11): a cyclic chain below a declaration is the
+/// BC-52, BC-11: a cyclic chain below a declaration is the
 /// `IllegalModelException` naming the cycle; its direct subclasses are
 /// still found.
 #[test]
@@ -409,9 +409,9 @@ fn an_asset_with_no_extends_implicitly_extends_asset_itself() {
     );
 }
 
-/// P1-07b: a fresh manager preloads `concerto.decorator@1.0.0` as well as
-/// `concerto@1.0.0`, decorator model first, matching TS's
-/// `addDecoratorModel(); addRootModel();`.
+/// A fresh manager preloads `concerto.decorator@1.0.0` as
+/// well as `concerto@1.0.0`, decorator model first,
+/// matching TS's `addDecoratorModel(); addRootModel();`.
 #[test]
 fn preloads_decorator_model_before_root_model() {
     let mgr = ModelManager::new().unwrap();
@@ -421,7 +421,7 @@ fn preloads_decorator_model_before_root_model() {
     assert_eq!(namespaces, ["concerto.decorator@1.0.0", "concerto@1.0.0"]);
 }
 
-/// P1-07b exit condition: `concerto.decorator@1.0.0.Decorator` and
+/// `concerto.decorator@1.0.0.Decorator` and
 /// `DotNetNamespace` resolve on a fresh manager.
 #[test]
 fn decorator_and_dot_net_namespace_resolve() {
@@ -436,7 +436,7 @@ fn decorator_and_dot_net_namespace_resolve() {
     assert_eq!(dot_net_namespace.name(), "DotNetNamespace");
 }
 
-/// P1-07b exit condition: a user model that imports
+/// A user model that imports
 /// `concerto.decorator@1.0.0.Decorator` and extends it loads and
 /// validates against the preloaded decorator model.
 #[test]
@@ -487,8 +487,8 @@ fn duplicate_namespace_rejected() {
 }
 
 /// TS `_throwAlreadyExists`: a plain `Error`, never the `IllegalModel`
-/// this port raised before (P2-08b review) — with both files' names in
-/// the message when both have one.
+/// this port raised before — with both files' names in the message
+/// when both have one.
 #[test]
 fn duplicate_namespace_names_both_files() {
     let mut mgr = ModelManager::new().unwrap();
@@ -591,9 +591,8 @@ fn unresolved_super_type_is_hard_error() {
 
 /// TS: `EnumDeclaration extends ClassDeclaration` inherits
 /// `getProperties` unchanged, so an enum's values come back the same way
-/// a class's fields do (P2-03 closes the implicit-`Concept` gap this
-/// relies on; `Concept` itself has no properties, so an enum's `Color`
-/// has none to inherit).
+/// a class's fields do (`Concept` itself has no properties, so an
+/// enum's `Color` has none to inherit).
 #[test]
 fn get_all_properties_on_enum_gives_its_values() {
     let mgr = manager();
@@ -882,7 +881,7 @@ fn a_failed_load_changes_nothing() {
     });
     assert!(mgr.load_model(&model, None).is_err());
     assert_eq!(mgr.state_version(), state_version);
-    // The two system models (P1-07b) plus `org.example@1.0.0` from `manager()`.
+    // The two system models plus `org.example@1.0.0` from `manager()`.
     assert_eq!(mgr.model_files().count(), 3);
 }
 
@@ -902,8 +901,8 @@ fn walks_the_graph_by_handle() {
     assert_eq!(mgr.property_by_id(props[0]).unwrap().name(), "salary");
     assert_eq!(mgr.parent_of(props[0]), Some(employee));
 
-    // An enum's own values get `PropId`s too (P2-04), addressed the same
-    // way a class declaration's fields are.
+    // An enum's own values get `PropId`s too, addressed the same way a
+    // class declaration's fields are.
     let color = mgr.declaration_id("org.example@1.0.0.Color").unwrap();
     let color_props: Vec<PropId> = mgr.property_ids(color).collect();
     assert_eq!(color_props.len(), 1);
@@ -911,7 +910,7 @@ fn walks_the_graph_by_handle() {
     assert!(mgr.property_by_id(color_props[0]).unwrap().is_enum_value());
     assert_eq!(mgr.parent_of(color_props[0]), Some(color));
     // Model files are listed in load order: the decorator model, then the
-    // root model (P1-07b, matching TS's `addDecoratorModel(); addRootModel();`).
+    // root model (matching TS's `addDecoratorModel(); addRootModel();`).
     let namespaces: Vec<&str> = mgr.model_files().map(ModelFile::namespace).collect();
     assert_eq!(
         namespaces,
@@ -978,13 +977,13 @@ fn class_declarations_exclude_maps_and_scalars() {
 /// `child@1.0.0.Child { o Integer age }`, imported into `parent@1.0.0` as
 /// `Kid` (`import child@1.0.0.{Child as Kid}`); `parent@1.0.0`'s own
 /// `Child` concept has a `kid` field of that aliased type. The TS
-/// original (`test/introspect/property.js` "Property - Test for
-/// property types using Import Aliasing", `test/data/aliasing/*.cto`;
-/// P2-04, issue #48) builds this over `ModelManager.resolveMetaModel`,
-/// which this port does not have yet (P2-08); this is the same shape
-/// built directly from AST, the only difference this suite's own three
-/// assertions can see (none of them reads a decorator or a resolved
-/// type reference, the only things `resolveMetaModel` would add).
+/// original (`test/introspect/property.js` "Property - Test for property
+/// types using Import Aliasing"; `test/data/aliasing/*.cto`) builds this
+/// over `ModelManager.resolveMetaModel`, which this port does not have
+/// yet; this is the same shape built directly from AST, the only
+/// difference this suite's own three assertions can see (none of them
+/// reads a decorator or a resolved type reference, the only things
+/// `resolveMetaModel` would add).
 fn aliasing_manager() -> ModelManager {
     let mut mgr = ModelManager::new().unwrap();
     mgr.load_model(
@@ -1180,7 +1179,7 @@ fn answers_the_collaborator_getters() {
             "org.example@1.0.0.Employee",
             "org.example@1.0.0.Person",
             // `Person` has no `superType` of its own, so it implicitly
-            // extends `Concept` (P2-03, `ClassDeclaration` doc comment).
+            // extends `Concept` (`ClassDeclaration` doc comment).
             "concerto@1.0.0.Concept"
         ]
     );
@@ -1278,9 +1277,9 @@ fn resolve_type_name_with_no_location_carries_none() {
 /// `org.base@1.0.0.Base`, and `org.dependent@1.0.0.Sub`, which extends it.
 /// Loading `Sub` before `Base` with a single [`ModelManager::add_model`]
 /// succeeds too (loading never validates on its own), but validating the
-/// pair only succeeds once both are loaded, whatever order they loaded
-/// in; [`ModelManager::add_models`] (#26, P1-06) is what does both steps
-/// as one all-or-nothing unit.
+/// pair only succeeds once both are loaded, whatever order they loaded in;
+/// [`ModelManager::add_models`] is what does both steps as one
+/// all-or-nothing unit.
 fn base_model() -> serde_json::Value {
     serde_json::json!({
         "$class": "concerto.metamodel@1.0.0.Model",
@@ -1407,7 +1406,7 @@ fn add_models_leaves_pre_existing_models_validating_on_success() {
     assert!(mgr.validate_models().is_ok());
 }
 
-// P2-08b: BaseModelManager.resolveType, derivesFrom, isAssignableTo,
+// BaseModelManager.resolveType, derivesFrom, isAssignableTo,
 // getAssignableConcreteTypes, getModels, the get<Kind>Declarations
 // family, filter, updateModelFile and deleteModelFile.
 
@@ -1495,7 +1494,7 @@ fn derives_from_propagates_gettype_s_error() {
     );
 }
 
-/// P5-98 (A-1): TS 5.0.0 `derivesFrom('test@1.0.0.Color',
+/// TS 5.0.0 `derivesFrom('test@1.0.0.Color',
 /// 'concerto@1.0.0.Concept')` is `true` for an enum — `EnumDeclaration
 /// extends ClassDeclaration`, so `getSuperTypeDeclaration()` gives its
 /// implicit `Concept` — and so is `isAssignableTo`. A scalar has no
@@ -1523,11 +1522,11 @@ fn an_enum_derives_from_its_implicit_concept_super_type() {
     assert!(!mgr.derives_from("org.scalar@1.0.0.SSN", concept).unwrap());
 }
 
-/// DV-022 (maintainer-accepted, P5-98): TS 5.0.0 `derivesFrom(map,
-/// other)` throws a `TypeError` (`typeDeclaration.getSuperTypeDeclaration
-/// is not a function`: `MapDeclaration` has none), and `isAssignableTo`
-/// with a map `fqn` always throws one (`typeDeclaration.isAbstract is not
-/// a function`). The engine answers instead: a map derives from, and is
+/// DV-022 (maintainer-accepted): TS 5.0.0 `derivesFrom(map, other)`
+/// throws a `TypeError` (`typeDeclaration.getSuperTypeDeclaration is not
+/// a function`: `MapDeclaration` has none), and `isAssignableTo` with a
+/// map `fqn` always throws one (`typeDeclaration.isAbstract is not a
+/// function`). The engine answers instead: a map derives from, and is
 /// assignable to, only itself. `derivesFrom(map, map)` is `true` in TS
 /// too (the exact-name check comes before the walk).
 ///
@@ -1637,8 +1636,8 @@ fn bar_resolution(mgr: &ModelManager, short: &str) -> (String, Vec<String>, Stri
     (super_fqn, names, field, resolved)
 }
 
-/// P5-98 (A-2), case 1: two imports of the same local name — the last
-/// one wins for `extends` and for a field type alike, as TS 5.0.0's
+/// Two imports of the same local name — the last one
+/// wins for `extends` and for a field type alike, as TS 5.0.0's
 /// `importShortNames` `Map.set` does (TS: super type `b@1.0.0.Foo`,
 /// properties `[f, b]`, field type `b@1.0.0.Foo`).
 #[test]
@@ -1684,9 +1683,9 @@ fn the_last_of_two_imports_of_one_name_wins_for_extends_and_field_types() {
     assert!(!mgr.derives_from("c@1.0.0.Bar", "a@1.0.0.Foo").unwrap());
 }
 
-/// P5-98 (A-2), case 2: a user import of a system type name. The
-/// built-in import `fromAst` appends comes last, so it wins for
-/// `extends` and for a field type alike (TS 5.0.0, with
+/// A user import of a system type name. The built-in
+/// import `fromAst` appends comes last, so it wins for `extends` and
+/// for a field type alike (TS 5.0.0, with
 /// `dangerouslyAllowReservedSystemTypeNamesInUserModels`: super type
 /// `concerto@1.0.0.Concept`, properties `[f]`, field type
 /// `concerto@1.0.0.Concept`).
@@ -1842,7 +1841,7 @@ fn model_file_by_file_name_excludes_the_system_model_files() {
 
 /// TS `getModelFileByFileName(undefined)` returns the first loaded
 /// model file whose `getName()` is `undefined`, i.e. one added with no
-/// file name; a named file never matches (accordproject/concerto-rust#262).
+/// file name; a named file never matches.
 #[test]
 fn model_file_by_optional_file_name_none_finds_the_unnamed_file() {
     let mut mgr = ModelManager::new().unwrap();
@@ -1953,9 +1952,9 @@ fn shape(mgr: &ModelManager) -> Vec<(String, Vec<String>)> {
         .collect()
 }
 
-/// BC-53 (P5-108): `filter` keeping every declaration returns a manager
-/// with the source's namespaces, declarations and AST. TS 5.0.0 re-added
-/// the decorator model and threw.
+/// BC-53: `filter` keeping every declaration returns a manager with the
+/// source's namespaces, declarations and AST. TS 5.0.0 re-added the
+/// decorator model and threw.
 #[test]
 fn filter_keeping_everything_round_trips() {
     let mgr = manager_with_decorator_subtype();
@@ -1991,7 +1990,7 @@ fn filter_keeps_a_user_type_extending_decorator() {
     assert!(filtered.validate_models().is_ok());
 
     // A predicate that drops the decorator model's own declarations
-    // (P5-97's bench workaround) keeps the user's import of `Decorator`
+    // (as a benchmark once did) keeps the user's import of `Decorator`
     // too: the decorator model stays whole in the result, and the
     // predicate is never asked about its declarations.
     let asked = std::cell::RefCell::new(Vec::new());
@@ -2070,12 +2069,12 @@ fn update_model_file_replaces_the_registered_file() {
     assert!(mgr.get_declaration("org.example@1.0.0.Person").is_ok());
 }
 
-/// P5-18 (accordproject/concerto-rust#316): the scratch copy that
-/// validates a file whose namespace is not registered is this manager's
-/// arena with the file appended. It must be exactly the manager a
-/// file-by-file rebuild (the pre-P5-18 copy) produces: the same files in
-/// the same order, the same handles and names, the same state version, and
-/// empty caches. The files it keeps are shared, not deep-cloned.
+/// The scratch copy that validates a file whose namespace is not
+/// registered is this manager's arena with the file appended. It must be
+/// exactly the manager a file-by-file rebuild
+/// produces: the same files in the same order, the same handles and names,
+/// the same state version, and empty caches. The files it keeps are
+/// shared, not deep-cloned.
 #[test]
 fn with_model_file_registered_appends_exactly_as_a_rebuild_would() {
     let mgr = manager();
@@ -2156,8 +2155,8 @@ fn with_model_file_registered_appends_exactly_as_a_rebuild_would() {
     assert!(mgr.model_file("org.new@1.0.0").is_none());
 }
 
-/// P5-18: a file whose namespace *is* registered still takes the old
-/// file's place in the order, as the pre-P5-18 copy did.
+/// A file whose namespace *is* registered still takes the old file's
+/// place in the order, as a file-by-file rebuild does.
 #[test]
 fn with_model_file_registered_replaces_in_place() {
     let mgr = manager();
@@ -2299,7 +2298,7 @@ fn update_external_models_rolls_back_when_validation_fails() {
     assert!(mgr.get_declaration("org.example@1.0.0.Person").is_ok());
 }
 
-/// BC-11 (R1): a cyclic chain is an `IllegalModelException` naming the
+/// BC-11: a cyclic chain is an `IllegalModelException` naming the
 /// cycle, from every entry point (TS 5.0.0 overflowed V8's stack or ran
 /// out of memory, DV-013).
 #[test]
@@ -2356,19 +2355,13 @@ fn circular_inheritance_is_an_illegal_model_error() {
 #[test]
 #[allow(deprecated)]
 fn a_super_type_imported_from_an_unregistered_namespace_is_not_defined() {
-    // TS `ClassDeclaration._resolveSuperType`, for an *imported* super
-    // type, resolves it through
-    // `this.modelFile.getModelManager().getType(fqnSuper)`
-    // (`BaseModelManager.getType`), whose own unregistered-namespace
-    // check raises "Namespace is not defined for type ...". `super_chain`
-    // used to re-look-up each step's declaration with
-    // `ModelManager::get_declaration` — an internal, un-catalogued,
-    // exact-FQN lookup meant for stale-handle detection (its own doc
-    // comment) — which raised a bare `TypeNotFoundException` instead.
-    // Walking through `get_type_declaration` (P2-08d,
-    // accordproject/concerto-rust#151, oracle fixture
-    // `unit/ClassDeclaration.getIdentifierFieldName/557a5087518a8343fade9b97`)
-    // reuses the same catalogue entry `BaseModelManager.getType` does.
+    // TS `ClassDeclaration._resolveSuperType`, for an *imported* super type,
+    // resolves it through `this.modelFile.getModelManager().getType(fqnSuper)`
+    // (`BaseModelManager.getType`), whose own unregistered-namespace check
+    // raises "Namespace is not defined for type ...". `super_chain` walks
+    // through `get_type_declaration`, so it reuses the same catalogue entry
+    // (oracle fixture
+    // `unit/ClassDeclaration.getIdentifierFieldName/557a5087518a8343fade9b97`).
     let mut mgr = ModelManager::new().unwrap();
     mgr.load_model(
             &serde_json::json!({
@@ -2439,9 +2432,9 @@ fn aliased_manager() -> ModelManager {
     mgr
 }
 
-/// TS `ModelFile.getType` by name (P5-11, accordproject/concerto-rust#287):
-/// a primitive's own name, a local type's and an aliased import's
-/// fully-qualified name, and `None` for an unknown or unaliased name.
+/// TS `ModelFile.getType` by name: a primitive's own name, a local type's
+/// and an aliased import's fully-qualified name, and `None` for an unknown
+/// or unaliased name.
 #[test]
 fn model_file_type_name_answers_like_model_file_get_type() {
     let mgr = aliased_manager();
@@ -2458,7 +2451,7 @@ fn model_file_type_name_answers_like_model_file_get_type() {
     assert_eq!(name("Missing"), None);
 }
 
-/// TS `BaseModelManager.getType` by name (P5-11): the declaration's
+/// TS `BaseModelManager.getType` by name: the declaration's
 /// fully-qualified name, or the `TypeNotFoundException` for an unknown
 /// namespace or type.
 #[test]
@@ -2478,8 +2471,8 @@ fn type_declaration_name_answers_like_get_type() {
     }
 }
 
-/// TS `ModelFile.resolveType` (P5-11): a primitive, a local type and an
-/// import resolving in its own namespace pass; any other name is the
+/// TS `ModelFile.resolveType`: a primitive, a local type and an import
+/// resolving in its own namespace pass; any other name is the
 /// undeclared-type `IllegalModelException`, naming the file and carrying
 /// the caller's location.
 #[test]
@@ -2500,8 +2493,8 @@ fn model_file_resolve_type_rejects_an_undeclared_type() {
     assert_eq!(contract.location, Some(location));
 }
 
-/// TS `_throwAlreadyExists` (P5-11): the plain `Error` naming both files
-/// for a registered namespace; nothing for one that is not registered.
+/// TS `_throwAlreadyExists`: the plain `Error` naming both files for a
+/// registered namespace; nothing for one that is not registered.
 #[test]
 fn check_namespace_available_names_both_files() {
     let mgr = aliased_manager();
@@ -2517,8 +2510,8 @@ fn check_namespace_available_names_both_files() {
         .unwrap();
 }
 
-/// `update_external_models_naming_file` (P5-11) names the namespace of
-/// the file whose validation failed, and leaves the manager unchanged.
+/// `update_external_models_naming_file` names the namespace of the
+/// file whose validation failed, and leaves the manager unchanged.
 #[test]
 fn update_external_models_names_the_failing_file_and_rolls_back() {
     let mut mgr = aliased_manager();
@@ -2552,8 +2545,8 @@ fn update_external_models_names_the_failing_file_and_rolls_back() {
     assert_eq!(before, after);
 }
 
-/// P5-97: a concept `name` extending `super_type` (if any), with one
-/// string property `field`.
+/// A concept `name` extending `super_type` (if any), with one string
+/// property `field`.
 fn p597_concept(name: &str, super_type: Option<&str>, field: &str) -> Value {
     let mut decl = serde_json::json!({
         "$class": "concerto.metamodel@1.0.0.ConceptDeclaration", "name": name, "isAbstract": false,
@@ -2567,7 +2560,7 @@ fn p597_concept(name: &str, super_type: Option<&str>, field: &str) -> Value {
     decl
 }
 
-/// P5-97: a user model in `namespace` importing `Person` from the
+/// A user model in `namespace` importing `Person` from the
 /// `manager()` base and declaring `User extends Person`.
 fn user_model(namespace: &str) -> Value {
     model(
@@ -2597,11 +2590,11 @@ fn answers(mgr: &ModelManager, fqn: &str) -> (Vec<String>, Vec<String>, Option<S
     )
 }
 
-/// P5-97: a fork holds the same files (shared) under the same handles,
-/// with the same options and validated marks, and starts with the
-/// base's warmed caches; adding user models to the fork keeps every
-/// cached base answer and changes none, and neither manager sees the
-/// other's later changes.
+/// A fork holds the same files (shared) under the same handles, with
+/// the same options and validated marks, and starts with the base's
+/// warmed caches; adding user models to the fork keeps every cached
+/// base answer and changes none, and neither manager sees the other's
+/// later changes.
 #[test]
 fn fork_shares_files_inherits_caches_and_is_isolated() {
     let mut base = manager();
@@ -2684,8 +2677,8 @@ fn fork_shares_files_inherits_caches_and_is_isolated() {
     );
 }
 
-/// P5-97: an append keeps a cached answer only when it cannot change:
-/// a plan with an unresolved field type is built again once the type's
+/// An append keeps a cached answer only when it cannot change: a plan
+/// with an unresolved field type is built again once the type's
 /// namespace is added, and then resolves.
 #[test]
 fn an_append_rebuilds_an_unsettled_plan() {
@@ -2722,10 +2715,10 @@ fn an_append_rebuilds_an_unsettled_plan() {
     assert!(rebuilt.is_settled());
 }
 
-/// P5-97: `filter` shares a file it keeps unchanged, and does not
-/// validate it again only when the source had validated it and every
-/// file it reaches is shared too; the result is the one the rebuilding
-/// filter gave, and a source never validated still fails the same way.
+/// `filter` shares a file it keeps unchanged, and does not validate it
+/// again only when the source had validated it and every file it
+/// reaches is shared too; the result is the one the rebuilding filter
+/// gave, and a source never validated still fails the same way.
 #[test]
 fn filter_shares_unchanged_files_and_keeps_validation() {
     let mut base = manager();
@@ -2793,8 +2786,9 @@ fn filter_shares_unchanged_files_and_keeps_validation() {
     assert!(unvalidated.filter_by_fqn(keep_all, true).is_ok());
 }
 
-/// P5-97: a proof holds only under the source's options, and the
-/// validated marks go when an option changes or a batch rolls back.
+/// A proof holds only under the source's options, and the
+/// validated marks go when an option changes or a batch rolls
+/// back.
 #[test]
 fn validated_marks_follow_options_and_rollbacks() {
     let mut base = manager();
@@ -2840,9 +2834,8 @@ fn validated_marks_follow_options_and_rollbacks() {
     assert!(base.model_file("org.user@1.0.0").is_none());
 }
 
-/// A-3 (accordproject/concerto-rust#448): an update or a removal adopts
-/// a rebuilt manager, and the state version keeps rising: it never repeats
-/// one an earlier state had.
+/// An update or a removal adopts a rebuilt manager, and the state
+/// version keeps rising: it never repeats one an earlier state had.
 #[test]
 fn state_version_never_repeats_across_updates_and_removals() {
     let mut mgr = manager();
@@ -2866,7 +2859,7 @@ fn state_version_never_repeats_across_updates_and_removals() {
     assert_eq!(mgr.state_version(), before + 1);
 }
 
-/// A-4: a removal, an update and the metamodel share the files they
+/// A removal, an update and the metamodel share the files they
 /// keep (`Arc`), never deep-copy them.
 #[test]
 fn rebuilds_share_the_files_they_keep() {
@@ -2897,7 +2890,7 @@ fn rebuilds_share_the_files_they_keep() {
     assert!(Arc::ptr_eq(&a, &b));
 }
 
-/// A-5: a filter's result keeps every option of the manager it filters,
+/// A filter's result keeps every option of the manager it filters,
 /// `metamodel_validation` included, as TS's
 /// `new BaseModelManager({...this.options})` does.
 #[test]
@@ -2916,7 +2909,7 @@ fn filter_keeps_every_option() {
     assert_eq!(deleted.options, mgr.options);
 }
 
-/// A-4: external models are each registered once, shared with the list
+/// External models are each registered once, shared with the list
 /// returned, and a new namespace is appended in place.
 #[test]
 fn external_models_are_shared_with_the_list_returned() {

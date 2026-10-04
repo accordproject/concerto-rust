@@ -1,7 +1,7 @@
 //! Ported from `test/introspect/stringvalidator.js` and
-//! `test/introspect/collectionsizevalidator.js` (P2-02): the constructor,
-//! `validate` and `compatibleWith` cases, run here directly over the
-//! Rust types rather than through `sinon.createStubInstance(Field)`. Not
+//! `test/introspect/collectionsizevalidator.js`: the constructor,
+//! `validate` and `compatibleWith` cases, run here directly over the Rust
+//! types rather than through `sinon.createStubInstance(Field)`. Not
 //! ported: cases that assert on a live JS `RegExp` object (`getRegex()`
 //! returning something with a settable `lastIndex`) — `regress` is
 //! stateless, so [`CompiledRegex::matches`] has no `lastIndex` to leak in
@@ -106,7 +106,7 @@ fn string_validator_rejects_an_invalid_regex() {
 
 /// `v8_regex_reason`'s specific mapping: `regress`'s "Unbalanced
 /// parenthesis" is translated to V8's own wording, "Unterminated
-/// group" (OD-4).
+/// group".
 #[test]
 fn string_validator_maps_unbalanced_parenthesis_to_v8_wording() {
     let err = string_validator(Some(("(", "")), None).unwrap_err();
@@ -158,7 +158,7 @@ fn string_validator_rejects_length_with_no_bounds() {
     );
 }
 
-/// BC-40 (R1): a length validator whose bounds are both *absent*
+/// BC-40: a length validator whose bounds are both *absent*
 /// (`length=[,]`), or not an object at all, is rejected like one whose
 /// bounds are both `null`, as an `IllegalModel` error (BC-39) with the
 /// `DefaultValidatorException` error type. TS 5.0.0 accepted it.
@@ -429,7 +429,7 @@ fn string_validator_length_compatibility() {
 /// fixture reaches `StringValidator::new` — through
 /// `validators::length_validator_from_ast` (`Property::try_from`'s own
 /// call site) — rather than `length_ast`'s straight `serde` decode. A
-/// regression here (P5-05-T2a review) let a bound read from an absent
+/// regression here once let a bound read from an absent
 /// key (then a `Some(NaN)` sentinel, `None` since BC-40) silently compare
 /// as `false` against any real bound in `compatible_with`'s old
 /// `(Some(this), Some(other)) if this < other` arm, wrongly treating "no
@@ -751,8 +751,8 @@ fn kind_and_type(err: Error) -> (ErrorKind, &'static str) {
     (contract.kind, error_type)
 }
 
-/// BC-39 (R1): a validator error found while the model loads (a bad
-/// bound, an invalid regex, a default value outside the validator) is an
+/// BC-39: a validator error found while the model loads (a bad bound, an
+/// invalid regex, a default value outside the validator) is an
 /// `IllegalModel` error, and an instance value that fails a validator is a
 /// `Validation` error. Both keep their `errorType`. TS 5.0.0 threw a
 /// `BaseException` for all of them.

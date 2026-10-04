@@ -16,30 +16,29 @@
 //! Everything else here is public only with the `js-compat` feature, and
 //! carries no stability promise (docs/public-api.md section 4):
 //!
-//! - `validate` (task P3-01, accordproject/concerto-rust#56): the
-//!   `ResourceValidator` port, over a value in the validator's shape, where
-//!   the `$$` tags stand for the JS values a live `Resource` holds;
+//! - `validate`: the `ResourceValidator` port, over a value in the
+//!   validator's shape, where the `$$` tags stand for the JS values a live
+//!   `Resource` holds;
 //! - `from_json`: `Serializer.fromJSON` over plain JSON, the route the stable
-//!   API and the metamodel checks take (P6-01 step 5), with the `Factory`
+//!   API and the metamodel checks take, with the `Factory`
 //!   checks the JS layer shares;
-//! - `metamodel` (task P3-04, accordproject/concerto-rust#59):
-//!   `BaseModelManager.validateAst` and the `introspect/metamodel.ts`
-//!   functions, whose stable names are in [`crate::metamodel`];
+//! - `metamodel`: `BaseModelManager.validateAst` and the
+//!   `introspect/metamodel.ts` functions, whose stable names are in
+//!   [`crate::metamodel`];
 //! - `model`: the model queries the instance layer makes (`getType`, then
 //!   `isX()`), with TS's semantics for each declaration kind;
 //! - `dayjs` and `resource_id`: the `DateTime` and relationship URI
 //!   semantics `from_json` reads plain JSON with, which the JS object model
 //!   shares;
-//! - `diagnose` and `diagnostics_of_error` (task P5-89,
-//!   accordproject/concerto-rust#435): the accordproject/concerto#1239
-//!   `validateInstance` of the JS binding, whose first diagnostic is the
-//!   error `Serializer.fromJSON` throws, over `from_json`'s options.
+//! - `diagnose` and `diagnostics_of_error`: the
+//!   accordproject/concerto#1239 `validateInstance` of the JS binding,
+//!   whose first diagnostic is the error `Serializer.fromJSON` throws,
+//!   over `from_json`'s options.
 //!
-//! The JS object model itself (task P3-01b, accordproject/concerto-rust#124:
-//! the TS `Resource` objects, the JS values they hold, and the `Serializer`,
-//! `Factory`, `JSONPopulator` and `JSONGenerator`, with #1273's
-//! `DeserializeOptions` from task P3-02) is the `concerto-core-js` crate,
-//! built on this seam for the WASM binding (P6-01 step 5).
+//! The JS object model itself (the TS `Resource` objects, the JS values they
+//! hold, and the `Serializer`, `Factory`, `JSONPopulator` and
+//! `JSONGenerator`, with accordproject/concerto#1273's `DeserializeOptions`)
+//! is the `concerto-core-js` crate, built on this seam for the WASM binding.
 //!
 //! Without the feature these modules are crate-private. Crate-private, they
 //! lose clippy's exemption for exported names, which the JS-facing names
@@ -51,7 +50,7 @@ js_compat_mod!(from_json);
 js_compat_mod!(metamodel);
 js_compat_mod!(model);
 mod options;
-// P5-88: the cached per-generation validation plan of the instance paths.
+// The cached per-generation validation plan of the instance paths.
 js_compat_mod!(plan);
 js_compat_mod!(resource_id);
 js_compat_mod!(validate);

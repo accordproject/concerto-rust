@@ -1,48 +1,30 @@
-//! The Serializer fast path (P4-10) and its wire codec.
-//!
-//! Split out of `lib.rs` (P5-104, review M7); the crate root glob-imports it.
+//! The Serializer fast path and its wire codec.
 
 use super::*;
 
 // ---------------------------------------------------------------------------
-// Serializer fast path (P4-10, accordproject/concerto-rust#69)
+// Serializer fast path
 // ---------------------------------------------------------------------------
 //
-// `Serializer.fromJSON`/`toJSON` cross the boundary in one call each
-// (PORTING.md section 5 row 6, D7), rather than per field through the TS
-// visitors (which keep their shells and stay the fallback path, plan §3).
-// The view (`JSON.stringify`s its argument, reads a JSON string back, per
-// `snapshot`'s doc above.
+// `Serializer.fromJSON`/`toJSON` cross the boundary in one call each,
+// rather than per field through the TS visitors (the fallback).
 //
 // Plain JSON crosses unchanged. Anything else is a one-key object tagged
-// `@@oracle` ([`WIRE_TAG`]), so that a value JSON cannot hold (a non-finite
-// number, `undefined`, a `Map`, a dayjs, an already-`Resource`/
-// `ValidatedResource`/`Relationship` field) still round-trips. This mirrors
-// `concerto-core/tests/oracle/instances.rs`'s own codec closely enough to
-// reuse its design, but is self-contained here since that module is
-// test-only; the TS-side codec (`src/engine/serializer-codec.ts`) writes and
-// reads the exact same shapes.
-//
-// A `"typed"` value's `fields` holds every own property of the TS object,
-// in order, `$`-prefixed handles included (`$namespace`, `$type`,
-// `$identifierFieldName`, `$identifier`, `$timestamp`, and `$class` for a
-// `Relationship`) except `$modelManager`/`$classDeclaration`/`$validator`
-// (the view never sends those): decoding needs no separate model lookup, it
-// is built directly into the `Instance`'s `props`. A dayjs crosses as
-// `(epoch ms, utcOffset minutes)` (PORTING.md 3.3), never a date object;
-// D7 keeps dayjs construction in TS, so the view rebuilds it from that pair.
+// `@@oracle` ([`WIRE_TAG`]), so a value JSON cannot hold (a non-finite
+// number, `undefined`, a `Map`, a dayjs, a `Resource`/`ValidatedResource`/
+// `Relationship`) round-trips; `src/engine/serializer-codec.ts` writes and
+// reads the same shapes. A `"typed"` value's `fields` holds every own
+// property of the TS object, `$`-prefixed ones included, but
+// `$modelManager`/`$classDeclaration`/`$validator`, and decodes straight
+// into the `Instance`'s `props`. A dayjs crosses as `(epoch ms, utcOffset
+// minutes)` (PORTING.md 3.3), which the view rebuilds.
 
-/// The wire tag key, matching the oracle harness's own `M` constant.
+/// The wire tag key, the oracle harness's `M` constant.
 pub(crate) const WIRE_TAG: &str = "@@oracle";
 
-/// An engine-side error for a wire shape the codec does not recognise: not
-/// a TS bug (the view controls what it sends), so it is reported the same
-/// way as any other not-yet-ported call site (PORTING.md 7.2), rather than
-/// through the message catalogue.
-///
-/// P5-101 (E-11): an [`Error::Unsupported`], whose payload carries
-/// `fastPathUnsupported: true`, so the caller's fallback no longer depends
-/// on this message's wording.
+/// An engine-side error for a wire shape the codec does not recognise (the
+/// view controls what it sends): an [`Error::Unsupported`], whose payload
+/// carries `fastPathUnsupported: true`, the caller's fallback signal.
 pub(crate) fn wire_error(reason: String) -> Error {
     Error::Unsupported(Box::new(ContractError::pre_port(
         ErrorKind::InvalidArgument,
@@ -177,11 +159,9 @@ pub(crate) fn decode_wire(value: &Value) -> Result<CoreValue> {
     }
 }
 
-/// P5-06c: a model file from its JSON AST text, through the typed AST read
-/// ([`ModelFile::from_json_text`], the only model loader since P5-61): the
-/// same file, and the same errors, as parsing the text into a `Value` and
-/// loading that. Malformed JSON throws a JS `SyntaxError`, as it always has.
-/// (`validateAst` reads the whole AST as a `Value` anyway.)
+/// A model file from its JSON AST text, through the typed AST read
+/// ([`ModelFile::from_json_text`]); malformed JSON throws a JS
+/// `SyntaxError`.
 pub(crate) fn model_file_from_text(
     ast: &str,
     definitions: Option<String>,
@@ -261,10 +241,8 @@ pub(crate) fn encode_wire_instance(i: &Instance) -> Value {
     })
 }
 
-/// A [`CoreValue`] as the wire value the view reads back (module doc).
-/// P5-101 (D-3): test-only since `serializerToJson` writes its result
-/// straight to text ([`WireOut`]), as every other binding does; the tests
-/// check [`WireOut`] against it.
+/// A [`CoreValue`] as the wire value the view reads back (module doc): the
+/// reference [`WireOut`] is tested against.
 #[cfg(test)]
 pub(crate) fn encode_wire(v: &CoreValue) -> Value {
     match v {
@@ -288,23 +266,16 @@ pub(crate) fn encode_wire(v: &CoreValue) -> Value {
         }),
         CoreValue::DateTime(d) => encode_wire_dayjs(d),
         CoreValue::Instance(i) => encode_wire_instance(i),
-        // The oracle harness's own `bigint` shape (`migration/oracle/lib/
-        // codec.js`). The view's `decodeValue` has no `bigint` kind, so it
-        // throws `EngineFastPathUnsupported` on this and the caller falls
-        // back to the visitor path, as its `encodeValue` already does for
-        // a `BigInt` it is handed (`unsupported-value:bigint`). No decoded
-        // wire value is a `BigInt`, so this is not reached today.
+        // The oracle harness's `bigint` shape. No decoded wire value is a
+        // `BigInt`; the view's decoder would fall back on one.
         CoreValue::BigInt(s) => json!({ WIRE_TAG: "bigint", "value": s }),
     }
 }
 
-// P5-16 (accordproject/concerto-rust#310): `serializerFromJsonCompact` reads its
-// document straight into a [`CoreValue`] ([`parse_wire`]) and writes its
-// result straight to JSON text ([`WireOut`]), rather than through an
-// intermediate `serde_json::Value` tree in each direction
-// ([`decode_wire`]/[`encode_wire`] and [`snapshot`]): building, hashing and
-// dropping those trees was about a third of the call. The values and the
-// text are the same as the `Value` route's (the tests below check both).
+// `serializerFromJsonCompact` reads its document straight into a
+// [`CoreValue`] ([`parse_wire`]) and writes its result straight to JSON text
+// ([`WireOut`]), without an intermediate `serde_json::Value` tree either
+// way; the tests check both against the `Value` route.
 
 /// Deserializes one wire value (module doc) directly into a [`CoreValue`],
 /// as `decode_wire(&serde_json::from_str(text)?)` would. A wire shape the
@@ -516,13 +487,10 @@ pub(crate) fn decode_wire_tagged(kind: &str, mut map: SerializerOptions) -> Resu
     }
 }
 
-/// P5-101 (E-7, F-8; accordproject/concerto-rust#455): [`parse_wire`] over
-/// the same wire value in concerto-core's compact binary layout, which
-/// [`WireSeed`] reads as it reads the value's JSON text
+/// [`parse_wire`] over the wire value in concerto-core's compact binary
+/// layout, read as its JSON text is
 /// ([`concerto_core::introspect::compact_deserialize_seed`]). Bytes not in
-/// the layout (never written by the TS writer) are a [`wire_error`], which
-/// the caller's fallback reads as such; an unrecognised wire shape is its
-/// own [`wire_error`], as from the text.
+/// the layout, or an unrecognised wire shape, are a [`wire_error`].
 pub(crate) fn parse_wire_bytes(bytes: &[u8]) -> Result<CoreValue> {
     let error = RefCell::new(None);
     let value =
@@ -551,14 +519,10 @@ pub(crate) fn parse_wire(text: &str) -> Result<CoreValue> {
     }
 }
 
-/// A [`CoreValue`] written as [`encode_wire`]'s JSON text, without building
-/// the `serde_json::Value` first: `serde_json::to_string(&WireOut(v))` is
-/// `serde_json::to_string(&encode_wire(v))`.
-///
-/// With `INTS` (the compact result, P5-16), a finite number with no
-/// fractional part below 2^53 in magnitude is written as an integer (`42`,
-/// not `42.0`): the same number to `JSON.parse`, which reads an integer
-/// literal faster.
+/// A [`CoreValue`] as [`encode_wire`]'s JSON text, without building the
+/// `Value` first. With `INTS` (the compact result), an integral finite
+/// number below 2^53 is written as an integer, which `JSON.parse` reads
+/// faster and as the same number.
 pub(crate) struct WireOut<'a, const INTS: bool = false>(pub(crate) &'a CoreValue);
 
 /// An [`Instance`] written as [`encode_wire_instance`]'s JSON text.
@@ -709,14 +673,10 @@ pub(crate) const COMPACT_HEADER_KEYS: [&str; 5] = [
     "$timestamp",
 ];
 
-/// An [`Instance`] in the compact result shape of `serializerFromJsonCompact`
-/// (P5-16): the JSON array
-/// `[ctor, fqn, $namespace, $type, $identifierFieldName, $identifier,
-/// $timestamp, fields]`, each value in its wire encoding (a missing one as
-/// `undefined`), where `fields` is the `"typed"` shape's field object less
-/// what the view's `materializeTyped` skips: those five keys, `$class`,
-/// and the key named by `$identifierFieldName` when that is a string
-/// (the constructor sets it from `$identifier`). Nested instances keep the
+/// An [`Instance`] as `serializerFromJsonCompact`'s array `[ctor, fqn,
+/// $namespace, $type, $identifierFieldName, $identifier, $timestamp,
+/// fields]`, in wire encoding; `fields` omits those keys, `$class` and the
+/// identifier field the constructor sets. Nested instances keep the
 /// `"typed"` shape.
 pub(crate) struct CompactInstanceOut<'a>(pub(crate) &'a Instance);
 
@@ -772,25 +732,19 @@ impl serde::Serialize for CompactInstanceOut<'_> {
     }
 }
 
-/// A serializer call's merged options, read once per options text (P5-16;
-/// P5-101, D-3: shared by `serializerFromJsonCompact`, `serializerToJson`
-/// and `validateInstance`, where only the `fromJSON` bindings kept it
-/// before): the `Serializer` built from them, what `from_json`
-/// reads of them, and what `validateInstance`'s walk reads of them. A
-/// caller normally passes the same merged options on every call, and all
-/// three depend on nothing else, so a call with the same text reuses them
-/// instead of decoding the options and building them again
-/// ([`caches::SERIALIZER_OPTIONS`]).
+/// A serializer call's merged options, read once per options text and
+/// shared by `serializerFromJsonCompact`, `serializerToJson` and
+/// `validateInstance`: the `Serializer` built from them, what `from_json`
+/// reads of them, and what `validateInstance`'s walk reads. A call with the
+/// same text reuses them ([`caches::SERIALIZER_OPTIONS`]).
 pub(crate) struct SerializerOptionsEntry {
     /// The options text the entry was read from (its key).
     text: String,
     /// `new Serializer(factory, modelManager, options)`.
     pub(crate) serializer: Serializer,
-    /// The merged options as `from_json` reads them. `from_json(options)`
-    /// merges `options` over the serializer's defaults, which were built
-    /// from the same `options` over the base defaults: merging them again
-    /// changes nothing, so the defaults are the merged options (and
-    /// `to_json(None)` reads the same options as `to_json(Some(options))`).
+    /// The merged options as `from_json` reads them: the serializer's
+    /// defaults, built from the same options, so merging again changes
+    /// nothing.
     pub(crate) from_json: FromJsonOptions,
     /// The merged options as `validateInstance`'s walk reads them
     /// ([`native_from_json_options`] of [`validator_options`]).
@@ -838,10 +792,9 @@ pub(crate) fn with_serializer_options<R>(
     Ok(out)
 }
 
-/// A Serializer fast path document: the wire encoding's JSON text, or
-/// (P5-101, E-7, accordproject/concerto-rust#455) the same wire value
-/// written by the TS binary writer (src/engine/wire.ts) in concerto-core's
-/// compact layout, which reads as that text reads
+/// A Serializer fast path document: the wire encoding's JSON text, or the
+/// same wire value written by the TS binary writer (src/engine/wire.ts) in
+/// concerto-core's compact layout, which reads as that text reads
 /// ([`concerto_core::introspect::compact_deserialize_seed`]).
 #[derive(Clone, Copy)]
 pub(crate) enum WireDoc<'a> {
@@ -869,10 +822,9 @@ impl WireDoc<'_> {
 }
 
 impl ModelManagerHandle {
-    /// The resource `serializerFromJsonCompact`
-    /// build (module doc above "Serializer fast path"), in one pass each way
-    /// ([`parse_wire`]) and with the serializer reused while the options
-    /// text is unchanged ([`with_serializer_options`], P5-16).
+    /// The resource `serializerFromJsonCompact` builds, in one pass each way
+    /// ([`parse_wire`]), with the serializer reused while the options text is
+    /// unchanged ([`with_serializer_options`]).
     pub(crate) fn build_from_json(
         &self,
         doc: WireDoc,
@@ -889,11 +841,8 @@ impl ModelManagerHandle {
         })?
     }
 
-    /// `serializerToJson`'s result text for the resource `doc` holds: one
-    /// pass each way ([`WireDoc::parse`], [`WireOut`]) and the serializer
-    /// reused while the options text is unchanged
-    /// ([`with_serializer_options`]), as for `serializerFromJsonCompact` (P5-101,
-    /// D-3).
+    /// `serializerToJson`'s result text for the resource `doc` holds, as for
+    /// `serializerFromJsonCompact`.
     pub(crate) fn to_json_text(&self, doc: WireDoc, options_text: &str) -> Result<String> {
         let resource = doc.parse()?;
         let result = with_serializer_options(options_text, |entry| {
@@ -902,14 +851,11 @@ impl ModelManagerHandle {
         serde_json::to_string(&WireOut::<false>(&result)).map_err(internal)
     }
 
-    /// `err`, an error `serializerFromJsonCompact` raised for the document
-    /// `doc` with the merged options `options` (as the walk reads
-    /// them, [`SerializerOptionsEntry::native`]), with its diagnostics
-    /// attached as the exception's `details` (P5-89,
-    /// accordproject/concerto#1325): the same as `validateInstance`'s first
-    /// diagnostic for the document, read from the same wire encoding the
-    /// same way ([`validator_readings_of`], [`diagnose_read`]). Only read on
-    /// a failure, so a success costs nothing more.
+    /// `err`, an error `serializerFromJsonCompact` raised for `doc` with the
+    /// merged `options`, with its diagnostics attached as `details`
+    /// (accordproject/concerto#1325): `validateInstance`'s first diagnostic
+    /// for the document ([`validator_readings_of`], [`diagnose_read`]). Read
+    /// only on a failure.
     pub(crate) fn instance_error(
         &self,
         err: CoreError,
@@ -932,28 +878,22 @@ impl ModelManagerHandle {
     }
 }
 
-/// TS `validateMetaModel(input)` (`src/introspect/metamodel.ts`) and the
-/// other metamodel-instance checks, in one engine call on the engine's one
-/// resident metamodel manager
-/// (`concerto_core::instance::with_resident_metamodel_manager`; P5-102,
-/// F-7, accordproject/concerto-rust#456), so TS keeps no metamodel
-/// `ModelManagerHandle` of its own. Validates `json_text`, the instance in
-/// `Serializer.fromJSON`'s wire encoding (module doc above "Serializer fast
-/// path"; plain JSON is its own encoding), as `Serializer.fromJSON` over a
-/// metamodel manager would with the options `preset` names:
+/// TS `validateMetaModel(input)` and the other metamodel-instance checks, on
+/// the engine's resident metamodel manager
+/// (`concerto_core::instance::with_resident_metamodel_manager`), so TS keeps
+/// no metamodel handle. Validates `json_text`, in the serializer's wire
+/// encoding, as `Serializer.fromJSON` over a metamodel manager would with
+/// the options `preset` names:
 ///
 /// - `"strict"`: accordproject/concerto#1273's `STRICT_VALIDATE_OPTIONS`
 ///   (`validateAst`'s check);
 /// - `"default"`: the manager's serializer defaults, `baseDefaultOptions`;
-/// - `"serializer"`: a `new Serializer(factory, modelManager)`'s own
-///   defaults (`validateMetaModel`'s), the same options as `"default"`.
+/// - `"serializer"`: a `new Serializer(factory, modelManager)`'s defaults
+///   (`validateMetaModel`'s), the same as `"default"`.
 ///
-/// Throws what `validateInstance` (mode 0) throws for the same document and
-/// options, which is what `serializerFromJson` throws for them, unwrapped
-/// (`validateAst`'s `MetamodelException` wrapping is its caller's), with
-/// the same diagnostics attached, without building a resource (P5-101,
-/// D-3); an unknown `preset` is a plain `Error`. Additive: no other binding
-/// changes.
+/// Throws what `validateInstance` (mode 0) throws, with its diagnostics,
+/// without building a resource (`validateAst`'s `MetamodelException`
+/// wrapping is its caller's); an unknown `preset` is a plain `Error`.
 #[wasm_bindgen(js_name = validateMetaModelInstance)]
 pub fn validate_meta_model_instance(json_text: &str, preset: &str) -> JsResult<()> {
     use concerto_core::instance::{MetaModelPreset, with_resident_metamodel_manager};

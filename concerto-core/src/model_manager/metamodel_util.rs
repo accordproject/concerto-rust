@@ -241,14 +241,9 @@ fn create_name_table(
 }
 
 /// Sets a `TypeIdentifier`-shaped `node`'s `namespace` (and `name`, and
-/// `resolvedName` when the table entry carries one) from `table[name]`,
-/// the shared tail of TS's `superType` case and its `.type` group
-/// (`metaModel.superType.namespace = resolveName(name, table);
-/// metaModel.superType.name = table[name].name; if (table[name]?.resolvedName)
-/// …`): `table[name].name` always equals `name` itself (every
-/// `createNameTable` branch keys an entry under its own `name`), so
-/// re-reading the table after the (no-op) name reassignment, as TS does,
-/// is the same as reading it once.
+/// `resolvedName` when present) from `table[name]`: the shared tail of TS's
+/// `superType` case and `.type` group. `table[name].name` always equals
+/// `name`, so TS's re-read after reassigning it is one read here.
 fn set_resolved_type_identifier(
     node: &mut Value,
     name: &str,

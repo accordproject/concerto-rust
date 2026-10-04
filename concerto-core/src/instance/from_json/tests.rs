@@ -76,8 +76,8 @@
         assert_eq!(value["owner"]["vin"], "V2");
     }
 
-    /// P5-58 (BC-05, R1; DV-007): a relationship-typed map value is read as
-    /// a relationship property is: a URI or bare identifier becomes a
+    /// BC-05, DV-007: a relationship-typed map value is read as a
+    /// relationship property is: a URI or bare identifier becomes a
     /// relationship; an embedded resource needs
     /// `acceptResourcesForRelationships`, and then fails validation unless
     /// the validator's own options permit it.
@@ -172,11 +172,11 @@
         mm
     }
 
-    /// P5-24 (BC-45, R1): a `DateTime` default, on a property or a scalar,
-    /// must be a strict `DateTime` string. The model loads whatever the
-    /// default is; a bad one throws a `ValidationException` when population
-    /// applies it (the document gives the field no value, or `null`), and
-    /// not when the document gives the field its own value.
+    /// BC-45: a `DateTime` default, on a property or a scalar, must be a
+    /// strict `DateTime` string. The model loads whatever the default is; a
+    /// bad one throws a `ValidationException` when population applies it
+    /// (the document gives the field no value, or `null`), and not when the
+    /// document gives the field its own value.
     #[test]
     fn a_date_time_default_is_checked_when_it_is_applied() {
         let populate = |mm: &ModelManager, class: &str| {

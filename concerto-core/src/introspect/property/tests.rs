@@ -54,10 +54,9 @@ fn process_rejects_an_invalid_identifier() {
     assert!(err.to_string().contains("Invalid property name '1bad'"));
 }
 
-// accordproject/concerto-rust#219 (P5-05 stage-2 T2c, cluster 1): a
-// fuzzer-mutated AST can put any JSON type in `name`, and TS's
-// `${this.ast.name}` reports it through JS `ToString`, not as an
-// absent/empty name.
+// A fuzzer-mutated AST can put any
+// JSON type in `name`, and TS's `${this.ast.name}` reports it
+// through JS `ToString`, not as an absent/empty name.
 #[test]
 fn process_rejects_a_non_string_name_with_its_js_stringified_form() {
     let err = process::<Error>(&serde_json::json!({
@@ -70,8 +69,7 @@ fn process_rejects_a_non_string_name_with_its_js_stringified_form() {
     assert!(err.to_string().contains("Invalid property name '1e+308'"));
 }
 
-// accordproject/concerto-rust#219 review (P5-05 stage-2 T2c, "the
-// location-suffix cluster"): the `IllegalModelException` an invalid name
+// The `IllegalModelException` an invalid name
 // raises carries the AST node's own `location` and a `model_file`
 // placeholder, so `ModelManager.addModelFile`'s WASM binding
 // (`propertyProcess`) can attach the real JS model file and reproduce
@@ -79,8 +77,8 @@ fn process_rejects_a_non_string_name_with_its_js_stringified_form() {
 // This test reproduces that suffix text directly, with no WASM boundary
 // to cross: `ContractError::final_message` is the same pure-Rust
 // function the native oracle harness itself uses to decorate a message
-// exactly as TS's `IllegalModelException` constructor does (OD-2) — once
-// a real (not placeholder) file name is filled in, in place of the WASM
+// exactly as TS's `IllegalModelException` constructor does — once a real
+// (not placeholder) file name is filled in, in place of the WASM
 // binding, it renders the identical suffix. A prior version of this test
 // only asserted `err.location.is_some()`/`err.model_file == Some(None)`
 // (the placeholder itself), which checks that a location and a
@@ -125,11 +123,11 @@ fn process_carries_the_ast_location_and_a_model_file_placeholder_for_an_invalid_
     );
 }
 
-// accordproject/concerto-rust#219 (P5-05 stage-2 T2c): a `name` whose
-// *stringified* form still looks like a valid identifier (`false` ->
-// `"false"`) passes the identifier check, but its own raw JS falsiness
-// fails TS's second, separate `if (!this.name)` check, which raises a
-// plain `Error`, not an `IllegalModelException`.
+// A `name` whose *stringified* form still looks
+// like a valid identifier (`false` -> `"false"`) passes the identifier
+// check, but its own raw JS falsiness fails TS's second, separate `if
+// (!this.name)` check, which raises a plain `Error`, not an
+// `IllegalModelException`.
 #[test]
 fn process_rejects_a_falsy_name_that_stringifies_to_a_valid_identifier() {
     let ast = serde_json::json!({
@@ -145,12 +143,11 @@ fn process_rejects_a_falsy_name_that_stringifies_to_a_valid_identifier() {
     );
 }
 
-// accordproject/concerto-rust#217 (T2a): `ID_REGEX.test(name)` in TS
-// coerces a non-string `name` with `ToString` rather than rejecting it,
-// so a fuzz-mutated `name` that isn't a JSON string but stringifies to
-// a valid identifier, and is itself JS-truthy, is accepted by TS and
-// must be accepted here too. Minimised repro:
-// `declarations[0].properties[0].name = true`
+// T2a: `ID_REGEX.test(name)` in TS coerces a non-string `name` with
+// `ToString` rather than rejecting it, so a fuzz-mutated `name` that
+// isn't a JSON string but stringifies to a valid identifier, and is
+// itself JS-truthy, is accepted by TS and must be accepted here too.
+// Minimised repro: `declarations[0].properties[0].name = true`
 // (conformance/ModelManager.addModelFile/16267c5478a5f2840469e147.json,
 // stage2/triage-clusters.json).
 #[test]
@@ -175,8 +172,7 @@ fn process_accepts_a_boolean_name_like_ts_string_coercion() {
 // `process_rejects_a_falsy_name_that_stringifies_to_a_valid_identifier`
 // test above). A prior version of this test wrongly asserted these two
 // shapes were *accepted*, conflating "passes the identifier regex" with
-// "has a name" (accordproject/concerto-rust#219 review, merge of #217
-// and #219's overlapping work on this function).
+// "has a name".
 #[test]
 fn process_rejects_a_missing_name_that_stringifies_to_a_valid_identifier() {
     let err = process::<Error>(&serde_json::json!({
@@ -233,7 +229,7 @@ fn contract(err: Error) -> ContractError {
     }
 }
 
-/// DV-017 (#218): TS throws `TypeError: Cannot read properties of
+/// DV-017: TS throws `TypeError: Cannot read properties of
 /// undefined|null (reading 'name')` from `Property.process` for a
 /// `RelationshipProperty` with a missing or `null` `type`; Rust raises
 /// an `IllegalModelException` instead, through `propertyProcess` (the
@@ -288,9 +284,9 @@ fn process_reports_an_invalid_name_before_a_missing_relationship_type() {
     assert_eq!(err.code, "property-process-invalidname");
 }
 
-/// P5-61: a property node the typed read cannot read — no `$class`, an
-/// unknown one, a field of the wrong type, a `RelationshipProperty`
-/// with no `type` (DV-017's shape), a `null` decorator (DV-018's) — is a
+/// A property node the typed read cannot read — no `$class`, an unknown
+/// one, a field of the wrong type, a `RelationshipProperty` with no
+/// `type` (DV-017's shape), a `null` decorator (DV-018's) — is a
 /// `modelfile-load-unreadable` `IllegalModelException`. BC-19's shape
 /// check rejects each of them first; with it off, only the class is
 /// promised.
@@ -490,8 +486,8 @@ fn range_without_either_bound_is_rejected() {
     assert!(err.unwrap_err().to_string().contains("lower and-or upper"));
 }
 
-/// OD-3: an Integer domain bound that overflows `i32` loads and
-/// validates, matching TS (which reads it as a plain JS number).
+/// An Integer domain bound that overflows `i32` loads and validates,
+/// matching TS (which reads it as a plain JS number).
 ///
 /// Checked against the frozen TS 5.0.0 reference (`migration/oracle/reference`
 /// in the `/home/user/concerto` workspace): `ModelManager.fromAst` loading
@@ -519,8 +515,8 @@ fn integer_domain_bound_above_i32_max_loads() {
     }
 }
 
-/// OD-3: a Long domain bound above `i64::MAX` loads, as JS rounds it to
-/// the nearest f64 and TS accepts it.
+/// A Long domain bound above `i64::MAX` loads, as JS rounds it to the
+/// nearest f64 and TS accepts it.
 ///
 /// Checked against the frozen TS 5.0.0 reference (`migration/oracle/reference`
 /// in the `/home/user/concerto` workspace): `ModelManager.fromAst` loading
@@ -592,8 +588,7 @@ fn size_validator_on_array_is_accepted() {
 
 /// TS's `Property` constructor accepts a size validator on a non-array
 /// property; only `Property.validate` rejects it (property.ts), which
-/// `crate::validation`'s tests cover. (P2-08 review: this test used to
-/// assert that construction itself failed.)
+/// `crate::validation`'s tests cover.
 #[test]
 fn size_validator_on_non_array_is_accepted_at_construction() {
     let p = Property::try_from(&collection_sized(false, Some(1), Some(5)))
@@ -659,8 +654,7 @@ fn size_validator_on_relationship_array_is_accepted() {
 }
 
 /// Construction accepts it (TS `Property` constructor); validation
-/// rejects it (`crate::validation`'s tests). P2-08 review: this test
-/// used to assert construction-time rejection.
+/// rejects it (`crate::validation`'s tests).
 #[test]
 fn size_validator_on_non_array_relationship_is_accepted_at_construction() {
     let json = serde_json::json!({
@@ -682,10 +676,9 @@ fn size_validator_on_non_array_relationship_is_accepted_at_construction() {
 #[test]
 fn only_the_full_metamodel_property_classes_are_recognised() {
     // TS `ClassDeclaration.process` matches each property's `$class`
-    // with `===` against the full metamodel classes
-    // (accordproject/concerto-rust#285, BC-25); a short name, another
-    // namespace's, or text that merely ends in a property class's short
-    // name is not a property the typed read can read (P5-61: a
+    // with `===` against the full metamodel classes (BC-25); a short
+    // name, another namespace's, or text that merely ends in a property
+    // class's short name is not a property the typed read can read (a
     // `modelfile-load-unreadable` `IllegalModelException`; BC-19's shape
     // check rejects it first).
     for class in [
@@ -743,8 +736,7 @@ fn process_matches_the_full_property_class() {
     );
 }
 
-/// P2-04 (plan §1.2's "enum ... reserved values" gap; issue #48): an
-/// enum value may not take a reserved (system) property name either,
+/// An enum value may not take a reserved (system) property name either,
 /// the same check every other property kind gets above.
 ///
 /// Checked against the frozen TS 5.0.0 reference
@@ -850,13 +842,11 @@ fn optional_defaults_to_false_and_follows_the_ast() {
     assert!(optional.is_optional());
 }
 
-/// P5-61 (BR-09, accordproject/concerto-rust#393): a property's
-/// `sizeValidator`, `lengthValidator` and `validator` are decoded as
-/// strictly as its other fields. TS 5.0.0 read them with no type check
-/// (a non-numeric bound, a non-string `$class` or pattern, a validator
-/// that is not an object, #217), and so did the port until P5-61. BC-19's
-/// shape check rejects each of these first; with the check off they are
-/// the loader's error.
+/// BR-09: a property's `sizeValidator`, `lengthValidator` and `validator`
+/// are decoded as strictly as its other fields. TS 5.0.0 read them with
+/// no type check (a non-numeric bound, a non-string `$class` or pattern,
+/// a validator that is not an object). BC-19's shape check rejects each of these first; with the check off
+/// they are the loader's error.
 #[test]
 fn a_malformed_validator_is_an_unreadable_ast() {
     let string = |key: &str, value: serde_json::Value| {

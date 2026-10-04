@@ -21,15 +21,12 @@ use crate::introspect::validators;
 use crate::introspect::{FullyQualified, METAMODEL_NAMESPACE, Named, Typed};
 use crate::model_util::{is_system_property, is_valid_identifier};
 
-/// What `Property.process` computes, after `super.process()` (which belongs
-/// to `Decorated`).
+/// What `Property.process` computes, after `super.process()`.
 ///
-/// TS: `Property.process` (src/introspect/property.ts). `property_type` is
-/// `this.type`; `type_set` says whether TS assigns `this.type` at all —
-/// the `EnumProperty` arm of the source switch falls through without an
-/// assignment, so `this.type` is left `undefined` there, which the WASM view
-/// tells apart from the explicit `null` an `ObjectProperty` with no `type`
-/// AST node gets.
+/// TS: `Property.process` (src/introspect/property.ts). `type_set` says
+/// whether TS assigns `this.type` at all: the `EnumProperty` arm leaves it
+/// `undefined`, which the WASM view tells apart from the `null` of an
+/// `ObjectProperty` with no `type`.
 #[cfg(feature = "js-compat")]
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProcessedProperty {
@@ -45,35 +42,17 @@ pub struct ProcessedProperty {
     pub optional: bool,
 }
 
-/// Computes `Property.process`'s fields directly from the AST, in the TS
-/// order: the identifier check, the name, the `$class` switch for `type`,
-/// then `array` and `optional`. `this.sizeValidator` is not computed here:
-/// TS builds it by constructing a `CollectionSizeValidator`, which the WASM
-/// view still does directly (its own binding already ports the TS
-/// constructor).
+/// `Property.process`'s fields from the AST, in TS order: the identifier
+/// check, the name, the `$class` switch for `type`, `array`, `optional`.
+/// The WASM view builds `sizeValidator`. `ID_REGEX.test` applies
+/// `ToString` to a non-string `name` (DV-002), so `name: true` is `"true"`.
 ///
-/// TS: `Property.process` (src/introspect/property.ts). TS's check is
-/// `ID_REGEX.test(this.ast.name)`, and `RegExp.prototype.test` runs
-/// `ToString` on a non-string argument rather than rejecting it outright
-/// (`ecma::to_js_string`, matching the `ID_REGEX.test(undefined)` quirk
-/// `model_util::is_valid_identifier`'s own tests document, DV-002): a
-/// fuzz-mutated `name` that is present but not a JSON string (a bool, a
-/// number, an array, `null`, an object) must go through the same coercion,
-/// not be read as an absent name (accordproject/concerto-rust#217): e.g.
-/// `name: true` stringifies to `"true"`, which passes `ID_REGEX` in both
-/// engines, so TS accepts the model and a naive `Value::as_str` default of
-/// `""` made Rust wrongly reject it as `Invalid property name ''`.
+/// TS: `Property.process` (src/introspect/property.ts)
 #[cfg(feature = "js-compat")]
 pub fn process<E: From<ContractError>>(ast: &Value) -> std::result::Result<ProcessedProperty, E> {
-    // TS interpolates the raw `this.ast.name` into a template literal
-    // (`Invalid property name '${this.ast.name}'`) and into `ID_REGEX.test`,
-    // both of which apply JS `ToString` to whatever value the AST carries —
-    // not only a string. A fuzzer-mutated AST can put a number, boolean,
-    // `null`, array or object there (or omit the key, `ToString`d as
-    // `"undefined"`), so this must go through the same `ToString` coercion
-    // `ecma::to_js_string` gives every other port of a template literal,
-    // rather than treating a non-string name as absent
-    // (accordproject/concerto-rust#217, #219).
+    // TS interpolates the raw `this.ast.name` into a template literal and
+    // into `ID_REGEX.test`, both of which apply JS `ToString` to any value
+    // (an absent key is `"undefined"`).
     let raw_name = ast.get("name");
     let name = raw_name
         .map(crate::ecma::to_js_string)
@@ -85,26 +64,16 @@ pub fn process<E: From<ContractError>>(ast: &Value) -> std::result::Result<Proce
             vec![("name", name)],
         );
         // TS: `throw new IllegalModelException(..., this.getModelFile(),
-        // this.ast.location)` — the WASM binding (`propertyProcess` in
-        // concerto-wasm/src/lib.rs) supplies the real JS model file once
-        // `model_file` says one belongs on this error; the location comes
-        // from this AST node directly, as every other site on this path
-        // does (e.g. `Property::try_from`'s own `invalidname` throw).
+        // this.ast.location)`: the WASM binding supplies the JS model file;
+        // the location comes from this AST node.
         err.location = ast.get("location").cloned();
         err.model_file = Some(None);
         return Err(err.into());
     }
-    // TS: `this.name = this.ast.name; if (!this.name) { throw new
-    // Error('No name for type ' + JSON.stringify(this.ast)); }` — a
-    // *second*, separate check, on the *raw* `this.ast.name` value's own JS
-    // truthiness, not on the `ToString`'d `name` the identifier check just
-    // validated above. `ID_REGEX.test` can accept a falsy value whose
-    // stringified form still looks like an identifier (`false` stringifies
-    // to `"false"`, a valid identifier shape) while the value itself is
-    // falsy (`false`, `0`, `""`, `null`, absent), so this must re-test the
-    // untouched AST value, not `name` (accordproject/concerto-rust#219,
-    // P5-05 stage-2 T2c: minimised sample sets a property's `name` to the
-    // JSON boolean `false`).
+    // TS: `this.name = this.ast.name; if (!this.name) { throw new Error('No
+    // name for type ' + JSON.stringify(this.ast)); }`: a second check, on
+    // the raw value's truthiness, since `ID_REGEX.test` accepts `false`
+    // (stringified to `"false"`).
     if !raw_name.is_some_and(crate::ecma::is_truthy) {
         return Err(ContractError::new(
             ErrorKind::InvalidArgument,
@@ -119,7 +88,7 @@ pub fn process<E: From<ContractError>>(ast: &Value) -> std::result::Result<Proce
         .and_then(Value::as_str)
         .unwrap_or_default();
     // TS `switch (this.ast.$class)` matches the full metamodel `$class`
-    // (`===`); anything else takes no arm (accordproject/concerto-rust#285).
+    // (`===`); anything else takes no arm.
     let short = property_kind(class).unwrap_or_default();
     let object_or_relationship_type = || {
         ast.get("type")
@@ -138,8 +107,7 @@ pub fn process<E: From<ContractError>>(ast: &Value) -> std::result::Result<Proce
         "RelationshipProperty" => {
             // DV-017: TS reads `this.ast.type.name` unguarded here and throws
             // a `TypeError` for a missing or `null` `type`; Rust rejects it
-            // with an `IllegalModelException` instead (maintainer decision
-            // on accordproject/concerto-rust#218).
+            // with an `IllegalModelException` instead.
             if let Some(mut err) = relationship_without_type(ast, &name) {
                 // TS passes `this.getModelFile()` to the exception; the WASM
                 // shim (`propertyProcess`) substitutes the real JS model
@@ -169,24 +137,11 @@ pub fn process<E: From<ContractError>>(ast: &Value) -> std::result::Result<Proce
     })
 }
 
-/// DV-017 (maintainer-accepted, accordproject/concerto-rust#218): a
-/// `RelationshipProperty` node whose `type` is missing or `null`.
-///
-/// TS `Property.process`'s `RelationshipProperty` arm (property.ts:165) reads
-/// `this.ast.type.name` with no guard (its `ObjectProperty` arm, two lines
-/// above, has one), so V8 throws `TypeError: Cannot read properties of
-/// undefined (reading 'name')` (or `of null`) from the `ModelFile`
-/// constructor. Rust does not port that crash: it raises
-/// `IllegalModelException: Relationship <name> must have a type`
-/// (`property-process-relationshipnotype`), worded like TS's own
-/// `RelationshipDeclaration.validate` rejections, with this property's AST
-/// `location` and its model file (attached by the caller: the declaration
-/// loader natively, the WASM shim in rust mode). Any other `type`
-/// value (a string, a number, an object with no `name`) does not crash TS,
-/// so it is not this check's.
-///
-/// Returns `None` when the node is not a `RelationshipProperty` or has a
-/// non-null `type`. `name` is the (already validated) property name.
+/// DV-017: a `RelationshipProperty` whose `type` is missing or `null`, where
+/// TS reads `this.ast.type.name` unguarded and V8 throws a `TypeError`.
+/// Rust raises `property-process-relationshipnotype` (an
+/// `IllegalModelException`) at the property's `location`. `None` for any
+/// other node; `name` is the validated property name.
 #[cfg(feature = "js-compat")]
 pub(crate) fn relationship_without_type(ast: &Value, name: &str) -> Option<ContractError> {
     let class = ast.get("$class").and_then(Value::as_str)?;
@@ -298,13 +253,8 @@ impl Property {
         property_field!(self, p => p.size_validator.as_ref(), _ => None)
     }
 
-    /// This property's own AST `location`, if the node carried one. Every
-    /// generated property struct (including `EnumProperty`) has a `location`
-    /// field, so — unlike `Decorator`, which still has none (7.2) — a
-    /// property can report its own location rather than borrowing its owning
-    /// class's the way validation used to (P2-08 review carry-over (c) from
-    /// P2-04's review, #48: TS `Property.validate`/`Decorated.validate` throw
-    /// with `this.ast.location`, the property's own).
+    /// This property's own AST `location`, if the node carried one, as TS
+    /// `Property.validate`/`Decorated.validate` throw with `this.ast.location`.
     pub fn location(&self) -> Option<&mm::Range> {
         property_field!(self, p => p.location.as_ref(), p => p.location.as_ref())
     }
@@ -375,17 +325,10 @@ const PROPERTY_KINDS: [&str; 9] = [
 ];
 
 /// A property node's kind (its `$class` short name), when its `$class` is
-/// one of the nine full metamodel property classes; `None` otherwise.
-///
-/// TS: `ClassDeclaration.process`'s properties loop
-/// (src/introspect/classdeclaration.ts) compares `thing.$class` with each
-/// `` `${MetaModelNamespace}.<Kind>Property` `` by `===`, and throws
-/// "Unrecognised model element" for anything else: a bare short name
-/// (`StringProperty`), another namespace's (`foo.StringProperty`), or any
-/// other text that merely ends in a property class's short name
-/// (`concerto.metamodel@1.0.0.StringPropertyconcerto.metamodel@1.0.0.StringProperty`).
-/// Matching by `get_short_name` (the text after the last `.`) accepted
-/// all three (accordproject/concerto-rust#285, BC-25).
+/// one of the nine full metamodel property classes. TS
+/// `ClassDeclaration.process` compares `$class` by `===` and throws
+/// "Unrecognised model element" for anything else, such as a bare short
+/// name or another namespace's (BC-25).
 pub(crate) fn property_kind(class: &str) -> Option<&str> {
     let kind = class.strip_prefix(METAMODEL_NAMESPACE)?.strip_prefix('.')?;
     PROPERTY_KINDS.contains(&kind).then_some(kind)
@@ -456,12 +399,9 @@ impl crate::model_manager::ValidatedElement for BoundElement<'_> {
 
 impl Property {
     /// Checks a collection size validator's own bounds, as TS's
-    /// `CollectionSizeValidator` constructor does while the property is
-    /// processed. Whether the property may carry one at all (an array, or a
-    /// map-typed property) is not checked here: TS checks that only in
-    /// `Property.validate` (property.ts), once the property's type can be
-    /// resolved — `check_property_type` in [`crate::validation`] (P2-08: a
-    /// `ModelFile` with such a property must still construct).
+    /// `CollectionSizeValidator` constructor does during `process`. Whether the
+    /// property may carry one at all is `Property.validate`'s check, once types
+    /// resolve (`check_property_type`), so such a file still constructs.
     fn check_size_validator(
         fqn: &str,
         name: &str,
@@ -479,7 +419,7 @@ impl Property {
 
     /// Whether [`Property::check_bound_validators`] has a validator to
     /// rebuild: a size validator, or a String, Integer, Long or Double
-    /// domain (or length) validator (P5-48).
+    /// domain (or length) validator.
     pub(crate) fn has_bound_validators(&self) -> bool {
         self.size_validator().is_some()
             || match self {
@@ -492,35 +432,16 @@ impl Property {
     }
 
     js_compat_pub! {
-        /// Rebuilds and discards this property's own numeric, string and
-        /// collection-size validators, purely to surface the
-        /// `IllegalModelException` their constructors raise (BC-39, R1:
-        /// `ErrorKind::IllegalModel`, keeping the errorType; 5.0.0 raised a
-        /// `BaseException` through `Validator.reportError`) for a bound out of order, a
-        /// negative size, an uncompilable regex, or a default value outside the
-        /// validator's own range — `Property::try_from` itself has no
-        /// [`FullyQualified`] context to build these messages with (the module
-        /// doc on `BoundElement`), so this is called once that context is
-        /// known, by the class declaration's loader
-        /// (`super::declaration::ClassDeclaration`), never from `try_from`
-        /// itself: a property whose validator does not check out must still
-        /// *parse*, exactly as TS's own two-phase load (parse, then
-        /// `ClassDeclaration.process`'s validator construction) does.
-        ///
-        /// TS: `Property.process`/`Field.process` (property.ts, field.ts) build
-        /// the size validator (any non-enum property) first, then, for a
-        /// non-array Integer/Long/Double/String, its own domain or
-        /// length-and-regex validator — the same order as this method's own
-        /// `match`.
-        ///
-        /// The bounds are compared as the numbers the typed read gave (P5-61:
-        /// the load reads a validator strictly, so a bound is always a number
-        /// here; before BC-19 the loader passed each property's raw AST node,
-        /// so that a wrongly-typed bound compared with JS's untyped `>`).
+        /// Rebuilds and discards this property's validators to surface the
+        /// `IllegalModelException` their constructors raise (BC-39). Called by the
+        /// class declaration's loader once the fully qualified name is known, never
+        /// from `try_from`, so a property with a bad validator still parses, as in
+        /// TS's two-phase load. The size validator comes first, then the domain or
+        /// length-and-regex validator, as in `Property.process`/`Field.process`.
         pub fn check_bound_validators(&self, class_fqn: &str) -> Result<()> {
-            // P5-48: a property with no validator to rebuild (most) returns
-            // before its fully-qualified name is built; every arm below is
-            // then a no-op.
+            // A property with no validator to rebuild (most) returns before
+            // its fully-qualified name is built; every arm below is then a
+            // no-op.
             if !self.has_bound_validators() {
                 return Ok(());
             }
@@ -536,7 +457,7 @@ impl Property {
                 name: &name,
                 default_value,
             };
-            // A-9 (P5-99): the typed bounds, as the strict read gave them.
+            // The typed bounds, as the strict read gave them.
             let number = |bounds: Option<(Option<f64>, Option<f64>)>, default_value: Option<f64>| {
                 if let Some((lower, upper)) = bounds {
                     validators::NumberValidator::from_bounds(

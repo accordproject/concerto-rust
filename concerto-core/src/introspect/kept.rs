@@ -1,5 +1,5 @@
 //! A JSON node the typed read keeps as given, without a `serde_json::Value`
-//! for its objects (P5-76, accordproject/concerto-rust#418).
+//! for its objects.
 //!
 //! The typed read ([`super::typed_ast`]) keeps a declaration's and a
 //! property's `location` exactly as the AST gives it: for an error's
@@ -277,10 +277,9 @@ const POSITION_CLASS: &str = "concerto.metamodel@1.0.0.Position";
 /// numbers, and a string or `null` `source`). Any other value is a [`Kept`].
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Location {
-    /// The `Range` object, field by field (P5-93: held inline, boxed from
-    /// P5-76: the read now keeps a property's `location` in a list apart
-    /// from the properties, which has an element only when some property
-    /// of the declaration has one, `typed_ast::TypedProperties`).
+    /// The `Range` object, field by field (held inline: the read keeps a property's `location` in a list apart from
+    /// the properties, which has an element only when some property of
+    /// the declaration has one, `typed_ast::TypedProperties`).
     Range(RangeRead),
     /// Any other value.
     Kept(Kept),
@@ -303,7 +302,7 @@ impl ClassRead {
         }
     }
 
-    /// The `$class` read, as the generated struct keeps it (P5-93: the
+    /// The `$class` read, as the generated struct keeps it (the
     /// canonical one interned, without an allocation).
     fn to_class(&self, canonical: &'static str) -> ClassName {
         match self {
@@ -784,7 +783,7 @@ impl<'de> Visitor<'de> for LocationSeed {
 }
 
 // ---------------------------------------------------------------------------
-// A class's `identified`, read field by field (P5-93)
+// A class's `identified`, read field by field
 // ---------------------------------------------------------------------------
 
 /// The metamodel's `Identified` and `IdentifiedBy` `$class`es.
@@ -796,8 +795,8 @@ const IDENTIFIED_BY_CLASS: &str = "concerto.metamodel@1.0.0.IdentifiedBy";
 /// but for the name, or any other value as a [`Kept`].
 pub(crate) enum IdentifiedRead {
     /// `{"$class": "concerto.metamodel@1.0.0.IdentifiedBy", "name": <a
-    /// string>}`, its two keys in either order (P5-93: the name shares
-    /// the text it is read from, `Name::from_source`).
+    /// string>}`, its two keys in either order (the name shares the
+    /// text it is read from, `Name::from_source`).
     By(Name),
     /// `{"$class": "concerto.metamodel@1.0.0.Identified"}`.
     System,
@@ -953,7 +952,7 @@ impl<'de> Visitor<'de> for IdentifiedSeed {
 }
 
 // ---------------------------------------------------------------------------
-// A `decorators` value, decoded by moving its strings out (P5-93)
+// A `decorators` value, decoded by moving its strings out
 // ---------------------------------------------------------------------------
 
 /// The metamodel's `DecoratorString`, `DecoratorNumber` and
@@ -1266,7 +1265,7 @@ impl<'a> Deserializer<'a> for &'a Kept {
 }
 
 // ---------------------------------------------------------------------------
-// A `decorators` value read straight into its decorators (P5-93)
+// A `decorators` value read straight into its decorators
 // ---------------------------------------------------------------------------
 
 /// What a node's `decorators` value gives the read: the generated
@@ -1296,21 +1295,12 @@ impl Decorators {
 /// The metamodel's `Decorator` `$class`.
 const DECORATOR_CLASS: &str = "concerto.metamodel@1.0.0.Decorator";
 
-/// Reads a node's `decorators` value into its [`Decorators`]. An array of
-/// decorator nodes as the reference parser and `JSON.stringify` write them
-/// (each a `$class` string, a `name` string and, if any, an `arguments`
-/// array of `DecoratorString`, `DecoratorNumber` or `DecoratorBoolean`
-/// nodes, each a `$class` and then a `value` of its type, every key in that
-/// order and no other key) is read straight into the generated and the
-/// processed decorators, each string read once. Any other value, from the
-/// first node or key that is not so, is read on as a [`Kept`] (what
-/// [`KeptSeed`] reads from the same text, with what has been read so far
-/// put back as it was given, but that a number is put back as the `f64` it
-/// was read as), and decoded from it ([`Decorators::from_kept`]). Either
-/// way the decorators are those [`Decorators::from_kept`] gives for the
-/// value as [`KeptSeed`] reads it: each decorator read here is a
-/// [`plain_decorator`], and a decorator argument's number is only ever
-/// read as an `f64`.
+/// Reads a node's `decorators` into its [`Decorators`]. The canonical form
+/// the reference parser writes (each node `$class`, `name`, then optional
+/// `arguments` of literal nodes, in that key order) is read straight into
+/// the decorators. Anything else, from the first node or key that departs
+/// from it, is read on as a [`Kept`] and decoded by
+/// [`Decorators::from_kept`], so the result is always that function's.
 #[derive(Clone, Copy)]
 pub(crate) struct DecoratorsSeed;
 

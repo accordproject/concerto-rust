@@ -1,6 +1,5 @@
 //! [`Name`]: the `name` of a metamodel node, which borrows its text from
-//! the JSON text the node was read from, where it can (P5-93,
-//! accordproject/concerto-rust#443).
+//! the JSON text the node was read from, where it can.
 
 use std::borrow::{Borrow, Cow};
 use std::cell::RefCell;
@@ -13,18 +12,11 @@ use std::sync::{Arc, LazyLock};
 use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-/// The `name` of a node of the `concerto.metamodel@1.0.0` namespace (but
-/// an import's): a declaration's, a property's, a decorator's, a type
-/// reference's or an identifier's.
-///
-/// It reads as a `str` ([`Deref`], [`Name::as_str`]) and compares, hashes
-/// and orders as its text does. A name read from JSON text that is being
-/// read inside [`with_source`] shares that text instead of copying it: it
-/// is the text (an `Arc<str>`, which the reader keeps anyway) and where
-/// the name is in it, so reading one allocates nothing, and cloning one
-/// only counts a reference. Any other name holds its own copy. A name
-/// that shares its source text keeps all of that text alive for as long
-/// as the name (or a clone of it) lives.
+/// The `name` of a `concerto.metamodel@1.0.0` node (not an import's). It
+/// reads, compares, hashes and orders as its text. Read inside
+/// [`with_source`], it shares the source text (`Arc<str>`) and its span
+/// instead of copying, keeping all of that text alive while it lives; any
+/// other name holds its own copy.
 #[derive(Clone)]
 pub struct Name {
     /// The text the name is in.

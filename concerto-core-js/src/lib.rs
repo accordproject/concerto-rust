@@ -1,11 +1,10 @@
 //! # concerto-core-js
 //!
-//! The JS object model of `concerto-core` (task P6-01,
-//! accordproject/concerto-rust#83, docs/public-api.md sections 4.4 and 4.6,
-//! step 5): the state of the TS `Resource` objects and of the JS values they
-//! hold, and the TS classes that build and read them (`Serializer`,
-//! `Factory`, `JSONPopulator`, `JSONGenerator`), for the WASM binding
-//! (`concerto-wasm`).
+//! The JS object model of `concerto-core` (docs/public-api.md sections 4.4
+//! and 4.6, step 5): the state of the TS `Resource` objects and of the JS
+//! values they hold, and the TS classes that build and read them
+//! (`Serializer`, `Factory`, `JSONPopulator`, `JSONGenerator`), for the WASM
+//! binding (`concerto-wasm`).
 //!
 //! A native caller does not need any of it: `concerto-core` validates plain
 //! JSON instances itself (`ModelManager::validate_instance`). This crate is

@@ -71,7 +71,7 @@
                           "sizeValidator": { "$class": "concerto.metamodel@1.0.0.CollectionSizeValidator", "minSize": 1, "maxSize": 3 } },
                         { "$class": "concerto.metamodel@1.0.0.IntegerProperty", "name": "rating", "isArray": false, "isOptional": true,
                           "validator": { "$class": "concerto.metamodel@1.0.0.IntegerDomainValidator", "lower": 0, "upper": 5 } },
-                        // Array-of-enum (P5-06: `check_enum`'s own
+                        // Array-of-enum (`check_enum`'s own
                         // `property.is_array()` guard, at the top of the
                         // function, had no test with an *array* enum
                         // property anywhere in this fixture — every
@@ -81,7 +81,7 @@
                           "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Color" } },
                         // A String field with its own (non-scalar)
                         // `validator`, no `length_validator` alongside it
-                        // (P5-06: `check_primitive_item`'s `sp.validator
+                        // (`check_primitive_item`'s `sp.validator
                         // .is_some() || sp.length_validator.is_some()`
                         // guard — every existing `String` field, including
                         // `vin`, carries neither, and the only other
@@ -93,7 +93,7 @@
                         { "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "code", "isArray": false, "isOptional": true,
                           "validator": { "$class": "concerto.metamodel@1.0.0.StringRegexValidator", "pattern": "^[A-Z]+$", "flags": "" } },
                         // No `Double` property existed anywhere in this
-                        // fixture (P5-06: cargo-mutants found
+                        // fixture (cargo-mutants found
                         // `check_primitive_item`'s `Property::Double(dp)`
                         // match arm survived — deleting it falls through to
                         // the trailing `_ => unreachable!()`, which nothing
@@ -141,7 +141,7 @@
                       "key": { "$class": "concerto.metamodel@1.0.0.StringMapKeyType" },
                       "value": { "$class": "concerto.metamodel@1.0.0.RelationshipMapValueType",
                                  "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Vehicle" } } },
-                    // A scalar-typed map KEY (P5-06: `map_key_is_scalar` had
+                    // A scalar-typed map KEY (`map_key_is_scalar` had
                     // no fixture where the map key itself is an
                     // `ObjectMapKeyType` referencing a scalar — every other
                     // map here keys on a plain `StringMapKeyType`, so
@@ -261,8 +261,8 @@
         assert!(err.to_string().contains("org.acme@1.0.0.Leaf"), "{err}");
     }
 
-    /// [`js_id_display`] (P5-06: cargo-mutants found this return value was
-    /// never asserted): `Leaf` above is not identified, so
+    /// [`js_id_display`] (cargo-mutants found this return value was never
+    /// asserted): `Leaf` above is not identified, so
     /// [`an_undeclared_field_is_rejected`] reaches `undeclared_field`
     /// through the *other* branch (`p.current_identifier`), never through
     /// `js_id_display`. `Vehicle` is identified (by `vin`), so an undeclared
@@ -286,27 +286,26 @@
     }
 
     /// [`visit_class_declaration`]'s undeclared-field `resource_id`
-    /// computation (P5-06: cargo-mutants found the `&&`->`||` and
-    /// `!=`->`==` mutants at this line both survived). `key !=
-    /// "$identifier"` is, on its own, always true at this point (an actual
-    /// `"$identifier"` key is filtered out as a system property earlier in
-    /// the same loop, so this branch never reaches it) — the `!=` mutant's
-    /// `==` is thus always false there. Both mutants are made observable by
-    /// giving the `&&`'s *other* operand (`declared_is_identified`) a true
-    /// and a false case with genuinely different `resource_id` outputs:
-    /// `inner` is nested inside an already-identified `Outer` (so
-    /// `p.current_identifier` is `Some("Outer#O1")` by the time it is
-    /// visited) but is itself declared as the *identified* `Inner`, so the
-    /// real `js_id_display`-based id (`"I1"`) differs from the `&&`/`==`
-    /// mutants' `current_identifier` fallback (`"Outer#O1"`); `loose` is
-    /// declared as the *unidentified* `Loose` and visited after `inner`
-    /// (properties are walked in declaration order), so by then the real
-    /// fallback is `p.current_identifier` as `inner` itself left it,
-    /// `"Inner#I1"` (every *identified* object visited overwrites it, `inner`
-    /// included — not only `Outer`) — still a value the `||` mutant's
-    /// wrongly-taken `js_id_display` branch cannot produce (`"undefined"`,
-    /// since an unidentified type has
-    /// no identifier field to read).
+    /// computation (cargo-mutants found the `&&`->`||` and `!=`->`==` mutants
+    /// at this line both survived). `key != "$identifier"` is, on its own,
+    /// always true at this point (an actual `"$identifier"` key is filtered
+    /// out as a system property earlier in the same loop, so this branch
+    /// never reaches it) — the `!=` mutant's `==` is thus always false there.
+    /// Both mutants are made observable by giving the `&&`'s *other* operand
+    /// (`declared_is_identified`) a true and a false case with genuinely
+    /// different `resource_id` outputs: `inner` is nested inside an
+    /// already-identified `Outer` (so `p.current_identifier` is
+    /// `Some("Outer#O1")` by the time it is visited) but is itself declared
+    /// as the *identified* `Inner`, so the real `js_id_display`-based id
+    /// (`"I1"`) differs from the `&&`/`==` mutants' `current_identifier`
+    /// fallback (`"Outer#O1"`); `loose` is declared as the *unidentified*
+    /// `Loose` and visited after `inner` (properties are walked in
+    /// declaration order), so by then the real fallback is
+    /// `p.current_identifier` as `inner` itself left it, `"Inner#I1"` (every
+    /// *identified* object visited overwrites it, `inner` included — not only
+    /// `Outer`) — still a value the `||` mutant's wrongly-taken
+    /// `js_id_display` branch cannot produce (`"undefined"`, since an
+    /// unidentified type has no identifier field to read).
     #[test]
     fn an_undeclared_field_s_reported_resource_id_depends_on_whether_the_declared_type_is_identified()
      {
@@ -591,7 +590,7 @@
         assert!(err.to_string().contains("Expected Type of String"), "{err}");
     }
 
-    /// Task P3-01b: a `Map` key keeps its JS type, so a number key of a
+    /// A `Map` key keeps its JS type, so a number key of a
     /// `String`-keyed map is reported (`found '1234'`).
     #[test]
     fn a_string_map_with_a_number_key_is_rejected() {
@@ -601,7 +600,7 @@
         assert!(err.to_string().contains("but found '1234'"), "{err}");
     }
 
-    /// Task P3-01b: a key spelt like the `undefined` marker is an ordinary
+    /// A key spelt like the `undefined` marker is an ordinary
     /// key, not a JS `undefined`.
     #[test]
     fn a_map_key_spelt_like_the_undefined_marker_is_an_ordinary_key() {
@@ -610,7 +609,7 @@
         validate_map(&mgr, "org.acme@1.0.0.StringMap", &map).unwrap();
     }
 
-    /// Task P3-01b: `obj instanceof Map` — a plain object is not a `Map`.
+    /// `obj instanceof Map` — a plain object is not a `Map`.
     #[test]
     fn a_plain_object_is_not_a_map() {
         let mgr = fixture();
@@ -626,23 +625,23 @@
         );
     }
 
-    /// Task P3-01b: `dayjs.utc(undefined)` is the current time, so an
+    /// `dayjs.utc(undefined)` is the current time, so an
     /// `undefined` value of a `DateTime` map passes.
     #[test]
     fn an_undefined_datetime_map_value_passes() {
         assert!(parses_as_dayjs(&js_undefined()));
     }
 
-    /// P5-24 (BC-43, R1): a number is not a valid `DateTime` map value,
-    /// as it is not a valid `DateTime` field value.
+    /// BC-43: a number is not a valid `DateTime` map value, as it is
+    /// not a valid `DateTime` field value.
     #[test]
     fn a_number_is_not_a_valid_datetime_map_value() {
         assert!(!parses_as_dayjs(&json!(1_700_000_000_000.0)));
     }
 
-    /// [`parses_as_dayjs`]'s `Value::String` arm (P5-06: cargo-mutants found
-    /// that arm's deletion survived): a strict date-time string is a valid
-    /// `DateTime` map value, and (P5-24, BC-43) nothing looser is.
+    /// [`parses_as_dayjs`]'s `Value::String` arm (cargo-mutants found that
+    /// arm's deletion survived): a strict date-time string is a valid
+    /// `DateTime` map value, and (BC-43) nothing looser is.
     #[test]
     fn only_a_strict_string_is_a_valid_datetime_map_value() {
         assert!(parses_as_dayjs(&json!("2024-05-01T00:00:00Z")));
@@ -661,16 +660,16 @@
         }
     }
 
-    /// [`parses_as_dayjs`]'s wildcard arm (P5-06: cargo-mutants found the
-    /// whole function's body replaced with a constant `true` surviving): a
-    /// value that is none of undefined, a number or a string is never a
-    /// valid `DateTime` map value.
+    /// [`parses_as_dayjs`]'s wildcard arm (cargo-mutants found the whole
+    /// function's body replaced with a constant `true` surviving): a value
+    /// that is none of undefined, a number or a string is never a valid
+    /// `DateTime` map value.
     #[test]
     fn a_boolean_is_not_a_valid_datetime_map_value() {
         assert!(!parses_as_dayjs(&json!(true)));
     }
 
-    /// Task P3-01b: a non-finite number is printed with `toString()`.
+    /// A non-finite number is printed with `toString()`.
     #[test]
     fn a_non_finite_number_is_printed_with_to_string() {
         assert_eq!(
@@ -680,8 +679,9 @@
         assert_eq!(js_typeof(&js_special_number("NaN")), "number");
     }
 
-    /// Validation plan (P5-88): every map in the fixture resolves to a
-    /// [`MapPlan`], with each slot of the kind `checkMapType` gives it.
+    /// Validation plan: every map in the fixture resolves to a
+    /// [`MapPlan`], with each slot of the kind `checkMapType` gives
+    /// it.
     #[test]
     fn every_map_in_the_fixture_has_a_map_plan() {
         let mgr = fixture();
@@ -711,8 +711,7 @@
         }
     }
 
-    /// Bug fix (plan §1.2 gap list): a map value whose declared type
-    /// resolves to an enum used to be wrongly rejected.
+    /// A map value whose declared type resolves to an enum is accepted.
     #[test]
     fn a_map_with_a_valid_enum_value_passes() {
         let mgr = fixture();
@@ -728,9 +727,9 @@
         assert!(err.to_string().contains("Invalid enum value"), "{err}");
     }
 
-    /// P5-58 (BC-05, R1; DV-007): a `RelationshipMapValueType` map value is
-    /// checked as a relationship property is (`checkRelationship`): a
-    /// relationship to the declared type, or a subtype, passes.
+    /// BC-05, DV-007: a `RelationshipMapValueType` map value is checked as
+    /// a relationship property is (`checkRelationship`): a relationship to
+    /// the declared type, or a subtype, passes.
     #[test]
     fn a_map_with_a_relationship_typed_value_accepts_a_relationship() {
         let mgr = fixture();
@@ -741,11 +740,10 @@
         validate_map(&mgr, "org.acme@1.0.0.VehicleMap", &map).unwrap();
     }
 
-    /// P5-58 (BC-05, R1; DV-007): an embedded resource in a relationship
-    /// map is rejected by default, as in a relationship property (TS 5.0.0
-    /// required it), and accepted exactly when
-    /// `permitResourcesForRelationships` or `convertResourcesToRelationships`
-    /// allows it for a property.
+    /// BC-05, DV-007: an embedded resource in a relationship map is rejected
+    /// by default, as in a relationship property (TS 5.0.0 required it), and
+    /// accepted exactly when `permitResourcesForRelationships` or
+    /// `convertResourcesToRelationships` allows it for a property.
     #[test]
     fn a_map_with_a_relationship_typed_value_takes_a_nested_resource_only_with_the_options() {
         let mgr = fixture();
@@ -773,8 +771,8 @@
         }
     }
 
-    /// P5-58: a relationship map value of the wrong type, or a string that
-    /// was never populated into a relationship, fails as a relationship
+    /// A relationship map value of the wrong type, or a string that was
+    /// never populated into a relationship, fails as a relationship
     /// property does.
     #[test]
     fn a_map_with_a_relationship_typed_value_rejects_what_a_relationship_property_rejects() {
@@ -794,7 +792,7 @@
         );
     }
 
-    /// Bug fix, accordproject/concerto-rust#194: a map value whose own
+    /// A map value whose own
     /// `$class` does not resolve to a type is a `ValidationException`
     /// ("not a Resource"), not a `TypeNotFoundException` from re-resolving
     /// that `$class`. `JSONPopulator.processMapType`'s `try`/`catch` (the
@@ -820,7 +818,7 @@
         assert!(!message.contains("Missing"), "{message}");
     }
 
-    /// [`map_key_is_scalar`] (P5-06: never reached beyond its own early
+    /// [`map_key_is_scalar`] (never reached beyond its own early
     /// `key_kind() != "ObjectMapKeyType"` return — every other map fixture
     /// keys on a plain `StringMapKeyType`). `ScalarKeyMap` keys *and*
     /// values on `VIN` (a `StringScalar`): a real scalar key makes
@@ -856,7 +854,7 @@
             .expect("checkMapType only consults the key's scalar-ness, so an untyped value passes");
     }
 
-    /// `checkMapType`'s `DateTime` primitive-kind arm (P5-06: cargo-mutants
+    /// `checkMapType`'s `DateTime` primitive-kind arm (cargo-mutants
     /// found its `!parses_as_dayjs(value)` guard survived every mutation —
     /// `parses_as_dayjs` itself was unit-tested directly, but no fixture
     /// had a `DateTimeMapValueType` map to reach this guard through
@@ -879,8 +877,8 @@
         );
     }
 
-    /// `checkMapType`'s `Boolean` primitive-kind arm (P5-06: same gap as
-    /// the `DateTime` arm above — no `BooleanMapValueType` map fixture
+    /// `checkMapType`'s `Boolean` primitive-kind arm (same gap as the
+    /// `DateTime` arm above — no `BooleanMapValueType` map fixture
     /// existed to reach it).
     #[test]
     fn a_boolean_map_with_a_boolean_value_passes() {
@@ -967,12 +965,12 @@
     }
 
     /// [`check_enum`]'s `property.is_array() && !value.is_array()` guard
-    /// (P5-06: cargo-mutants found the `&&`->`||` and `delete !` mutants at
-    /// this line survived): a valid *array* of enum values, which no
-    /// existing test builds (every other enum test uses the non-array
-    /// `color`). Under either mutant, `property.is_array()` (`true`) alone
-    /// already makes the guard true, wrongly reporting a field type
-    /// violation on this well-formed array.
+    /// (cargo-mutants found the `&&`->`||` and `delete !` mutants at this
+    /// line survived): a valid *array* of enum values, which no existing
+    /// test builds (every other enum test uses the non-array `color`).
+    /// Under either mutant, `property.is_array()` (`true`) alone already
+    /// makes the guard true, wrongly reporting a field type violation on
+    /// this well-formed array.
     #[test]
     fn an_array_of_valid_enum_values_passes() {
         let mgr = fixture();
@@ -984,7 +982,7 @@
     }
 
     /// [`check_primitive_item`]'s `sp.validator.is_some() ||
-    /// sp.length_validator.is_some()` guard (P5-06: cargo-mutants found the
+    /// sp.length_validator.is_some()` guard (cargo-mutants found the
     /// `||`->`&&` mutant survived): `code` carries a `validator` but no
     /// `length_validator`, so the real `||` runs `StringValidator` (and
     /// rejects a value its regex does not match) while the `&&` mutant
@@ -1004,8 +1002,8 @@
         assert!(err.to_string().contains("code"), "{err}");
     }
 
-    /// [`check_primitive_item`]'s `Property::Double(dp)` match arm (P5-06:
-    /// cargo-mutants found deleting it survived): no `Double` property
+    /// [`check_primitive_item`]'s `Property::Double(dp)` match arm
+    /// (cargo-mutants found deleting it survived): no `Double` property
     /// existed anywhere in this fixture, so a deleted arm's fallthrough to
     /// `_ => unreachable!()` was never exercised.
     #[test]
@@ -1018,11 +1016,11 @@
         validate_instance(&mgr, &vehicle, &ValidateOptions::default()).unwrap();
     }
 
-    /// [`property_has_default_value`] (P5-06: cargo-mutants found the
-    /// `-> false` mutant survived): every existing "missing required
-    /// property" test omits a property with *no* default value, so the
-    /// `true` branch (skip, rather than report missing) is never actually
-    /// reached. `d` here has both `isOptional: false` and a `defaultValue`.
+    /// [`property_has_default_value`] (cargo-mutants found the `-> false`
+    /// mutant survived): every existing "missing required property" test
+    /// omits a property with *no* default value, so the `true` branch
+    /// (skip, rather than report missing) is never actually reached. `d`
+    /// here has both `isOptional: false` and a `defaultValue`.
     #[test]
     fn a_missing_required_property_with_a_default_value_is_accepted() {
         let mut mgr = ModelManager::new().unwrap();
@@ -1047,8 +1045,8 @@
             .expect("a required property with a default value may be omitted");
     }
 
-    /// [`fully_qualified_identifier`]'s `!id.is_empty()` match guard (P5-06:
-    /// cargo-mutants found the guard-true, guard-false and `delete !`
+    /// [`fully_qualified_identifier`]'s `!id.is_empty()` match guard
+    /// (cargo-mutants found the guard-true, guard-false and `delete !`
     /// mutants all survived): direct unit coverage of the pure function,
     /// distinguishing a present-but-empty id (falls back to the bare fqn,
     /// same as `None`) from a genuinely present one.
@@ -1062,7 +1060,7 @@
         );
     }
 
-    /// [`identifiable_to_string`] (P5-06: cargo-mutants found all three
+    /// [`identifiable_to_string`] (cargo-mutants found all three
     /// `-> None`/`Some(...)` mutants survived) and, incidentally,
     /// [`visit_class_declaration`]'s `!o.contains_key(RELATIONSHIP_TAG)`
     /// filter (the `delete !` mutant there): every existing enum/invalid-
@@ -1187,7 +1185,7 @@
         );
     }
 
-    // ---- BC-06 (R1; DV-008 was a V8 TypeError; fixture d444ebcf0cf5a3c23e5ee6dd) ----
+    // ---- BC-06 (DV-008 was a V8 TypeError; fixture d444ebcf0cf5a3c23e5ee6dd) ----
 
     /// A string that reached a relationship array field is reported by its JS
     /// type (TS 5.0.0 called `obj.getFullyQualifiedType()` on it).
@@ -1272,12 +1270,11 @@
         );
     }
 
-    // ---- Collect-all diagnostics (task P3-03, accordproject/concerto-rust#58) ----
+    // ---- Collect-all diagnostics ----
     //
     // One test per `DiagnosticCode` (the issue's exit condition), plus a test
     // that collect-all really does gather more than one diagnostic in a
-    // single pass, which is the point of the mode. Since P5-99 it is the
-    // one walk, collecting (module doc "Stop or collect").
+    // single pass, which is the point of the mode.
 
     /// The walk over `value`, collecting every violation, as diagnostics.
     fn collect_diagnostics(
@@ -1459,9 +1456,8 @@
         assert_eq!(diag.pointer, "/vehicle");
     }
 
-    /// The plan's `NumberValidator::from_bounds` (P5-06 found the old
-    /// `{lower, upper}` AST builder's body replaced with JSON `null`
-    /// surviving): [`validator_failure_is_diagnosed`] below only ever gives
+    /// The plan's `NumberValidator::from_bounds` (a body replaced with JSON
+    /// `null` must fail): [`validator_failure_is_diagnosed`] below only ever gives
     /// `rating` an out-of-range value, so a construction error from lost
     /// bounds (the constructor's own "no bounds" rejection) reports the same
     /// `ValidatorFailure` diagnostic the real out-of-range check does. An
@@ -1586,10 +1582,10 @@
         assert_eq!(err.code(), "factory-newinstance-missingidentifier");
     }
 
-    /// Review finding (P3-03): collecting must not skip the `sizeValidator`
-    /// check `check_array` runs for the first-error walk — otherwise the two
-    /// modes disagree on whether an over-size array of class-typed elements
-    /// is valid. (Since P5-99 both modes are the one walk.)
+    /// Review finding: collecting must not skip the `sizeValidator` check
+    /// `check_array` runs for the first-error walk — otherwise the two modes
+    /// disagree on whether an over-size array of class-typed elements is
+    /// valid.
     #[test]
     fn collect_all_reports_a_class_typed_array_over_its_max_size() {
         let mgr = fixture();
@@ -1625,8 +1621,8 @@
         );
     }
 
-    /// Review finding (P3-03): the `_as` entry points must check the value's
-    /// own `$class` against the named type, not silently validate whatever
+    /// Review finding: the `_as` entry points must check the value's own
+    /// `$class` against the named type, not silently validate whatever
     /// `value` claims to be (which is what `visit_class_declaration` does on
     /// its own, module doc).
     #[test]
@@ -1646,7 +1642,7 @@
         assert!(err.to_string().contains("not assignable"), "{err}");
     }
 
-    // ---- One walk, stop or collect (P5-99, accordproject/concerto-rust#453) ----
+    // ---- One walk, stop or collect ----
 
     /// The first violation collected is the error the first-error walk
     /// returns (class, code and message), and every collected diagnostic's

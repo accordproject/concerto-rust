@@ -1,27 +1,25 @@
-//! Instance validation with diagnostics (docs/public-api.md section 5.7):
-//! [`ValidationReport`] and the [`ModelManager`] entry points, over
-//! [`ValidationOptions`]. Task P3-03 (accordproject/concerto-rust#58,
-//! accordproject/concerto#1239) built the collect-all walk; P6-01
-//! (accordproject/concerto-rust#83, step 5) gave it its stable names.
+//! Instance validation with diagnostics (docs/public-api.md section 5.7,
+//! accordproject/concerto#1239): [`ValidationReport`] and the
+//! [`ModelManager`] entry points, over [`ValidationOptions`].
 //!
 //! There are two modes, picked by the method called:
 //!
 //! - **First error:** [`ModelManager::validate_instance`] returns
 //!   `Result<()>`, with the error TS `Serializer.fromJSON` (with
 //!   `validate: true`) would throw for the same document.
-//! - **Collect-all (#1239):** [`ModelManager::check_instance`] walks the
-//!   whole instance and returns a [`ValidationReport`] of every
-//!   [`Diagnostic`] found, each with a JSON Pointer (RFC 6901) to the
-//!   offending location, a stable [`DiagnosticCode`] and a [`Severity`].
+//! - **Collect-all:** [`ModelManager::check_instance`] walks the whole
+//!   instance and returns a [`ValidationReport`] of every [`Diagnostic`]
+//!   found, each with a JSON Pointer (RFC 6901) to the offending
+//!   location, a stable [`DiagnosticCode`] and a [`Severity`].
 //!
 //! The input is plain JSON, as `Serializer.toJSON` writes it: a `DateTime` is
 //! its ISO string, and a relationship is its URI. Both modes first read it
-//! the way `Serializer.fromJSON` does (`super::from_json`), with the #1273
-//! options ([`ValidationOptions::reject_unknown_keys`] and
-//! [`ValidationOptions::reject_required_null`]) applied as the document is
-//! read, then run the `ResourceValidator` walk. A document that cannot be
-//! read (a malformed `DateTime`, an unknown `$class`, a #1273 rejection)
-//! fails there: `check_instance` reports that failure as its diagnostics.
+//! as `Serializer.fromJSON` does (`super::from_json`), with the
+//! accordproject/concerto#1273 options
+//! ([`ValidationOptions::reject_unknown_keys`],
+//! [`ValidationOptions::reject_required_null`]) applied as it is read, then
+//! run the `ResourceValidator` walk. A document that cannot be read fails
+//! there, and `check_instance` reports that failure as its diagnostics.
 //! The `_as` forms check against a named type rather than the instance's
 //! own `$class`.
 
@@ -36,12 +34,9 @@ use super::validate;
 
 /// How serious a [`Diagnostic`] is.
 ///
-/// Every check the collect-all walk runs today reports a violation that
-/// makes the instance invalid, so only [`Severity::Error`] is produced so
-/// far; the field exists (rather than every diagnostic being implicitly an
-/// error) because #1239 asks for a `severity` on `Diagnostic` itself, for a
-/// future check that is worth surfacing without failing validation on its
-/// own.
+/// Every check the walk runs reports a violation that makes the instance
+/// invalid, so only [`Severity::Error`] is produced; the field is there for
+/// a check worth surfacing without failing validation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Severity {
@@ -51,10 +46,9 @@ pub enum Severity {
     Warning,
 }
 
-/// What kind of violation a [`Diagnostic`] reports. Each variant is a
-/// distinct, stable code a caller can match on without parsing
-/// [`Diagnostic::message`], the way #1273's [`DetailCode`](crate::error::DetailCode)
-/// already does for the two `DeserializeOptions` rejections.
+/// What kind of violation a [`Diagnostic`] reports: a stable code a caller
+/// can match on without parsing [`Diagnostic::message`], as
+/// [`DetailCode`](crate::error::DetailCode) is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum DiagnosticCode {
@@ -86,7 +80,7 @@ pub enum DiagnosticCode {
 }
 
 impl DiagnosticCode {
-    /// The code's own stable spelling, `SCREAMING_SNAKE_CASE` like #1273's
+    /// The code's stable spelling, `SCREAMING_SNAKE_CASE` like
     /// [`DetailCode::as_str`](crate::error::DetailCode::as_str).
     pub fn as_str(self) -> &'static str {
         match self {
@@ -129,24 +123,20 @@ pub struct Diagnostic {
     /// A human-readable description: the message of the error
     /// [`ModelManager::validate_instance`] raises for the same violation,
     /// from the same message catalogue (TS's wording). The first-error and
-    /// collect-all modes run one walk (P5-99), so a violation reads the
-    /// same in both.
+    /// collect-all modes run one walk, so a violation reads the same in
+    /// both.
     pub message: String,
-    /// What the model expects at [`pointer`](Self::pointer), when it
-    /// expects a type there (accordproject/concerto#1239, #1325): the
-    /// declared type, as the model spells it (`String`, `String[]`,
-    /// `org.acme@1.0.0.Address`, `--> org.acme@1.0.0.Person` for a
-    /// relationship). Read from the model alone, it never quotes the
-    /// instance. Only the JS binding's `validateInstance` (the js-compat
-    /// `diagnose`, task P5-89) fills it in;
-    /// [`ModelManager::check_instance`] leaves it `None`.
+    /// What the model expects at [`pointer`](Self::pointer), when it expects
+    /// a type there: the declared type as the model spells it (`String`,
+    /// `String[]`, `org.acme@1.0.0.Address`, `--> org.acme@1.0.0.Person`),
+    /// never quoting the instance. Only the JS binding's `validateInstance`
+    /// fills it in; [`ModelManager::check_instance`] leaves it `None`.
     pub expected: Option<String>,
 }
 
 impl Diagnostic {
-    /// Builds an [`Error`](Severity::Error)-severity diagnostic. Every check
-    /// the collect-all walk runs today is one, so this is the collector's
-    /// only constructor (module doc on [`Severity`]).
+    /// Builds an [`Error`](Severity::Error)-severity diagnostic, the only
+    /// severity the walk produces.
     pub(crate) fn error(pointer: String, code: DiagnosticCode, message: String) -> Self {
         Self {
             pointer,
@@ -165,7 +155,7 @@ pub struct ValidationReport {
     diagnostics: Vec<Diagnostic>,
 }
 
-/// The name of [`ValidationReport`] before P6-01.
+/// Deprecated name of [`ValidationReport`].
 #[deprecated(since = "0.1.0", note = "renamed to `ValidationReport`")]
 pub type ValidationResult = ValidationReport;
 
@@ -174,11 +164,7 @@ impl ValidationReport {
         Self { diagnostics }
     }
 
-    /// True when no [`Severity::Error`] diagnostic was found. (Every
-    /// diagnostic the collect-all walk raises today is one, so this is
-    /// currently equivalent to `diagnostics().is_empty()`; the distinction
-    /// exists for when a `Warning`-severity check is added, module doc on
-    /// [`Severity`].)
+    /// True when no [`Severity::Error`] diagnostic was found.
     pub fn is_valid(&self) -> bool {
         !self
             .diagnostics
@@ -233,8 +219,9 @@ impl ModelManager {
     /// TS exception class: [`Validation`](crate::ErrorKind::Validation) for
     /// most, [`TypeNotFound`](crate::ErrorKind::TypeNotFound) for an unknown
     /// type, [`InvalidArgument`](crate::ErrorKind::InvalidArgument) for a
-    /// missing `$class` or a bad identifier. A #1273 rejection lists its
-    /// violations in [`Error::details`].
+    /// missing `$class` or a bad identifier. An
+    /// accordproject/concerto#1273 rejection lists its violations in
+    /// [`Error::details`].
     pub fn validate_instance(&self, instance: &Value, options: &ValidationOptions) -> Result<()> {
         from_json::from_json(
             self,
@@ -267,10 +254,9 @@ impl ModelManager {
     }
 
     /// Checks `instance`, a plain JSON document, against the models loaded
-    /// here, and reports every violation found (accordproject/concerto#1239)
-    /// instead of stopping at the first. The type is the instance's own
-    /// `$class`. A document that cannot be read as an instance of its type
-    /// (module doc) is reported by that failure alone.
+    /// here, and reports every violation found instead of stopping at the
+    /// first. The type is the instance's own `$class`. A document that cannot
+    /// be read as an instance of its type is reported by that failure alone.
     pub fn check_instance(
         &self,
         instance: &Value,
@@ -309,8 +295,8 @@ impl ModelManager {
     }
 }
 
-/// What validating a document found: the outcome of one read and one walk
-/// (P5-99).
+/// What validating a document found: the outcome of one read and one
+/// walk.
 enum Found {
     /// The document's own `$class` is not the named type, nor a subtype of
     /// it: the named type's check, which comes first.
@@ -390,11 +376,9 @@ fn named_type_diagnostic(err: &Error, message: &Error) -> Diagnostic {
     Diagnostic::error(String::new(), code, message.to_string())
 }
 
-/// Maps an [`Error`] to the [`DiagnosticCode`] it reports as. A code this
-/// table does not recognise (a JS-engine-shaped error, PORTING.md 2.2 step
-/// 3, or a future check this table has not been updated for) falls back to
-/// [`DiagnosticCode::TypeViolation`], the closest general-purpose code, so a
-/// diagnostic is always produced rather than silently dropped.
+/// Maps an [`Error`] to the [`DiagnosticCode`] it reports as; an error this
+/// table does not know (a JS-engine-shaped one) is
+/// [`DiagnosticCode::TypeViolation`], so a diagnostic is never dropped.
 fn classify_error(err: &Error) -> DiagnosticCode {
     if err.is_pre_port_type_not_found() {
         return DiagnosticCode::TypeNotFound;
@@ -430,19 +414,12 @@ pub struct Diagnosis {
     pub error: Option<Error>,
 }
 
-/// The accordproject/concerto#1239 entry point of the JS binding
-/// (concerto-wasm `validateInstance`): validates `instance`, a plain JSON
-/// document, as `Serializer.fromJSON` does with `options` (and
-/// `validate: true`), as the type `fqn` when one is given (its own `$class`
-/// must then be `fqn` or a subtype of it) and as its own `$class` otherwise.
-///
-/// One read and one walk (P5-99): the walk collects every violation (with
-/// `collect_all`) or the first, each at the JSON Pointer it was found at.
-/// The first violation is the error `Serializer.fromJSON` throws
-/// ([`Diagnosis::error`]), so the instance is valid exactly when
-/// `Serializer.fromJSON` would not throw, and the first diagnostic is the
-/// one for that error ([`diagnostics_of_error`]). Every diagnostic gets its
-/// [`expected`](Diagnostic::expected) type where the model gives one.
+/// The JS binding's `validateInstance`: validates `instance` as
+/// `Serializer.fromJSON` does with `options` and `validate: true`, as `fqn`
+/// (its `$class` must then be `fqn` or a subtype) or its own `$class`. One
+/// walk collects every violation (with `collect_all`) or the first, each at
+/// its JSON Pointer; the first is the error `fromJSON` throws
+/// ([`Diagnosis::error`]).
 #[cfg_attr(not(feature = "js-compat"), allow(dead_code))]
 pub fn diagnose(
     mm: &ModelManager,
@@ -481,12 +458,11 @@ pub fn diagnose(
     }
 }
 
-/// The diagnostics of `err`, an error `Serializer.fromJSON` (or
-/// [`diagnose`]) raised for `instance` with `options`: what the JS binding
-/// attaches to the exception as its `details` (accordproject/concerto#1325).
-/// One per #1273 detail, or one for the error, at the pointer the walk
-/// found it at (when the walk's first violation is the same check), or
-/// where the error itself says, and with its
+/// The diagnostics the JS binding attaches as `details`
+/// (accordproject/concerto#1325) to an error `Serializer.fromJSON` or
+/// [`diagnose`] raised for `instance`: one per
+/// accordproject/concerto#1273 detail, else one for the error, at the
+/// pointer the walk found it at or where the error says, with its
 /// [`expected`](Diagnostic::expected) type.
 #[cfg_attr(not(feature = "js-compat"), allow(dead_code))]
 pub fn diagnostics_of_error(
@@ -510,25 +486,11 @@ pub fn diagnostics_of_error(
     diagnostics
 }
 
-/// [`diagnose`] for a document whose verdict `read` gives: a JS document
-/// that is not plain JSON (an `undefined` field, `-0`, `NaN`, a `Map`, a
-/// dayjs, ...; task P5-89, accordproject/concerto-rust#435), which the JS
-/// binding reads with `Serializer.fromJSON`'s own engine (`read` returns
-/// that read's error, with `validate: true`). `readings` are the same
-/// document in the validator's tagged form (`JsValue::to_validator_value`),
-/// as many ways as JSON can spell it (an `undefined` field left out, or
-/// kept as its tag), the first being the one to locate an error in when
-/// none of them gives that error.
-///
-/// With `fqn`, the document's own `$class` is first checked to be `fqn` or
-/// a subtype of it, as [`diagnose`] checks it; `read` then decides. The
-/// error is always `read`'s (so the same exception class as
-/// `Serializer.fromJSON` throws for the document). The diagnostics are
-/// [`diagnose`]'s over the first reading whose walk raises that same error
-/// (kind, catalogue code, parameters and #1273 details), so the codes,
-/// paths, `expected` types and collect-all report are kept; otherwise they
-/// are the error's own ([`diagnostics_of_error`]). Either way the first
-/// diagnostic is the one for the error.
+/// [`diagnose`] for a document that is not plain JSON (`undefined`, `-0`,
+/// `NaN`, a `Map`, a dayjs), whose verdict `read` gives (the JS binding's
+/// `Serializer.fromJSON`), so the error is always `read`'s. `readings` are
+/// the document's tagged forms; the diagnostics are [`diagnose`]'s over the
+/// first reading whose walk raises the same error, else the error's own.
 ///
 /// # Panics
 ///
@@ -574,8 +536,8 @@ pub fn diagnose_read(
     }
 }
 
-/// Whether two errors are the same error: kind (so the same TS exception
-/// class), catalogue code, parameters and #1273 details.
+/// Whether two errors are the same error: kind (the TS exception class),
+/// catalogue code, parameters and details.
 fn same_error(a: &Error, b: &Error) -> bool {
     same_check(a, b) && a.params() == b.params() && a.details() == b.details()
 }
@@ -586,14 +548,13 @@ fn same_check(a: &Error, b: &Error) -> bool {
 }
 
 /// The diagnostics of `err`, an error that stopped the read of `instance`
-/// (or one no walk of it raises), located by what the error names: one per
-/// #1273 detail, at its path; or one at the populator path the error names;
-/// or at the object (or the keys) it is about ([`locate`]); or else at the
-/// root.
+/// (or one no walk raises), located by what the error names: one per
+/// detail at its path; or at the populator path it names; or at the object
+/// or keys it is about ([`locate`]); or else at the root.
 fn located(err: &Error, instance: &Value) -> Vec<Diagnostic> {
     let mut diagnostics = report_of_error(err).into_diagnostics();
     if !err.details().is_empty() {
-        // One diagnostic per #1273 detail, in order (`report_of_error`).
+        // One diagnostic per detail, in order (`report_of_error`).
         for (diagnostic, detail) in diagnostics.iter_mut().zip(err.details()) {
             diagnostic.expected.clone_from(&detail.expected);
         }
@@ -826,8 +787,8 @@ fn spell_type(
     })
 }
 
-/// The diagnostics of a document that could not be read as an instance: one
-/// per #1273 detail, or one for the error.
+/// The diagnostics of a document that could not be read as an instance:
+/// one per detail, or one for the error.
 fn report_of_error(err: &Error) -> ValidationReport {
     if !err.details().is_empty() {
         return ValidationReport::new(
@@ -961,7 +922,7 @@ mod tests {
         assert_eq!(report.into_iter().next().unwrap().pointer, "/name");
     }
 
-    // ---- `diagnose` (task P5-89, accordproject/concerto#1239) ----
+    // ---- `diagnose` ----
 
     use crate::ErrorKind;
     use serde_json::json;
@@ -1348,9 +1309,9 @@ mod tests {
         );
     }
 
-    /// P5-99: one walk, so every collect-all diagnostic carries the message
-    /// of the error the first-error walk would raise for it (the
-    /// catalogue's TS wording), at the pointer it was found at.
+    /// One walk, so every collect-all diagnostic carries the message of the
+    /// error the first-error walk would raise for it (the catalogue's TS
+    /// wording), at the pointer it was found at.
     #[test]
     fn diagnose_collects_with_the_catalogue_s_messages() {
         let mm = manager();

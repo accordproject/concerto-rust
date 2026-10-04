@@ -1,6 +1,6 @@
 //! A port of node-semver 7.6.3's range grammar and `satisfies`, for
 //! [`crate::introspect::model_file::ModelFile`]'s `concertoVersion` check
-//! (`isCompatibleVersion` in `modelfile.js`; P2-08 review). TS calls
+//! (`isCompatibleVersion` in `modelfile.js`). TS calls
 //! `semver.satisfies(packageJson.version, this.ast.concertoVersion,
 //! {includePrerelease: true})`, then, on failure,
 //! `semver.minSatisfying(['3.0.0'], this.ast.concertoVersion)` (no options)
@@ -71,7 +71,7 @@ struct Partial {
 
 /// node-semver's partial-version grammar (`XRANGEPLAIN`/`TILDE`/`CARET`
 /// tokens all share this shape): an optional leading `v`, then
-/// major[.minor[.patch[-prerelease][+build]]], any of the three numeric
+/// `major[.minor[.patch[-prerelease][+build]]]`, any of the three numeric
 /// components standing in for `x`/`X`/`*`.
 const PARTIAL_VERSION_PATTERN: &str = r"^v?(0|[1-9]\d*|[xX]|\*)(?:\.(0|[1-9]\d*|[xX]|\*)(?:\.(0|[1-9]\d*|[xX]|\*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][a-zA-Z0-9-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][a-zA-Z0-9-]*))*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?)?)?$";
 

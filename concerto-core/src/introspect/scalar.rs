@@ -36,8 +36,8 @@ pub enum ScalarValidator {
     /// Double scalars.
     Number(NumberValidator),
     /// `new StringValidator(this, this.ast.validator, this.ast.lengthValidator)`,
-    /// for String scalars: the validator as `ScalarDeclaration::process`
-    /// builds (and so checks) it (P2-09c/F5, A-10).
+    /// for String scalars: the validator as `ScalarDeclaration::process` builds
+    /// (and so checks) it.
     String(StringValidator),
 }
 
@@ -127,13 +127,9 @@ pub struct ScalarDeclaration {
 }
 
 impl ScalarDeclaration {
-    /// Computes the scalar's type, validator and default value from its AST,
-    /// in the TS order: the primitive-name check, the type, the validator
-    /// (whose constructor may fail), then the default value.
-    ///
-    /// `model_file_name` is `modelFile.getName()` of the file TS passes to the
-    /// exception; `fully_qualified_name` is `this.getFullyQualifiedName()`,
-    /// called only if the validator reports an error.
+    /// The scalar's type, validator and default value from its AST, in TS
+    /// order: primitive-name check, type, validator, default value.
+    /// `fully_qualified_name` is called only if the validator reports an error.
     ///
     /// TS: ScalarDeclaration.process (src/introspect/scalardeclaration.ts)
     #[cfg(feature = "js-compat")]
@@ -157,8 +153,8 @@ impl ScalarDeclaration {
             return Err(err.into());
         }
 
-        // P5-93: the `$class` taken apart, where each candidate's own
-        // `$class` used to be formatted to compare it with.
+        // The `$class` taken apart once, rather than formatting each
+        // candidate's `$class` to compare it with.
         let primitive_of_class = ast.get("$class").and_then(Value::as_str).and_then(|class| {
             class
                 .strip_prefix(METAMODEL_NAMESPACE)?
@@ -184,26 +180,24 @@ impl ScalarDeclaration {
             }
             Some("String") if truthy("validator") || truthy("lengthValidator") => {
                 // TS: `this.validator = new StringValidator(this, this.ast.validator,
-                // this.ast.lengthValidator)` — built eagerly here, exactly like the
-                // `NumberValidator` arm above (F5: this used to be deferred to a
-                // loader-only, ad hoc `check_pattern`/`check_length` pass — see
-                // `HasValidators::check_validators` below — that neither this
-                // scalar's own `defaultValue` (TS validates it right here, in the
-                // constructor) nor `build_standalone`'s callers ever ran).
+                // this.ast.lengthValidator)`, built eagerly like the
+                // `NumberValidator` arm above, so this scalar's own
+                // `defaultValue` is checked here, as TS checks it in the
+                // constructor.
                 let element = ScalarElement {
                     ast,
                     fully_qualified_name,
                 };
-                // On the model-file load path, `declaration::load_scalar`
-                // has already read this node strictly (P5-61, BR-09), so
+                // On the model-file load path, `declaration::load_scalar` has
+                // already read this node strictly (BR-09), so
                 // `validator`/`lengthValidator` are well-formed here and a
                 // wrongly-typed one never reaches this point.
                 // `validators::regex_validator_from_ast`/`length_validator_from_ast`
-                // read the raw AST untyped, as TS's `StringValidator`
-                // constructor does, only because `process` also runs on
-                // ASTs that bypass the loader: `build_standalone` (a
-                // `new ScalarDeclaration(modelFile, ast)` never added to
-                // its file) and concerto-wasm's standalone bindings.
+                // read the raw AST untyped, as TS's `StringValidator` constructor
+                // does, only because `process` also runs on ASTs that bypass the
+                // loader: `build_standalone` (a `new ScalarDeclaration(modelFile,
+                // ast)` never added to its file) and concerto-wasm's standalone
+                // bindings.
                 let validator = validators::regex_validator_from_ast(ast.get("validator"));
                 let length_validator =
                     validators::length_validator_from_ast(ast.get("lengthValidator"));
@@ -230,16 +224,11 @@ impl ScalarDeclaration {
         })
     }
 
-    /// [`ScalarDeclaration::process`] on the model-file load path (A-10,
-    /// accordproject/concerto-rust#458): over the strictly read typed
-    /// `node`, with `kept` (the node as the typed read keeps it) only for
-    /// what TS reads off the raw AST: its `location`, the element's
-    /// `defaultValue` and the raw `lengthValidator` bounds TS compares. The
-    /// checks, their order and their errors are `process`'s; the validators
-    /// are built from the typed nodes, as a property's are, instead of
-    /// re-reading the raw AST untyped, and the result holds them as built. `process` stays for an AST that never
-    /// went through the loader (`build_standalone`, the WASM standalone
-    /// bindings).
+    /// [`ScalarDeclaration::process`] on the model-file load path, over the
+    /// typed `node`, with `kept` only for what TS reads off the raw AST
+    /// (`location`, `defaultValue`, raw `lengthValidator` bounds). Checks,
+    /// order and errors are `process`'s; the validators are built from the
+    /// typed nodes.
     pub(crate) fn process_loaded(
         node: &mm::ScalarDeclaration,
         kept: &Kept,
@@ -330,23 +319,11 @@ impl ScalarDeclaration {
         &self.decorators
     }
 
-    /// Validates a scalar declaration's AST the way TS
-    /// `new ScalarDeclaration(modelFile, ast)` does, and returns its fully
-    /// qualified name (`Declaration`'s constructor: `super(ast); this.modelFile
-    /// = modelFile; this.process();`, where `super(ast)` only stores the AST
-    /// and reads `ast.name`).
-    ///
-    /// This does not build a [`ScalarDeclaration`]: unlike the loader
-    /// (`introspect::declaration`), which only ever sees an AST the metamodel
-    /// crate's generated `mm::ScalarDeclaration` accepts, this runs over
-    /// whatever AST the caller has, including one with no `$class` a real
-    /// scalar carries (PORTING.md 1.2, OD-3: "a member that TS runs over any
-    /// JS object reads the AST as `serde_json::Value`", exactly like
-    /// [`ScalarDeclaration::process`]) — the oracle harness replays
-    /// `ScalarDeclaration.new` fixtures recorded from a `ModelFile` built
-    /// directly, before `ModelManager.addModelFiles` runs, and several unit
-    /// tests build the AST by hand (PORTING.md 6.2: "a recipe the pre-port
-    /// loader cannot replay is the unit's problem").
+    /// Validates a scalar declaration's AST as TS `new
+    /// ScalarDeclaration(modelFile, ast)` does, and returns its fully qualified
+    /// name. Unlike the loader, it reads any AST as `serde_json::Value`
+    /// (PORTING.md 1.2), for the oracle's `ScalarDeclaration.new` fixtures and
+    /// hand-built test ASTs.
     #[cfg(feature = "js-compat")]
     pub fn validate_new(
         namespace: &str,
@@ -356,13 +333,10 @@ impl ScalarDeclaration {
         Self::build_standalone(namespace, file_name, ast).map(|(fqn, _)| fqn)
     }
 
-    /// The same construction as [`ScalarDeclaration::validate_new`], but
-    /// returning what [`ScalarDeclaration::process`] computed as well as the
-    /// fully qualified name, for callers that need `getType`, `getValidator`
-    /// or `getDefaultValue` on a scalar built this way (the oracle harness's
-    /// `declnew` fixtures: a later call on a `new ScalarDeclaration(modelFile,
-    /// ast)` receiver never added to its model file, so it re-encodes the
-    /// same recipe rather than a `declref`).
+    /// [`ScalarDeclaration::validate_new`], also returning what
+    /// [`ScalarDeclaration::process`] computed, for `getType`, `getValidator` or
+    /// `getDefaultValue` on a scalar never added to its model file (the
+    /// oracle's `declnew` fixtures).
     #[cfg(feature = "js-compat")]
     pub fn build_standalone(
         namespace: &str,
@@ -373,9 +347,8 @@ impl ScalarDeclaration {
             namespace,
             ast.get("name").and_then(Value::as_str).unwrap_or_default(),
         );
-        // F5: `process` itself now builds (and so validates) the scalar's
-        // `StringValidator` eagerly, exactly as it already did for
-        // `NumberValidator`, so there is nothing left to check here.
+        // `process` builds (and so validates) the scalar's `StringValidator`
+        // and `NumberValidator` eagerly, so there is nothing left to check.
         let processed = Self::process::<crate::error::Error>(ast, file_name, &|| Ok(fqn.clone()))?;
         Ok((fqn, processed))
     }
@@ -530,12 +503,10 @@ impl Typed for ScalarDeclaration {
 }
 
 impl HasValidators for ScalarDeclaration {
-    /// F5: both a Number and a String scalar's validator are now built (and
-    /// so checked) eagerly by `ScalarDeclaration::process`, exactly as TS's
-    /// own constructor does — this no longer has anything left to check on
-    /// top of that. Kept as a documented no-op rather than removed, since it
-    /// is still called from the loader (`introspect::declaration`) and is
-    /// part of this crate's public API.
+    /// A no-op: both a Number and a String scalar's validator are built (and
+    /// so checked) eagerly by `ScalarDeclaration::process`, as TS's
+    /// constructor does. Kept because the loader (`introspect::declaration`)
+    /// calls it and it is public API.
     fn check_validators(&self) -> crate::error::Result<()> {
         Ok(())
     }
@@ -543,11 +514,9 @@ impl HasValidators for ScalarDeclaration {
 
 /// Ported TS tests (PORTING.md 6.1). `scalardeclaration.js` is this unit's
 /// own test file; `#accept`, `#getName`, `#getNamespace` and every constant
-/// marker (`#isIdentified`, `#isAsset`, …) belong to `Declaration` (ledger:
-/// TS, `not ported (Declaration)`) and are not ported here. `scalars.js`
-/// (the other TS file this task's issue names) tests only
-/// `Field.getScalarField`/`isTypeScalar` (ledger: `Field`, P2-04):
-/// `not ported (Field)`, nothing in that file is this unit's own member.
+/// marker (`#isIdentified`, `#isAsset`, …) belong to `Declaration` and are
+/// tested there. `scalars.js` tests only `Field.getScalarField` and
+/// `isTypeScalar`, which belong to `Field`.
 #[cfg(test)]
 #[allow(clippy::result_large_err)]
 // ContractError is fine as a by-value test Err; production code always boxes it in an `Error`.

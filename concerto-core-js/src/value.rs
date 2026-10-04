@@ -24,17 +24,11 @@ use concerto_core::hash::SeededState;
 use indexmap::IndexMap;
 use serde_json::Value;
 
-/// The key-ordered map behind a plain object ([`JsValue::Object`]), an
-/// instance's own properties ([`Instance::props`]) and the serializer
-/// options (`SerializerOptions`): an `IndexMap`, so iteration is in
-/// insertion order (`Object.keys` order).
-///
-/// Its keys come from user-supplied JSON instances, so it hashes with
-/// SipHash under secret keys ([`SeededState`]), not FxHash: with an unseeded
-/// or publicly keyed hash an attacker can send an object whose keys all
-/// collide, making building, validating or serializing it quadratic (P5-110,
-/// accordproject/concerto-rust#477, tests/hashdos.rs; PORTING.md 3.7).
-/// FxHash stays for the engine's internal tables keyed by identifiers.
+/// The key-ordered map behind a plain object, an instance's own properties
+/// and the serializer options: insertion (`Object.keys`) order. Its keys
+/// come from user JSON, so it hashes with secret-keyed SipHash
+/// ([`SeededState`]) against key-collision DoS (tests/hashdos.rs;
+/// PORTING.md 3.7).
 pub type JsObject = IndexMap<String, JsValue, SeededState>;
 
 use concerto_core::error::Result;
@@ -73,7 +67,7 @@ pub enum JsValue {
     /// A JS `BigInt`, as its decimal digit string (`toString()`'s
     /// spelling). Not produced by `JSONPopulator` (JSON has no bigint
     /// literal); it reaches an instance only by direct field assignment,
-    /// as `Resource.setPropertyValue` allows (task P2-11b-U6).
+    /// as `Resource.setPropertyValue` allows.
     BigInt(String),
 }
 
@@ -157,8 +151,8 @@ impl Instance {
         let mut instance = Self {
             kind,
             class_fqn: class_fqn.into(),
-            // The system properties below, then a few fields (P5-13: sized
-            // up front rather than grown).
+            // The system properties below, then a few fields (sized up
+            // front rather than grown).
             props: JsObject::with_capacity_and_hasher(8, Default::default()),
             validator_options: ValidateOptions::default(),
         };
@@ -200,8 +194,8 @@ impl Instance {
     /// place.
     pub fn set(&mut self, key: &str, value: JsValue) {
         // `IndexMap::insert` keeps an existing key where it is and replaces
-        // its value, so one hashed insert does both cases (P5-16: the
-        // lookup first hashed every new key twice).
+        // its value, so one hashed insert does both cases (the lookup first
+        // hashed every new key twice).
         self.props.insert(key.to_string(), value);
     }
 
@@ -245,8 +239,8 @@ impl Instance {
     pub fn fully_qualified_identifier(&self) -> String {
         let id = self.get_identifier();
         if let JsValue::String(id) = id {
-            // The usual case, built without the formatting machinery
-            // (P5-16): a non-empty string is truthy and is its own
+            // The usual case, built without the formatting
+            // machinery: a non-empty string is truthy and is its own
             // `ToString`.
             if id.is_empty() {
                 return self.class_fqn.clone();
@@ -401,7 +395,7 @@ impl JsValue {
     }
 
     /// This value in the shape [`concerto_core::instance::validate::validate_instance`] reads
-    /// (its module doc, "Scope"): a dayjs as a [`DAYJS_TAG`](concerto_core::instance::validate::DAYJS_TAG)-tagged object,
+    /// (its module doc, "Scope"): a dayjs as a [`DAYJS_TAG`]-tagged object,
     /// `undefined` as [`js_undefined`], a `Map` as the list of its
     /// entries ([`js_map`]), an instance through
     /// [`Instance::to_validator_value`], and a non-finite number as
@@ -435,8 +429,7 @@ impl JsValue {
 }
 
 // ---------------------------------------------------------------------
-// The validator's view of a JS value (P5-102, accordproject/concerto-rust#456,
-// C-6)
+// The validator's view of a JS value
 // ---------------------------------------------------------------------
 
 /// `true`, for a relationship's [`RELATIONSHIP_TAG`] property.
@@ -626,7 +619,7 @@ impl ValidatorInput for JsValue {
 
     fn map_entries(&self) -> Option<impl Iterator<Item = (&JsValue, &JsValue)>> {
         // A JS `Map`'s own entries, or a `MAP_TAG` object's pairs: one
-        // iterator over whichever the value is (B-15: no `Vec` per map).
+        // iterator over whichever the value is (no `Vec` per map).
         let (own, tagged) = match self {
             Self::Map(entries) => (Some(entries.iter().map(|(k, v)| (k, v))), None),
             Self::Object(map) => {
@@ -697,7 +690,7 @@ mod validator_input_tests {
         })
     }
 
-    /// P5-102 (C-6): a JS value reads exactly as its plain-JSON shape
+    /// A JS value reads exactly as its plain-JSON shape
     /// ([`JsValue::to_validator_value`]) does, the tagged one-key objects
     /// a plain object may spell included.
     #[test]

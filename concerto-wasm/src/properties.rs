@@ -1,11 +1,10 @@
-//! The `Property`, `Field` and `RelationshipDeclaration` bindings, and the view snapshots (P4-07).
-//!
-//! Split out of `lib.rs` (P5-104, review M7); the crate root glob-imports it.
+//! The `Property`, `Field` and `RelationshipDeclaration` bindings, and the
+//! view snapshots.
 
 use super::*;
 
 // ---------------------------------------------------------------------------
-// Property (src/introspect/property.ts) — P4-07
+// Property (src/introspect/property.ts)
 // ---------------------------------------------------------------------------
 
 /// The snapshot [`property_process`] returns for a processed property.
@@ -55,7 +54,7 @@ pub(crate) struct LightProperty {
     validator: Option<Value>,
     length_validator: Option<Value>,
     default_value: Option<Value>,
-    // P5-10b: read by `model_file_view_snapshot` only, never part of
+    // Read by `model_file_view_snapshot` only, never part of
     // `into_value`.
     decorators: Option<Value>,
     size_validator: Option<Value>,
@@ -125,48 +124,36 @@ pub(crate) fn write_property_entry(out: &mut String, ast: &Value) -> Option<()> 
     Some(())
 }
 
-/// P5-10a: the view snapshot of a whole model file, computed in one call
-/// from its JSON AST text (`JSON.stringify(ast)`), so that building a
-/// `ModelFile`'s declaration and property views crosses the boundary once
-/// for the file. It extends [`model_file_property_snapshots`] with each
-/// declaration's own construction-time decisions: `Declaration.process`'s
-/// `isValidIdentifier`/`getFullyQualifiedName` calls and
-/// `ClassDeclaration.process`'s [`class_declaration_process`] decision.
-/// `namespace` is the file's `ModelFile.getNamespace()` (the AST's own
-/// `namespace`).
+/// The view snapshot of a whole model file, from its JSON AST text, so that
+/// building a `ModelFile`'s declaration and property views crosses once per
+/// file: [`model_file_property_snapshots`] plus each declaration's own
+/// construction decisions (`Declaration.process`'s
+/// `isValidIdentifier`/`getFullyQualifiedName`, and
+/// [`class_declaration_process`]'s). `namespace` is the file's namespace.
 ///
-/// Returns JSON text: an array aligned with `ast.declarations`, holding for
-/// each declaration `{"d": d, "p": p}`:
-/// - `d` is `{"name", "fqn", "cd", "defaulted"}` for a declaration whose
-///   `name` is a string and a valid identifier, when `namespace` is
-///   non-empty; otherwise `null`. `fqn` is what
-///   `modelUtilGetFullyQualifiedName(namespace, name)` returns. `cd` is the
-///   `classDeclarationProcess` snapshot, or `null` where this light reading
-///   cannot decide it exactly as the binding would (a `superType` or
-///   `identified` node that is not a plain object with a string `name`, or
-///   a super-type-less `Concept`, whose decision depends on
-///   `ModelFile.isSystemModelFile()`). `defaulted` is true when `cd` was
-///   computed with the default super type `ModelFile.fromAst` gives an
-///   asset, participant, transaction or event declaration that names none
-///   (the view is then built from a copy of the declaration's AST node).
-/// - `p` is the declaration's [`model_file_property_snapshots`] entry array,
-///   or `null`.
+/// Returns JSON text, an array aligned with `ast.declarations`, of
+/// `{"d": d, "p": p}`:
+/// - `d` is `{"name", "fqn", "cd", "defaulted"}` for a declaration with a
+///   valid string `name` and a non-empty `namespace`, else `null`. `cd` is
+///   the `classDeclarationProcess` snapshot, or `null` where it cannot be
+///   decided here exactly (a `superType` or `identified` that is not a plain
+///   object with a string `name`, or a super-type-less `Concept`, which
+///   depends on `isSystemModelFile()`). `defaulted` marks `cd` computed with
+///   the default super type `fromAst` gives an asset, participant,
+///   transaction or event that names none.
+/// - `p` is the [`model_file_property_snapshots`] entry array, or `null`.
 ///
-/// Never throws: whatever the view would raise an error for gets `null`
-/// here, and the view then calls the per-element binding exactly as before,
-/// so every error comes from the same call as without the snapshot.
-/// `undefined` comes back for text this light reading cannot read at all.
-/// Additive.
+/// Never throws: whatever would raise an error gets `null`, and the view
+/// calls the per-element binding, so every error comes from the same call.
+/// `undefined` for text this reading cannot read.
 #[wasm_bindgen(js_name = modelFileViewSnapshot)]
 pub fn model_file_view_snapshot(ast: &str, namespace: Option<String>) -> Option<String> {
     let model: ViewModel = serde_json::from_str(ast).ok()?;
     view_snapshot(model, namespace, ast.len() / 3)
 }
 
-/// P5-100 (E-6, accordproject/concerto-rust#454): [`model_file_view_snapshot`]
-/// of an AST the engine already holds (a loaded or staged model file's), read
-/// in place rather than from text the view would send and the engine parse
-/// again.
+/// [`model_file_view_snapshot`] of an AST the engine already holds, read in
+/// place.
 pub(crate) fn model_file_view_snapshot_of(
     ast: &Value,
     namespace: Option<String>,
@@ -195,7 +182,7 @@ pub(crate) fn view_snapshot(
             Some(entry) => out.push_str(&entry.to_string()),
             None => out.push_str("null"),
         }
-        // P5-10b: the declaration's own decorators, and its scalar or map
+        // The declaration's own decorators, and its scalar or map
         // decisions, each only when it has one.
         write_optional(
             &mut out,
@@ -234,17 +221,12 @@ pub(crate) fn write_optional(out: &mut String, key: &str, value: Option<Value>) 
     }
 }
 
-/// P5-10b: one property's entry of [`model_file_view_snapshot`]: the
-/// [`write_property_entry`] `{p, f}` entry (or `null`), extended with the
-/// property's lazily built parts, each only when it can be decided here
-/// exactly as its per-element binding decides it:
-/// - `dec`: its decorators ([`decorators_view_snapshot`]);
-/// - `sz`: its `collectionSizeValidatorNew` snapshot `{minSize, maxSize}`,
-///   for a truthy `sizeValidator` whose constructor succeeds;
-/// - `sv`: its `stringValidatorNew` snapshot `{minLength, maxLength}`, for a
-///   field whose `f` entry has a `StringValidator` whose constructor
-///   succeeds (the view only uses it when no custom `options.regExp` is
-///   configured, as the binding is only called then).
+/// One property's entry of [`model_file_view_snapshot`]: the
+/// [`write_property_entry`] `{p, f}` entry (or `null`), with the property's
+/// lazily built parts where they can be decided exactly as their bindings
+/// decide them: `dec`, its decorators ([`decorators_view_snapshot`]); `sz`,
+/// its `collectionSizeValidatorNew` snapshot `{minSize, maxSize}`; `sv`, its
+/// `stringValidatorNew` snapshot `{minLength, maxLength}`.
 pub(crate) fn write_view_property_entry(
     out: &mut String,
     mut property: LightProperty,
@@ -282,10 +264,9 @@ pub(crate) fn write_view_property_entry(
 }
 
 /// The element a validator built from JSON is attached to, for
-/// [`model_file_view_snapshot`]: its `getName()` and `ast.defaultValue`. It
-/// has no fully qualified name, so any error a constructor would report
-/// fails, and the entry is left out (the view then calls the binding,
-/// which raises it).
+/// [`model_file_view_snapshot`]: its `getName()` and `ast.defaultValue`.
+/// With no fully qualified name, any error a constructor would report fails
+/// and the entry is left out.
 pub(crate) struct JsonElement<'a> {
     name: &'a str,
     default_value: Option<&'a Value>,
@@ -310,12 +291,9 @@ impl ValidatedElement for JsonElement<'_> {
 }
 
 /// `collectionSizeValidatorNew`'s snapshot for a property's truthy
-/// `sizeValidator` (TS: `this.ast.sizeValidator ? new
-/// CollectionSizeValidator(this, this.ast.sizeValidator) : null`), or `None`
-/// when there is none or its constructor would throw. The bounds are
-/// compared as numbers: the file loaded, and BC-19's shape check rejects a
-/// bound that is not one (P5-61; the binding keeps the raw comparison for a
-/// validator built outside a model load).
+/// `sizeValidator`, or `None` when there is none or its constructor would
+/// throw. The bounds are compared as numbers: BC-19's shape check rejects a
+/// bound that is not one.
 pub(crate) fn size_validator_view_snapshot(name: &str, ast: Option<&Value>) -> Option<Value> {
     let ast = ast.filter(|v| json_truthy(Some(v)))?;
     let typed =
@@ -350,13 +328,10 @@ pub(crate) fn string_validator_view_snapshot(name: &str, ast: &Value) -> Option<
     Some(json!({ "minLength": built.min_length(), "maxLength": built.max_length() }))
 }
 
-/// P5-10b: the `decoratorProcess` results for an AST `decorators` value, as
-/// `[{"n": name, "a": arguments}]` (`n` left out for a node with no `name`,
-/// a type reference argument's `array` left out when its `isArray` is), or
-/// `None` when there is nothing to build (no decorators) or it cannot be
-/// decided here exactly as the binding decides it: a `decorators` that is
-/// not an array, a node that is not an object or whose `name` is present
-/// but not a string, or a number argument JSON cannot carry.
+/// The `decoratorProcess` results for an AST `decorators` value, as `[{"n":
+/// name, "a": arguments}]`, or `None` when there are none or they cannot be
+/// decided exactly here (not an array, a node that is not an object or has a
+/// non-string `name`, a number JSON cannot carry).
 pub(crate) fn decorators_view_snapshot(decorators: Option<&Value>) -> Option<Value> {
     let Some(Value::Array(nodes)) = decorators else {
         return None;
@@ -408,10 +383,10 @@ pub(crate) const SCALAR_CLASSES: [&str; 6] = [
     "concerto.metamodel@1.0.0.DateTimeScalar",
 ];
 
-/// P5-10b: a scalar declaration's `scalarDeclarationProcess` snapshot
-/// `{type, validator, defaultValue}`, where a `StringValidator` also carries
-/// its `stringValidatorNew` snapshot (`minLength`, `maxLength`), or `None`
-/// when the declaration is not a scalar or processing it would throw.
+/// A scalar declaration's `scalarDeclarationProcess` snapshot `{type,
+/// validator, defaultValue}`, where a `StringValidator` also carries its
+/// `stringValidatorNew` snapshot (`minLength`, `maxLength`), or `None` when
+/// the declaration is not a scalar or processing it would throw.
 pub(crate) fn scalar_view_snapshot(declaration: &ViewDeclaration) -> Option<Value> {
     let class = declaration.class.as_ref().and_then(Value::as_str)?;
     if !SCALAR_CLASSES.contains(&class) {
@@ -461,8 +436,8 @@ pub(crate) fn scalar_view_snapshot(declaration: &ViewDeclaration) -> Option<Valu
     }))
 }
 
-/// P5-10b: a map declaration's `mapDeclarationProcess` decision, with its
-/// key and value types' `mapKeyTypeProcess`/`mapValueTypeProcess` types and
+/// A map declaration's `mapDeclarationProcess` decision, with its key and
+/// value types' `mapKeyTypeProcess`/`mapValueTypeProcess` types and
 /// decorators, as `{"k": {"t", "dec"?}, "v": {"t", "dec"?}}`, or `None` when
 /// the declaration is not a map or any of those would throw (or cannot be
 /// decided here exactly as the bindings decide it).
@@ -549,8 +524,8 @@ pub(crate) struct ViewDeclaration {
     super_type: Option<Value>,
     identified: Option<Value>,
     properties: Option<Vec<LightProperty>>,
-    // P5-10b: the declaration's decorators, a scalar's validators and
-    // default value, and a map's key and value types.
+    // The declaration's decorators, a scalar's validators and default
+    // value, and a map's key and value types.
     decorators: Option<Value>,
     validator: Option<Value>,
     length_validator: Option<Value>,
@@ -590,10 +565,8 @@ pub(crate) fn declaration_view_entry(
     declaration: &ViewDeclaration,
     namespace: &str,
 ) -> Option<Value> {
-    // `Declaration.process`: `isValidIdentifier(this.ast.name)` (an invalid
-    // name throws there, so it gets no entry), then `this.fqn`, from a
-    // truthy namespace (a falsy one returns the name itself: left to the
-    // binding).
+    // `Declaration.process`: `isValidIdentifier(this.ast.name)`, then
+    // `this.fqn` from a truthy namespace.
     let Some(Value::String(name)) = &declaration.name else {
         return None;
     };
@@ -690,13 +663,9 @@ pub(crate) fn class_declaration_view_decision(
 }
 
 /// TS: Property.process, after `super.process()`. Returns the snapshot
-/// `{name, type, array, optional}`; `type` is omitted (not merely `null`)
-/// when the AST `$class` is `EnumProperty`, since that is the one case where
-/// TS never assigns `this.type` (property.rs module doc on
-/// [`property::ProcessedProperty`]). `this.sizeValidator` is not part of the
-/// snapshot: the view still builds it directly by constructing a
-/// `CollectionSizeValidator`, whose own binding already ports that TS
-/// constructor.
+/// `{name, type, array, optional}`, `type` omitted for an `EnumProperty`
+/// (TS never assigns `this.type` there). The view builds
+/// `this.sizeValidator` itself.
 #[wasm_bindgen(js_name = propertyProcess)]
 pub fn property_process(view: JsValue) -> JsResult<JsValue> {
     let body = || -> Result<JsValue> {
@@ -710,25 +679,17 @@ pub fn property_process(view: JsValue) -> JsResult<JsValue> {
     )
 }
 
-/// TS: Property.validate, after `super.validate()` (`Decorated`'s, which the
-/// view calls separately before this). `classDecl` is the argument TS's
-/// `validate(classDecl)` takes. `ModelFile` and `ModelManager` are not yet
-/// Rust-backed (P2-08), so type resolution and the "is this a map
-/// declaration" check are reached by calling straight back into the same
-/// collaborators TS itself calls (`modelFile.resolveType`, `modelFile.getType`),
-/// through the small context interface PORTING.md section 3 describes for a
-/// view without a real Rust-backed parent — only the branching around them
-/// runs in Rust. `modelFile.resolveType`'s own thrown `TypeNotFoundException`
-/// propagates unchanged (`Error::Js`, from the `?` on `call`), so its message
-/// and class are never reimplemented here.
+/// TS: Property.validate, after `super.validate()` (which the view calls
+/// first). `classDecl` is TS's argument. Type resolution and the
+/// map-declaration check call back the JS collaborators TS calls
+/// (`modelFile.resolveType`, `modelFile.getType`), whose errors propagate.
 #[wasm_bindgen(js_name = propertyValidate)]
 pub fn property_validate(property: JsValue, class_decl: JsValue) -> JsResult<()> {
     let model_file = call(&class_decl, "getModelFile", &[], "classDecl.getModelFile")
         .unwrap_or(JsValue::UNDEFINED);
     let body = || -> Result<()> {
         let property_type = get(&property, "type")?;
-        // TS: `if(this.type)` — a JS truthiness check (an empty-string type
-        // is falsy and skips resolution), not a nullish check.
+        // TS: `if(this.type)`, JS truthiness.
         if property_type.is_truthy() {
             let fqn = js_string(&call(
                 &property,
@@ -749,8 +710,7 @@ pub fn property_validate(property: JsValue, class_decl: JsValue) -> JsResult<()>
         let array = get(&property, "array")?.is_truthy();
         if !nullish(&size_validator) && !array {
             let mut is_map_type = false;
-            // TS: `if(this.type && !this.isPrimitive())` — same truthiness
-            // check as above.
+            // TS: `if(this.type && !this.isPrimitive())`.
             if property_type.is_truthy() {
                 let is_primitive =
                     call(&property, "isPrimitive", &[], "this.isPrimitive")?.is_truthy();
@@ -791,15 +751,12 @@ pub fn property_validate(property: JsValue, class_decl: JsValue) -> JsResult<()>
 }
 
 // ---------------------------------------------------------------------------
-// Field (src/introspect/field.ts) — P4-07
+// Field (src/introspect/field.ts)
 // ---------------------------------------------------------------------------
 
-/// TS: Field.process, after `super.process()` (`Property`'s, already run).
-/// Returns the snapshot `{validator, defaultValue}`, where `validator` is
-/// `null`, `{kind: "NumberValidator", lowerBound, upperBound}` or
-/// `{kind: "StringValidator"}` — the identical selection
-/// `scalarDeclarationProcess` returns for `ScalarDeclaration`, reusing the
-/// same [`ScalarValidator`] shape (field.rs module doc).
+/// TS: Field.process, after Property's. Returns the snapshot `{validator,
+/// defaultValue}`, `validator` chosen as `scalarDeclarationProcess` chooses
+/// it ([`ScalarValidator`]).
 #[wasm_bindgen(js_name = fieldProcess)]
 pub fn field_process(view: JsValue) -> JsResult<JsValue> {
     let body = || -> Result<JsValue> {
@@ -827,18 +784,11 @@ pub fn field_process(view: JsValue) -> JsResult<JsValue> {
     )
 }
 
-/// TS: `Field.getScalarField`, after the `this.scalarField` cache check
-/// (still done by the view, since the cached instance stays a JS object) —
-/// the P2-09 partial audit found this still TS although the ledger says
-/// RUST (#154). `ModelFile` and `ModelManager` are not yet Rust-backed
-/// (P2-08), so `isTypeScalar()`'s own collaborator calls
-/// (`modelFile.resolveType`, `modelFile.getType`) are reached the same way
-/// `propertyValidate` reaches them: only the branching around them, and the
-/// scalar-to-property `$class` mapping (`field::scalar_to_field_ast`), run
-/// in Rust. Returns the synthetic field's AST; the view still builds the
-/// `Field` instance from it and sets `array` from `this.isArray()`, exactly
-/// as the TS body's `new Field(this.getParent(), fieldAst)` and
-/// `this.scalarField.array = this.isArray()` do.
+/// TS: `Field.getScalarField`, after the view's `this.scalarField` cache
+/// check. `isTypeScalar()`'s collaborator calls go back to the JS objects,
+/// as in `propertyValidate`; the scalar-to-property `$class` mapping is
+/// `field::scalar_to_field_ast`. Returns the synthetic field's AST, from
+/// which the view builds the `Field` and sets `array`, as TS does.
 #[wasm_bindgen(js_name = fieldGetScalarField)]
 pub fn field_get_scalar_field(view: JsValue) -> JsResult<JsValue> {
     run(|| {
@@ -897,12 +847,9 @@ pub fn field_get_scalar_field(view: JsValue) -> JsResult<JsValue> {
     })
 }
 
-/// TS: `Field.toString`. `name` and `array`/`optional` are read straight off
-/// `this` (plain properties, as `propertyProcess`'s own snapshot sets them);
-/// `getFullyQualifiedTypeName()` is called through the view since it is a
-/// method, and, for a scalar field, already resolves to the scalar's own FQN
-/// (P4-07's issue #195 supplement fixtures cover this — the type name is
-/// never the underlying primitive).
+/// TS: `Field.toString`: `name`, `array` and `optional` read off `this`;
+/// `getFullyQualifiedTypeName()` called through the view (a scalar field's
+/// is the scalar's own FQN).
 #[wasm_bindgen(js_name = fieldToString)]
 pub fn field_to_string(view: JsValue) -> JsResult<String> {
     run(|| {
@@ -925,18 +872,13 @@ pub fn field_to_string(view: JsValue) -> JsResult<String> {
 }
 
 // ---------------------------------------------------------------------------
-// RelationshipDeclaration (src/introspect/relationshipdeclaration.ts) — P4-07
+// RelationshipDeclaration (src/introspect/relationshipdeclaration.ts)
 // ---------------------------------------------------------------------------
 
-/// TS: RelationshipDeclaration.validate, after `super.validate(classDecl)`
-/// (`Property`'s, which the view calls separately before this — the same
-/// layering `propertyValidate` itself uses for `Decorated`'s). `ModelFile`
-/// and `ModelManager` are not yet Rust-backed (P2-08), so this calls back
-/// into the same collaborators TS itself calls, in the same order and with
-/// the same try/catch shape (only the "own model file" lookup is
-/// unguarded, exactly as TS's is): the branching runs in Rust, the
-/// resolution itself is the small context interface PORTING.md section 3
-/// describes.
+/// TS: RelationshipDeclaration.validate, after Property's (which the view
+/// calls first). It calls back the JS collaborators TS calls, in the same
+/// order and with the same try/catch shape (the own model file's lookup is
+/// unguarded, as in TS).
 #[wasm_bindgen(js_name = relationshipDeclarationValidate)]
 pub fn relationship_declaration_validate(view: JsValue, class_decl: JsValue) -> JsResult<()> {
     let model_file = call(&class_decl, "getModelFile", &[], "classDecl.getModelFile")
@@ -945,14 +887,10 @@ pub fn relationship_declaration_validate(view: JsValue, class_decl: JsValue) -> 
         let ast = get(&view, "ast")?;
         let location = to_json(&get(&ast, "location")?)?;
         let name = js_string(&call(&view, "getName", &[], "this.getName")?)?;
-        // TS reads `this.getType()` throughout (a method call, not the raw
-        // `type` field), so a test that stubs `getType()` alone still takes
-        // effect here.
+        // TS calls `this.getType()`, so a stubbed `getType()` takes effect.
         let property_type = call(&view, "getType", &[], "this.getType")?;
 
-        // TS: `if(!this.getType())` — a JS truthiness check, so an
-        // empty-string type (falsy) must hit this branch too, not just
-        // null/undefined.
+        // TS: `if(!this.getType())`, JS truthiness.
         if !property_type.is_truthy() {
             let mut err = ContractError::new(
                 ErrorKind::IllegalModel,

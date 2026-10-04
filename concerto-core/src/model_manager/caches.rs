@@ -1,20 +1,15 @@
 //! The manager's per-declaration answer cache ([`DeclCache`]) and its
-//! validity marks and proofs ([`ValidityProof`], P5-97).
+//! validity marks and proofs ([`ValidityProof`]).
 
 use super::*;
 
 js_compat_pub! {
-    /// P5-97 (accordproject/concerto-rust#448): why a model file shared from
-    /// one manager into another ([`ModelManager::add_shared_model_file_with_proof`])
-    /// is valid there too, without validating it again: it passed
-    /// validation in the source manager, whose options were these, and
-    /// these are every namespace it reaches through its imports (its own,
-    /// the system models and the transitive import closure), each with the
-    /// very file (`Arc`) the source held. A file's validity reads nothing
-    /// else, so it holds in any manager with the same options whose files
-    /// under those namespaces are those same files. The target checks that
-    /// when it validates ([`ModelManager::validate_models`]) and validates
-    /// the file as usual when it does not hold.
+    /// Why a model file shared into another manager
+    /// ([`ModelManager::add_shared_model_file_with_proof`]) is valid there
+    /// without validating it again: it passed validation with these options,
+    /// and these are every namespace it reaches with the file the source held.
+    /// Validity reads nothing else, which [`ModelManager::validate_models`]
+    /// checks.
     #[derive(Debug)]
     pub struct ValidityProof {
         options: ManagerOptions,
@@ -22,17 +17,16 @@ js_compat_pub! {
     }
 }
 
-/// Locks `mutex`, recovering it when a thread panicked while holding it
-/// (A-7, accordproject/concerto-rust#448): every cache under a lock only
-/// ever holds whole answers, so a poisoned one is still consistent.
+/// Locks `mutex`, recovering it when a thread panicked while holding it:
+/// every cache under a lock only ever holds whole answers, so a poisoned
+/// one is still consistent.
 pub(super) fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// One declaration's cached answers (F-10, B-7,
-/// accordproject/concerto-rust#448), each computed on first use.
+/// One declaration's cached answers, each computed on first use.
 #[derive(Debug, Clone, Default)]
 pub(super) struct DeclFacts {
     /// Its inheritance chain and properties; only a successful answer.
@@ -45,8 +39,7 @@ pub(super) struct DeclFacts {
     /// successful answer.
     pub(super) field_defaults: Option<Arc<crate::instance::from_json::FieldDefaults>>,
     /// The declarations that directly extend it (TS `getDirectSubclasses`),
-    /// in load order; filled for every declaration at once by
-    /// [`ModelManager::direct_subclass_ids`] (P5-106, BC-52).
+    /// in load order, filled for every declaration at once.
     pub(super) direct_subclasses: Option<Arc<[DeclId]>>,
 }
 
@@ -126,13 +119,10 @@ impl DeclCache {
 
 impl ModelManager {
     js_compat_pub! {
-        /// P5-97 (accordproject/concerto-rust#448): why the model file
-        /// registered under `namespace` is valid in any manager that holds
-        /// it with the same options and the same files under the namespaces
-        /// it reaches ([`ValidityProof`]), or `None` when it has not been
-        /// validated here (or reaches a namespace this manager does not
-        /// hold). [`ModelManager::add_shared_model_file_with_proof`] takes
-        /// it with the shared file.
+        /// Why the model file registered under `namespace` is valid in any
+        /// manager holding it with the same options and files
+        /// ([`ValidityProof`]), or `None` when it has not been validated here
+        /// or reaches a namespace this manager does not hold.
         pub fn validity_proof(&self, namespace: &str) -> Option<Arc<ValidityProof>> {
             let id = *self.namespaces.get(namespace)?;
             if !self.known_valid(id) {
@@ -162,8 +152,8 @@ impl ModelManager {
         }
     }
 
-    /// P5-97: whether the file `id` may be taken as valid without
-    /// validating it: it passed validation in this manager, or it carries a
+    /// Whether the file `id` may be taken as valid without validating it:
+    /// it passed validation in this manager, or it carries a
     /// [`ValidityProof`] that holds here (then it is marked validated).
     pub(crate) fn known_valid(&self, id: ModelFileId) -> bool {
         use std::sync::atomic::Ordering;
@@ -183,8 +173,8 @@ impl ModelManager {
         holds
     }
 
-    /// P5-97: whether `proof` holds in this manager: the same options, and
-    /// the very same file under each namespace it names.
+    /// Whether `proof` holds in this manager: the same options, and the
+    /// very same file under each namespace it names.
     pub(super) fn proof_holds(&self, proof: &ValidityProof) -> bool {
         proof.options == self.options
             && proof.closure.iter().all(|(ns, file)| {
@@ -195,7 +185,7 @@ impl ModelManager {
             })
     }
 
-    /// P5-97: records that the file `id` passed validation in this manager.
+    /// Records that the file `id` passed validation in this manager.
     pub(crate) fn mark_validated(&self, id: ModelFileId) {
         if let Some(slot) = self.files.get(id.slot()) {
             slot.validated
@@ -203,8 +193,8 @@ impl ModelManager {
         }
     }
 
-    /// P5-97: every file's validated mark, for a batch to restore when it
-    /// rolls back ([`ModelManager::restore_validated`]).
+    /// Every file's validated mark, for a batch to restore when it rolls
+    /// back ([`ModelManager::restore_validated`]).
     pub(super) fn validated_marks(&self) -> Vec<bool> {
         self.files
             .iter()
@@ -212,16 +202,16 @@ impl ModelManager {
             .collect()
     }
 
-    /// P5-97: puts back the marks [`ModelManager::validated_marks`] took
-    /// (a file validated while a rolled-back batch was registered may have
-    /// reached one of its files).
+    /// Puts back the marks [`ModelManager::validated_marks`] took (a file
+    /// validated while a rolled-back batch was registered may have reached
+    /// one of its files).
     pub(super) fn restore_validated(&mut self, marks: &[bool]) {
         for (slot, mark) in self.files.iter_mut().zip(marks) {
             *slot.validated.get_mut() = *mark;
         }
     }
 
-    /// P5-97: forgets every validated mark (an option changed).
+    /// Forgets every validated mark (an option changed).
     #[cfg(feature = "js-compat")]
     pub(super) fn clear_validated(&mut self) {
         for slot in &mut self.files {
@@ -230,7 +220,7 @@ impl ModelManager {
     }
 
     /// Declaration `id`'s converted field defaults
-    /// ([`crate::instance::from_json::assign_field_defaults_of`], P5-13):
+    /// ([`crate::instance::from_json::assign_field_defaults_of`]):
     /// `compute`'s answer, computed on first use and then cached until the
     /// registered files change, as the inheritance facts are. An error is
     /// returned, and not cached.
@@ -246,42 +236,23 @@ impl ModelManager {
         )
     }
 
-    /// P5-97 (accordproject/concerto-rust#448): the caches an append
-    /// ([`ModelManager::insert_shared`]) leaves valid. Appending a file
-    /// adds a namespace no file held (a namespace is never registered
-    /// twice) and changes no registered file or handle, so every name that
-    /// resolved before resolves to the same declaration after: only a
-    /// resolution that failed can change. The caches keep only answers
-    /// built from successful resolutions, so they stay:
-    ///
-    /// - an inheritance chain ([`ClassInfo`]) is cached only once every
-    ///   super type resolved;
-    /// - an instance fact is cached only when its computation succeeded
-    ///   (field defaults: when every field type resolved);
-    /// - a validation plan is kept only when nothing in it was left
-    ///   unresolved or unplanned ([`crate::instance::plan::ClassPlan::is_settled`]);
-    ///   any other plan, and a declaration recorded as having none, is built
-    ///   again on next use;
-    /// - the direct subclasses of a declaration are dropped: the appended
-    ///   file can declare new ones (P5-106).
-    ///
-    /// So adding a request's user files to a manager forked from a base
-    /// ([`ModelManager::fork`]) keeps every warmed answer about the base's
-    /// declarations, and never changes one. A removal, a rollback and a
-    /// rebuild still drop everything ([`ModelManager::invalidate_caches`]).
+    /// The caches an append ([`ModelManager::insert_shared`]) leaves valid: an
+    /// append changes no registered file, so only answers built from
+    /// successful resolutions are kept (inheritance chains, field defaults,
+    /// settled validation plans); direct subclasses are dropped. So a fork of
+    /// a warmed manager stays warm. Any other change drops everything
+    /// ([`ModelManager::invalidate_caches`]).
     pub(super) fn keep_caches_for_append(&mut self) {
         for facts in self.decl_cache.facts_mut() {
             if !matches!(&facts.plan, Some(Some(plan)) if plan.is_settled()) {
                 facts.plan = None;
             }
-            // An appended file can declare a new subclass of any loaded
-            // declaration (P5-106).
             facts.direct_subclasses = None;
         }
     }
 
-    /// Drops every answer cached from the registered files (P5-06); called
-    /// by every change to them but an append
+    /// Drops every answer cached from the registered files;
+    /// called by every change to them but an append
     /// ([`ModelManager::keep_caches_for_append`]).
     pub(super) fn invalidate_caches(&mut self) {
         self.decl_cache.facts_mut().clear();
@@ -316,7 +287,7 @@ impl ModelManager {
         })
     }
 
-    /// P5-97: the number of cached inheritance chains, instance facts and
+    /// The number of cached inheritance chains, instance facts and
     /// validation plans (a declaration recorded as having none included): a
     /// test-only measure.
     #[cfg(test)]

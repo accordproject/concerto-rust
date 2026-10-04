@@ -25,7 +25,7 @@
 //!   sets (`dcs`). None of it carries a stability promise, and none of it is
 //!   in the default public API (docs/public-api.md section 4).
 
-// P6-01 (accordproject/concerto-rust#83): every public item is documented.
+// Every public item is documented.
 #![warn(missing_docs)]
 
 // The derives name the traits by their `::concerto_core` paths, which also
@@ -49,12 +49,10 @@ macro_rules! js_compat_pub {
 }
 
 /// Declares a module that is `pub` with the `js-compat` feature and
-/// crate-private without it (docs/public-api.md section 4.6). Its items are
-/// plain `pub`: the module's visibility is the seam, so they need no
-/// [`js_compat_pub!`] of their own (P5-104, C-9). The crate-private arm
-/// allows no dead code: a seam item that the native build doesn't use carries
-/// its own `#[cfg_attr(not(feature = "js-compat"), expect(dead_code, ...))]`,
-/// so one that the JS layer stops using too is reported (P5-110).
+/// crate-private without it (docs/public-api.md section 4.6); the module's
+/// visibility is the seam. The crate-private arm allows no dead code: a seam
+/// item the native build doesn't use carries its own
+/// `cfg_attr(not(feature = "js-compat"), expect(dead_code, ...))`.
 macro_rules! js_compat_mod {
     ($name:ident) => {
         #[cfg(feature = "js-compat")]
@@ -69,14 +67,14 @@ macro_rules! js_compat_mod {
 /// `concerto-macros` crate.
 pub use concerto_macros as derive;
 
-// The decorator command sets are outside the D11 surface for now
+// The decorator command sets are outside the D11 surface
 // (docs/public-api.md Q3): public only for the WASM binding.
 #[cfg(feature = "js-compat")]
 pub mod dcs;
 mod ecma;
 pub mod error;
-// P5-110: the seeded hasher of the maps keyed by untrusted input; public
-// for concerto-core-js and concerto-wasm, which seeds it.
+// The seeded hasher of the maps keyed by untrusted input; public for
+// concerto-core-js and concerto-wasm, which seeds it.
 js_compat_mod!(hash);
 pub mod instance;
 pub mod introspect;

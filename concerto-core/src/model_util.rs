@@ -163,7 +163,7 @@ pub enum PrereleaseIdentifier {
 
 /// A parsed namespace version, in the shape `semver.parse` (node-semver
 /// 7.6.3, the version concerto-core 5.0.0 resolves) returns: see
-/// [`semver_parse`] for the strict SemVer 2.0.0 grammar (BC-41).
+/// `semver_parse` for the strict SemVer 2.0.0 grammar (BC-41).
 #[derive(Debug, Clone, PartialEq)]
 pub struct SemVer {
     /// The version as given (`raw`).
@@ -193,32 +193,19 @@ const MAX_SAFE_INTEGER_U64: u64 = 9_007_199_254_740_991;
 const SEMVER_MAX_LENGTH: usize = 256;
 
 /// Whether `version` is a valid namespace or import version: strict SemVer
-/// 2.0.0 (BC-41, R1; P5-38), the `semver` crate's `semver::Version::parse`
-/// with no node-compat leniency. Surrounding whitespace and a leading `v`
-/// are rejected, as the CTO grammar already rejects them, and major, minor
-/// and patch go up to `u64::MAX` (2^64-1). Until P5-38 the P5-25 wrapper
-/// followed node-semver 7.6.3's `parse` instead (trimming, one optional
-/// `v`, `MAX_SAFE_INTEGER` components and a 256-unit `MAX_LENGTH`).
+/// 2.0.0 (BC-41), the `semver` crate's `semver::Version::parse` with no
+/// node-compat leniency. Surrounding whitespace and a leading `v` are
+/// rejected, as the CTO grammar already rejects them, and major, minor and
+/// patch go up to `u64::MAX` (2^64-1).
 pub(crate) fn is_strict_semver(version: &str) -> bool {
     semver::Version::parse(version).is_ok()
 }
 
-/// node-semver 7.6.3's `parse` (the version concerto-core 5.0.0 resolves)
-/// restricted to strict SemVer 2.0.0 ([`is_strict_semver`]): the `SemVer`
-/// TS `ModelUtil.parseNamespace` returns as `versionParsed`.
-///
-/// `None` for a version that is not strict SemVer 2.0.0, and also for a
-/// strict one beyond node-semver's own limits, where `semver.parse` returns
-/// `null` (maintainer decision 2026-09-29, P5-38: Rust matches TS): a major,
-/// minor or patch above `Number.MAX_SAFE_INTEGER`, or more than
-/// `MAX_LENGTH` (256) UTF-16 units. Such a version is still a valid
-/// namespace version (BC-41); only its `versionParsed` is `null`. Within
-/// the limits every component is an exact `f64`.
-/// `tests/semver/node-semver-7.6.3.json` checks this against node-semver's
-/// own `parse`.
-///
-/// `pub(crate)` so [`crate::semver_range`] can parse a concrete version
-/// the way node-semver does.
+/// node-semver 7.6.3's `parse` restricted to strict SemVer 2.0.0
+/// ([`is_strict_semver`]): TS `parseNamespace`'s `versionParsed`. `None` also
+/// for a strict version beyond node-semver's limits (a component above
+/// `Number.MAX_SAFE_INTEGER`, or over 256 UTF-16 units), which is still
+/// valid (BC-41). Checked by `tests/semver/node-semver-7.6.3.json`.
 pub(crate) fn semver_parse(version: &str) -> Option<SemVer> {
     // A string has no more UTF-16 units than UTF-8 bytes.
     if version.len() > SEMVER_MAX_LENGTH && version.encode_utf16().count() > SEMVER_MAX_LENGTH {
@@ -287,16 +274,11 @@ pub(crate) fn semver_parse(version: &str) -> Option<SemVer> {
     })
 }
 
-/// `parse_namespace_with(Some(ns), false)`'s checks and errors, in its
-/// order, returning its `name` and `version` borrowed from `ns` rather than
-/// the owned [`ParsedNamespace::Full`] (P5-48, accordproject/concerto-rust#369:
-/// the model load and `ModelFile.validate()`'s import loop run it per import
-/// and read only these two). Except that an unversioned namespace is not an
-/// error here (`version` is `None`): since BC-02 (P5-50) `parse_namespace_with`
-/// rejects one, but these callers reject it themselves, each with the error
-/// (class and message) it already had (`Cannot use an unversioned import`,
-/// `Cannot create a ModelFile with an unversioned namespace`, a metamodel
-/// version mismatch).
+/// `parse_namespace_with(Some(ns), false)`'s checks and errors, in its order,
+/// returning `name` and `version` borrowed from `ns` (the model load and
+/// `ModelFile.validate()`'s import loop read only these). An unversioned
+/// namespace is not an error here (`version` is `None`, unlike BC-02's
+/// `parse_namespace_with`): these callers reject it with their own errors.
 pub(crate) fn split_namespace(ns: &str) -> Result<(&str, Option<&str>)> {
     if ns.is_empty() {
         return Err(Error::new(
@@ -318,8 +300,9 @@ pub(crate) fn split_namespace(ns: &str) -> Result<(&str, Option<&str>)> {
     if parts.next().is_some() {
         return Err(invalid());
     }
-    // BC-41 (P5-38): acceptance is strict SemVer 2.0.0, as in
-    // `parse_namespace_with`; `versionParsed` is not built here.
+    // BC-41: acceptance is strict SemVer 2.0.0, as in
+    // `parse_namespace_with`; `versionParsed` is not built
+    // here.
     if let Some(version) = version
         && !is_strict_semver(version)
     {
@@ -353,9 +336,8 @@ pub enum ParsedNamespace {
 }
 
 /// `parse_namespace_with(Some(ns), false)`: the same checks and errors, in
-/// its order, with its `name` and `version` borrowed from `ns` (P5-104,
-/// C-13). Since BC-02 a namespace that parses always has a version, so the
-/// result has no shape without one, as [`ParsedNamespace::NameOnly`] is.
+/// its order, with its `name` and `version` borrowed from `ns`. A namespace
+/// that parses always has a version (BC-02).
 #[cfg(feature = "js-compat")]
 pub(crate) fn namespace_parts(ns: &str) -> Result<(&str, &str)> {
     let (name, version) = split_namespace(ns)?;
@@ -369,8 +351,8 @@ pub(crate) fn namespace_parts(ns: &str) -> Result<(&str, &str)> {
     Ok((name, version))
 }
 
-/// Parses a namespace into its name and its version. An unversioned
-/// namespace is an error (BC-02, R1; DV-003 closed), as an empty one is.
+/// Parses a namespace into its name and its version. An unversioned or
+/// empty namespace is an error (BC-02).
 ///
 /// ```
 /// # use concerto_core::model_util::{parse_namespace, ParsedNamespace};
@@ -388,11 +370,9 @@ pub fn parse_namespace(ns: &str) -> Result<ParsedNamespace> {
 js_compat_pub! {
     /// [`parse_namespace`], in the shape of TS `ModelUtil.parseNamespace(ns,
     /// disableVersionParsing)`. `None` (JS `undefined` or `null`) and `""` fail
-    /// the TS `!ns` check. An unversioned namespace is
-    /// rejected, with or without `disable_version_parsing`, as Concerto v4
-    /// requires (BC-02, R1, P5-50; DV-003 closed): TS 5.0.0 accepted it,
-    /// with `version: null`. So `ParsedNamespace::Full`'s `version` is
-    /// always `Some`.
+    /// the TS `!ns` check. An unversioned namespace is rejected, with or
+    /// without `disable_version_parsing`, as Concerto v4 requires (BC-02;
+    /// TS 5.0.0 accepted it with `version: null`).
     ///
     /// TS: ModelUtil.parseNamespace (src/modelutil.ts)
     ///
@@ -425,10 +405,8 @@ js_compat_pub! {
             )
         };
         let parts: Vec<&str> = ns.split('@').collect();
-        // BC-02 (R1, P5-50; DV-003 closed): a namespace must carry a version,
-        // as Concerto v4 requires, whether or not the version is parsed. An
-        // unversioned namespace is rejected with the error (class and
-        // message) an invalid one already gets.
+        // BC-02: a namespace must carry a version, whether or not the
+        // version is parsed, rejected with the error an invalid one gets.
         if parts.len() != 2 {
             return Err(invalid());
         }
@@ -538,7 +516,7 @@ pub fn is_assignable_to<C: ResolutionContext>(
 /// [`is_assignable_to`] for a property whose fully qualified type name
 /// the caller has already read (`property.getFullyQualifiedTypeName()`):
 /// the WASM binding reads it from the JS property, which may be a
-/// stand-in such as a relationship map value (P5-106, BC-52).
+/// stand-in such as a relationship map value (BC-52).
 ///
 /// TS: ModelUtil.isAssignableTo (src/modelutil.ts), after its first line
 #[cfg(feature = "js-compat")]
@@ -660,7 +638,7 @@ pub fn is_scalar<C: ResolutionContext>(
 
 /// Returns true if the name is a valid Concerto identifier: `ID_REGEX.test`.
 /// A JS caller's non-string (`undefined`, `null`, ...) is not a valid
-/// identifier: the binding answers `false` without calling this (BC-01, R1;
+/// identifier: the binding answers `false` without calling this (BC-01;
 /// TS 5.0.0 tested `String(name)`, so `"undefined"` and `"null"` passed,
 /// DV-002).
 ///
@@ -672,7 +650,7 @@ pub fn is_scalar<C: ResolutionContext>(
 /// assert!(!is_valid_identifier("1st"));
 /// ```
 pub fn is_valid_identifier(name: &str) -> bool {
-    // P5-06 fast path: a non-empty ASCII `[A-Za-z$_][A-Za-z0-9$_]*` name is
+    // Fast path: a non-empty ASCII `[A-Za-z$_][A-Za-z0-9$_]*` name is
     // always a match (ASCII letters are `\p{Lu}`/`\p{Ll}`, ASCII digits
     // `\p{Nd}`, and `$`/`_` are listed), so only names outside that subset
     // pay for the regex. The subset only ever answers `true`, so the regex
@@ -775,11 +753,9 @@ fn class_of(node: Option<&Value>) -> Result<Option<&str>> {
 /// The key kinds the specification allows: a `String` or `DateTime`, or an
 /// object key naming a scalar over one of those.
 ///
-/// The single source for this list: `ModelUtil.isValidMapKey` (below) checks
-/// an AST node's `$class` against it directly, and
-/// `validation::validate_map_key` and `introspect::declaration`'s generated-
-/// union check (`MM_MAP_KEY_KINDS`) both refer to it rather than keeping
-/// their own copies, so the three checks cannot drift apart.
+/// The single source for this list: `ModelUtil.isValidMapKey`,
+/// `validation::validate_map_key` and `introspect::declaration`'s
+/// `MM_MAP_KEY_KINDS` check all read it.
 #[cfg(feature = "js-compat")]
 pub const MAP_KEY_KINDS: &[&str] = &["StringMapKeyType", "DateTimeMapKeyType", "ObjectMapKeyType"];
 
@@ -866,7 +842,7 @@ mod tests {
 
     #[test]
     fn is_valid_identifier_fast_path_agrees_with_the_regex() {
-        // P5-06: every answer the ASCII fast path gives is the regex's own.
+        // Every answer the ASCII fast path gives is the regex's own.
         let alphabet: Vec<char> = (0x20u8..0x7f).map(char::from).collect();
         let mut names = vec![String::new()];
         for first in &alphabet {
@@ -897,12 +873,12 @@ mod tests {
             .unwrap_or_else(|e| panic!("node-semver-7.6.3.json: {e}"))
     }
 
-    /// P5-48: [`split_namespace`] accepts and rejects exactly what
+    /// [`split_namespace`] accepts and rejects exactly what
     /// `parse_namespace_with(_, false)` does, with the same error, and gives
     /// back its `name` and `version`; over every recorded semver input as a
     /// namespace version, and the other namespace shapes. The one exception
-    /// (BC-02, P5-50): an unversioned namespace, which `split_namespace`
-    /// gives back with no version for its callers to reject.
+    /// (BC-02): an unversioned namespace, which `split_namespace` gives back
+    /// with no version for its callers to reject.
     #[test]
     fn split_namespace_matches_parse_namespace() {
         let recording = node_semver_recording();
@@ -975,15 +951,15 @@ mod tests {
 
     #[test]
     fn semver_parse_matches_node_semver() {
-        // P5-20: the differential test against node-semver's own `parse`,
-        // over prerelease and build metadata, leading zeros, whitespace, `v`
-        // prefixes, numeric limits, very long input and random
-        // near-versions (tests/semver/record.mjs). Since BC-41 (P5-38)
-        // `semver_parse` is node-semver's result for an input with no
-        // surrounding whitespace and no leading `v`, and nothing else; and
-        // a namespace version is accepted ([`is_strict_semver`]) exactly
-        // when it gets a result or only node-semver's own limits reject it
-        // (then `versionParsed` is null, as in TS).
+        // The differential test against node-semver's own `parse`, over
+        // prerelease and build metadata, leading zeros, whitespace, `v`
+        // prefixes, numeric limits, very long input and random near-versions
+        // (tests/semver/record.mjs). Since BC-41 `semver_parse` is
+        // node-semver's result for an input with no surrounding whitespace
+        // and no leading `v`, and nothing else; and a namespace version is
+        // accepted ([`is_strict_semver`]) exactly when it gets a result or
+        // only node-semver's own limits reject it (then `versionParsed` is
+        // null, as in TS).
         let recording = node_semver_recording();
         let cases = recording["cases"]
             .as_array()
@@ -1014,7 +990,7 @@ mod tests {
             let expected = match &case["parsed"] {
                 Value::Null => None,
                 _ if ecma::js_trim(input) != input || input.starts_with('v') => {
-                    // node-semver's trimming and `v` prefix: rejected now.
+                    // node-semver's trimming and `v` prefix: rejected (BC-41).
                     lenient += 1;
                     None
                 }
@@ -1070,7 +1046,7 @@ mod tests {
 
     #[test]
     fn semver_parse_is_strict_semver_2_0_0() {
-        // BC-41 (P5-38): strict SemVer 2.0.0, no node-compat leniency.
+        // BC-41: strict SemVer 2.0.0, no node-compat leniency.
         assert!(semver_parse("1.0.0").is_some());
         assert!(semver_parse("1.2.3-alpha.1+build.5").is_some());
         assert!(semver_parse(" v1.2.3-alpha.1+build.5 ").is_none());
@@ -1125,8 +1101,8 @@ mod tests {
 
     #[test]
     fn parse_namespace_beyond_node_semver_limits_has_no_version_parsed() {
-        // Maintainer decision 2026-09-29 (P5-38): Rust matches TS. A strict
-        // version beyond node-semver's limits is accepted (BC-41), but its
+        // Maintainer decision 2026-09-29: Rust matches TS. A strict version
+        // beyond node-semver's limits is accepted (BC-41), but its
         // `versionParsed` is null, as `semver.parse` gives in TS.
         const SAFE: &str = "9007199254740991"; // 2^53-1
         const UNSAFE: &str = "9007199254740992"; // 2^53
@@ -1199,15 +1175,14 @@ mod tests {
         );
     }
 
-    /// One test function per `it()` in `test/modelutil.js` (P0-02 tag `B`),
+    /// One test function per `it()` in `test/modelutil.js`,
     /// named after its `describe`/`it` titles, so `grep` finds the port of
     /// each assertion (PORTING.md 10.11). The 6 `#isAssignableTo` cases are
     /// tagged `W` (they stub `ModelFile`/`Property`/`ModelManager` with
     /// sinon): `ModelUtil.isAssignableTo` is exercised instead against a real
     /// arena-backed `ModelManager` in `model_manager::tests::
     /// ported_members_run_on_the_arena` and `model_manager::tests`'
-    /// `is_assignable_to` cases, and the W tests themselves remain listed,
-    /// not yet lifted, in `migration/ledger/SUMMARY.md` §10 (task P2-10).
+    /// `is_assignable_to` cases.
     mod ts_modelutil_js {
         use super::*;
 
@@ -1353,9 +1328,9 @@ mod tests {
             assert!(err.to_string().contains("Invalid namespace"), "{err}");
         }
 
-        // BC-02 (R1, P5-50; DV-003 closed): an unversioned namespace is
-        // rejected, with the error an invalid one gets, whether or not the
-        // version is parsed.
+        // BC-02: an unversioned namespace is rejected,
+        // with the error an invalid one gets, whether or not the version
+        // is parsed.
         #[test]
         fn parse_namespace_rejects_an_unversioned_namespace() {
             for disable in [false, true] {

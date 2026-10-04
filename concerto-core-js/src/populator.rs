@@ -1,6 +1,6 @@
 //! `JSONPopulator` (src/serializer/jsonpopulator.ts): populates an
 //! [`Instance`] from a JSON object graph, with its per-field checks,
-//! coercions and messages (task P3-01b, accordproject/concerto-rust#124).
+//! coercions and messages.
 //!
 //! PORTING.md section 5 row 6 (option B): the TS visitor shell stays (the
 //! white-box tests spy on `visitX`), and every check and coercion it runs
@@ -31,8 +31,9 @@ pub(crate) struct Populator<'a> {
     pub env: &'a mut dyn InstanceEnv,
     pub options: &'a FromJsonOptions,
     /// `parameters.path`, a `TypedStack` that starts as `['$']`, kept
-    /// joined (P5-13): what `path.stack.join('')` reads, with
-    /// [`Self::path_marks`] recording where each pushed segment starts.
+    /// joined: what `path.stack.join('')` reads, with
+    /// [`Self::path_marks`] recording where each pushed segment
+    /// starts.
     path: String,
     path_marks: Vec<usize>,
 }
@@ -45,13 +46,12 @@ fn plain_error(code: &'static str, params: Vec<(&'static str, String)>) -> Error
     ContractError::new(ErrorKind::InvalidArgument, code, params).into()
 }
 
-/// TS: `JSONPopulator.convertToObject`'s primitive-type switch alone (task
-/// P4-10, accordproject/concerto-rust#69): the part that needs no
-/// declaration lookup, so the TS visitor shell can call it per field
-/// directly (via the concerto-wasm binding), keeping its own recursion and
-/// `jsonStack`/`resourceStack` handling -- and so the tests that spy on
-/// `visitX` still see the same calls, in the same order, that they always
-/// did.
+/// TS: `JSONPopulator.convertToObject`'s primitive-type switch alone: the
+/// part that needs no declaration lookup, so the TS visitor shell can call
+/// it per field directly (via the concerto-wasm binding), keeping its own
+/// recursion and `jsonStack`/`resourceStack` handling -- and so the tests
+/// that spy on `visitX` still see the same calls, in the same order, that
+/// they always did.
 pub fn convert_primitive(
     type_name: &str,
     json: &JsValue,
@@ -69,9 +69,9 @@ pub fn convert_primitive(
             let result = match json {
                 JsValue::DateTime(d) => d.clone(),
                 JsValue::String(s) => {
-                    // P5-24 (BC-07, R1): only the strict format, whatever
-                    // `strictQualifiedDateTimes` says; the flag now decides
-                    // only whether `utcOffset` applies, as it did before.
+                    // BC-07: only the strict format, whatever
+                    // `strictQualifiedDateTimes` says; the flag decides only
+                    // whether `utcOffset` applies.
                     if !strict_qualified_date_time(s) {
                         return Err(validation(
                             "jsonpopulator-converttoobject-datetimeformat",
@@ -93,7 +93,7 @@ pub fn convert_primitive(
             JsValue::DateTime(result)
         }
         "Integer" | "Long" => match json {
-            // P5-51 (BC-10, R1; DV-012): an integral, finite number.
+            // BC-10, DV-012: an integral, finite number.
             // `Math.trunc(num) !== num` alone passed `±Infinity`.
             JsValue::Number(n) if n.is_finite() && n.trunc() == *n => json.clone(),
             _ => return Err(wrong_type()),
@@ -115,17 +115,11 @@ pub fn convert_primitive(
     })
 }
 
-/// TS `ResourceValidator.checkItem`'s primitive `switch(field.getType())`
-/// (task P4-10, accordproject/concerto-rust#69, resourcevalidator.ts:397):
-/// whether `value` (already coerced by [`convert_primitive`], as a real
-/// Resource's field value always is by the time it reaches `checkItem`) is
-/// valid for the declared primitive type `type_name`. `checkItem` reports
-/// `dataType === 'undefined' || dataType === 'symbol'` before this switch
-/// (a check the wire codec cannot cross, so the TS shell still makes it);
-/// every other TS branch is `typeof`/`isFinite` on the value alone, with no
-/// declaration lookup, so it is safe to call from the TS shell per field.
-/// A type name the TS switch has no `case` for is valid (`invalid` stays
-/// `false`).
+/// TS `ResourceValidator.checkItem`'s primitive `switch(field.getType())`:
+/// whether the coerced `value` is valid for primitive `type_name`. The
+/// `undefined`/`symbol` check before the switch stays in TS; each branch
+/// tests the value alone, so the TS shell may call this per field. A type
+/// name with no `case` is valid.
 pub fn primitive_field_valid(type_name: &str, value: &JsValue) -> bool {
     match type_name {
         "String" => matches!(value, JsValue::String(_)),
@@ -180,7 +174,7 @@ pub(crate) fn get_property(value: &JsValue, key: &str) -> Result<JsValue> {
 }
 
 /// [`get_property`], borrowing an object's or an instance's own property
-/// value rather than cloning it (P5-13).
+/// value rather than cloning it.
 pub(crate) fn get_property_ref<'v>(value: &'v JsValue, key: &str) -> Result<Cow<'v, JsValue>> {
     match value {
         JsValue::Object(map) => Ok(map
@@ -199,7 +193,7 @@ pub(crate) fn object_keys(value: &JsValue) -> Result<Vec<String>> {
         .collect())
 }
 
-/// [`object_keys`], borrowing each key that the value itself holds (P5-13).
+/// [`object_keys`], borrowing each key that the value itself holds.
 pub(crate) fn object_keys_ref(value: &JsValue) -> Result<Vec<Cow<'_, str>>> {
     Ok(match value {
         JsValue::Undefined | JsValue::Null => {
@@ -273,8 +267,8 @@ fn get_assignable_properties<'j>(
         .collect())
 }
 
-/// [`object_keys_ref`] of a plain object, with each key's value (P5-16):
-/// the same keys in the same order, read in one pass over the map rather
+/// [`object_keys_ref`] of a plain object, with each key's value: the
+/// same keys in the same order, read in one pass over the map rather
 /// than one lookup per key.
 fn object_entries_ref(map: &crate::value::JsObject) -> Vec<(Cow<'_, str>, &JsValue)> {
     // Integer-like keys come first, in ascending order.
@@ -314,7 +308,7 @@ fn object_entries_ref(map: &crate::value::JsObject) -> Vec<(Cow<'_, str>, &JsVal
 
 /// [`get_assignable_properties`], with each property's value
 /// (`resourceData[property]`), which the caller reads again in TS: the
-/// same value, since nothing changes the document in between (P5-16).
+/// same value, since nothing changes the document in between.
 fn get_assignable_entries<'j>(
     resource_data: &'j JsValue,
     declaration: &TypeRef,
@@ -375,8 +369,8 @@ fn validate_properties<'p>(
     properties: impl Iterator<Item = (&'p str, bool)>,
     class_declaration: &TypeRef,
 ) -> Result<()> {
-    // Each property with whether the declaration has it (P5-16: looked up
-    // once by the caller, which reuses the lookup).
+    // Each property with whether the declaration has it (looked up once
+    // by the caller, which reuses the lookup).
     let invalid: Vec<&str> = properties
         .filter(|(_, declared)| !declared)
         .map(|(p, _)| p)
@@ -421,7 +415,7 @@ impl<'a> Populator<'a> {
     }
 
     /// `parameters.path.push('.' + property)`: [`Self::push_path`] without
-    /// the formatting machinery, for the per-property push (P5-16).
+    /// the formatting machinery, for the per-property push.
     fn push_path_property(&mut self, property: &str) {
         self.path_marks.push(self.path.len());
         self.path.push('.');
@@ -478,15 +472,15 @@ impl<'a> Populator<'a> {
         let entries = get_assignable_entries(json, class_declaration)?;
         let options = self.options;
         // `classDeclaration.getProperties()`, and each `getProperty` below
-        // and in the `reject_*` options, from the validation plan (P5-88;
-        // the only route since P5-99): the same answer every time, and the
-        // chain's error first, as `getProperties()` raises it.
+        // and in the `reject_*` options, from the validation plan: the same
+        // answer every time, and the chain's error first, as
+        // `getProperties()` raises it.
         let class_plan = plan::class_plan(self.mm, class_declaration.id)?;
         if options.reject_unknown_keys {
             self.reject_unknown_keys(json, class_declaration, &class_plan)?;
         }
         // `validateProperties`, then each `getProperty` below: one lookup
-        // per property serves both (P5-16).
+        // per property serves both.
         let declared: Vec<Option<usize>> =
             entries.iter().map(|(p, _)| class_plan.find(p)).collect();
         validate_properties(
@@ -509,8 +503,8 @@ impl<'a> Populator<'a> {
                 self.pop_path();
             }
         }
-        // P5-24 (BC-45, R1): a non-strict `DateTime` default the document
-        // did not replace is applied, so it throws.
+        // BC-45: a non-strict `DateTime` default the document did not
+        // replace is applied, so it throws.
         factory::check_populated_date_time_defaults(class_declaration, &resource)?;
         Ok(resource)
     }
@@ -589,11 +583,10 @@ impl<'a> Populator<'a> {
         };
         let key_type = map.key_type_name().to_string();
         let value_type = map.value_type_name().to_string();
-        // P5-58 (BC-05, R1; DV-007): a relationship-typed value is read as
-        // a relationship property is, not as an embedded concept. Its
-        // target type, and its slot, are resolved once (B-5, P5-99); an
-        // error resolving them is raised at the first value, as TS resolves
-        // it there.
+        // BC-05, DV-007: a relationship-typed value is read as a
+        // relationship property is, not as an embedded concept. Its target
+        // type, and its slot, are resolved once; an error resolving them is
+        // raised at the first value, as TS resolves it there.
         let relationship = model::is_relationship_map(map_declaration).then(|| {
             let target = model::map_relationship_target(map_declaration)?
                 .expect("is_relationship_map was checked");
@@ -606,12 +599,12 @@ impl<'a> Populator<'a> {
             _ => None,
         };
         // `processMapType`'s declaration for a key or value with no `$class`
-        // of its own: the same for every entry, so resolved once (B-5).
+        // of its own: the same for every entry, so resolved once.
         let mut key_declaration = None;
         let mut value_declaration = None;
         let mut result: Vec<(JsValue, JsValue)> = Vec::new();
         // `new Map(Object.entries(jsonObj))`. The keys are an object's, so
-        // each is new, and each `map.set` appends (B-4, P5-99): a key's
+        // each is new, and each `map.set` appends: a key's
         // `processMapType` hands a string back as it is, or a new
         // `Resource`, which a JS `Map` keys by identity.
         for key in object_keys(json)? {
@@ -648,7 +641,7 @@ impl<'a> Populator<'a> {
 
     /// TS: JSONPopulator.processMapType. `declaration` holds the
     /// declaration `type_name` names in the map's model file, resolved at
-    /// the first entry that needs it (B-5, P5-99).
+    /// the first entry that needs it.
     fn process_map_type(
         &mut self,
         map_declaration: &TypeRef,
@@ -689,10 +682,10 @@ impl<'a> Populator<'a> {
         }
         // TS's `catch` leaves `value` exactly as parsed: an explicit but
         // unresolvable `$class` never becomes a `Resource` here. See
-        // `visit_class_declaration`'s `is_map_value` parameter
-        // (accordproject/concerto-rust#194) for how the validator turns
-        // this same unresolvable `$class`, reached again later through
-        // `ResourceValidator.checkMapType`, into the TS-faithful verdict.
+        // `visit_class_declaration`'s `is_map_value` parameter for how
+        // the validator turns this same unresolvable `$class`, reached
+        // again later through `ResourceValidator.checkMapType`, into the
+        // TS-faithful verdict.
         Ok(value.clone())
     }
 
@@ -766,11 +759,11 @@ impl<'a> Populator<'a> {
         self.accept_declaration(&declaration, json_item, sub_resource)
     }
 
-    /// TS: JSONPopulator.convertToObject. The primitive-type switch itself
-    /// has no dependency on `self.mm`/`self.env` (only on the field's type
-    /// name, the options and the current path), so it is [`convert_primitive`],
-    /// a free function the concerto-wasm binding (P4-10, jsonpopulator.ts)
-    /// calls directly per field, without needing a live `Populator`.
+    /// TS: JSONPopulator.convertToObject. The primitive-type switch itself has
+    /// no dependency on `self.mm`/`self.env` (only on the field's type name,
+    /// the options and the current path), so it is [`convert_primitive`], a
+    /// free function the concerto-wasm binding (jsonpopulator.ts) calls
+    /// directly per field, without needing a live `Populator`.
     fn convert_to_object(&mut self, field: &Field, json: &JsValue) -> Result<JsValue> {
         convert_primitive(field.type_name(), json, self.options, self.path_text())
     }
@@ -818,7 +811,7 @@ impl<'a> Populator<'a> {
     /// One relationship value, `visitRelationshipDeclaration`'s non-array
     /// branch: a URI string becomes a `Relationship`, and an object an
     /// embedded resource when `acceptResourcesForRelationships` allows it.
-    /// A relationship-typed map value goes through here too (P5-58, BC-05).
+    /// A relationship-typed map value goes through here too (BC-05).
     fn convert_relationship(
         &mut self,
         slot: &RelationshipSlot,
@@ -927,14 +920,10 @@ fn utc_offset_input(value: &JsValue) -> UtcOffset {
     }
 }
 
-/// What `Serializer.fromJSON` reads from its merged options (the
-/// populator's options, and `validate`), as core's own
-/// [`FromJsonOptions`] (P5-102, accordproject/concerto-rust#456, C-7: this
-/// crate kept its own copies of the same options, with `utcOffset` as a JS
-/// value). `pub` so the concerto-wasm binding (P4-10) can read them for
-/// [`convert_primitive`] from the options object the TS visitor shell
-/// already has. The validator's own options are not read here: a
-/// `ValidatedResource` validates with its own.
+/// What `Serializer.fromJSON` reads from its merged options, as core's
+/// [`FromJsonOptions`]. `pub` so concerto-wasm can read them for
+/// [`convert_primitive`] from the TS shell's options object. The
+/// validator's options are not read: a `ValidatedResource` uses its own.
 pub fn from_json_options(options: &JsObject) -> FromJsonOptions {
     let get = |key: &str| options.get(key).unwrap_or(&JsValue::Undefined);
     let truthy = |key: &str| get(key).is_truthy();
@@ -960,8 +949,8 @@ pub fn from_json_options(options: &JsObject) -> FromJsonOptions {
 mod tests {
     use super::*;
 
-    /// P5-16: `object_entries_ref` gives `object_keys_ref`'s keys, in its
-    /// order (integer-like keys first, ascending), each with its value.
+    /// `object_entries_ref` gives `object_keys_ref`'s keys, in its order
+    /// (integer-like keys first, ascending), each with its value.
     #[test]
     fn object_entries_ref_matches_object_keys_ref() {
         for keys in [
@@ -987,7 +976,7 @@ mod tests {
 
     /// `ResourceValidator.checkItem`'s switch has no `default:` arm and
     /// starts from `invalid = false`, so a type name it does not list is
-    /// valid (P4-10 review).
+    /// valid.
     #[test]
     fn primitive_field_valid_matches_the_ts_switch() {
         assert!(primitive_field_valid(
@@ -1010,10 +999,9 @@ mod tests {
         assert!(primitive_field_valid("Unknown", &JsValue::Null));
     }
 
-    /// P5-24 (BC-07, R1): `strictQualifiedDateTimes: false` no longer
-    /// opens a lenient path. An embedded NUL (DV-009,
-    /// accordproject/concerto-rust#169), a date-only string or an
-    /// impossible date is rejected with or without the flag, with the same
+    /// BC-07: `strictQualifiedDateTimes: false` opens no lenient path. An
+    /// embedded NUL (DV-009), a date-only string or an impossible
+    /// date is rejected with or without the flag, with the same
     /// `ValidationException` as strict mode; a strict string is accepted
     /// either way, with `utcOffset` applied only when the flag is not set.
     #[test]
@@ -1053,8 +1041,8 @@ mod tests {
         assert!(d.is_utc());
     }
 
-    /// P5-51 (BC-10, R1; DV-012): `±Infinity` is not an Integer or a
-    /// Long, whatever the options; the same `ValidationException` as a
+    /// BC-10, DV-012: `±Infinity` is not an Integer or a Long,
+    /// whatever the options; the same `ValidationException` as a
     /// fractional number. `NaN` was already rejected.
     #[test]
     fn non_finite_integers_and_longs_are_rejected() {

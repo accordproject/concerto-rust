@@ -1,6 +1,5 @@
-//! The `ScalarDeclaration`, `ClassDeclaration` family and `MapDeclaration` bindings.
-//!
-//! Split out of `lib.rs` (P5-104, review M7); the crate root glob-imports it.
+//! The `ScalarDeclaration`, `ClassDeclaration` family and `MapDeclaration`
+//! bindings.
 
 use super::*;
 
@@ -11,8 +10,7 @@ use super::*;
 /// TS: ScalarDeclaration.process, after `super.process()`. Returns the
 /// snapshot `{type, validator, defaultValue}`, where `validator` is `null`,
 /// `{kind: "NumberValidator", lowerBound, upperBound}`, or
-/// `{kind: "StringValidator"}` (the view builds the TS `StringValidator`
-/// until P2-02 ports it).
+/// `{kind: "StringValidator"}` (the view builds the `StringValidator`).
 #[wasm_bindgen(js_name = scalarDeclarationProcess)]
 pub fn scalar_declaration_process(declaration: JsValue) -> JsResult<JsValue> {
     let body = || -> Result<JsValue> {
@@ -64,78 +62,39 @@ pub fn scalar_declaration_to_string(declaration: JsValue) -> JsResult<String> {
 }
 
 // ---------------------------------------------------------------------------
-// ClassDeclaration family (src/introspect/classdeclaration.ts,
-// assetdeclaration.ts, conceptdeclaration.ts, participantdeclaration.ts,
-// transactiondeclaration.ts, eventdeclaration.ts, enumdeclaration.ts) — P4-06
+// ClassDeclaration family (src/introspect/classdeclaration.ts and its
+// subclasses, enumdeclaration.ts included)
 //
-// The model graph these views meet is still TS (ModelFile/ModelManager are
-// not Rust-backed until P4-08; PORTING.md 1.4), so every ported member that
-// needs a collaborator (`getModelFile().getType(...)`, the model manager's
-// `getType`) reaches it through the JS-callback context (PORTING.md 1.4,
-// "until the arena owns the graph, every collaborator call goes through the
-// JS-callback context"): the member's own algorithm is ported here, and each
-// collaborator call it makes is a plain call back onto the JS object it was
-// given, via the `get`/`call` helpers (not the generic `ResolutionContext`
-// trait — the exact TS collaborator sequence, e.g. `_resolveSuperType`'s
-// `isImportedType`/`resolveImport` branch, matters more here than a shape
-// shared with the arena implementation). A member whose *only* pure content
-// is a small decision at the end (`classDeclarationProcess`'s superType/
-// idField choice, the kind-compatibility and identifier-redeclare checks) has
-// that decision itself pulled into `concerto_core::ClassDeclaration` as a
-// plain function, so the binding stays a collaborator-calling wrapper around
-// real core logic rather than a reimplementation of it (the grain
-// Declaration/Decorated, P4-05, used for `modelUtilIsValidIdentifier` and
-// `decoratedFindDuplicateName`).
-// ---------------------------------------------------------------------------
+// These bindings are handed the JS declaration views: each ports the
+// member's own algorithm and makes each collaborator call TS makes as a
+// call back onto the JS object, in TS's order (`get`/`call`), since the
+// view may be over stubbed collaborators. A pure decision at the end of a
+// member (`classDeclarationProcess`'s superType/idField choice, the
+// kind-compatibility and identifier-redeclare checks) is a plain function
+// of `concerto_core::ClassDeclaration`.
 
 /// The metamodel `$class`'s short name: the text after the last `.`.
 pub(crate) fn short_class(ast_class: &str) -> &str {
     ast_class.rsplit('.').next().unwrap_or(ast_class)
 }
 
-/// TS: `ClassDeclaration.process`, the superType/idField decision made
-/// before the `ast.properties` loop (the loop itself builds `Field`/
-/// `RelationshipDeclaration`/`EnumValueDeclaration` views; that construction
-/// stays in TS, and since P4-07 those Property views delegate their own
-/// `process`/`validate` to the `propertyProcess`/`propertyValidate`/
-/// `fieldProcess`/`relationshipDeclarationValidate` bindings). Returns `{superType, idField,
-/// addIdentifierField, addTimestampField}`:
-/// - `superType`: `this.ast.superType.name` when the AST names one — including
-///   the literal text `"undefined"` when a `superType` node is present but
-///   carries no `name` at all (`this.ast.superType.name` reads as `undefined`
-///   there, not `null`, and every downstream guard treats those two
-///   differently: only an explicit `name: null` reads as "no super type",
-///   review finding 2 on accordproject/concerto-rust#217); otherwise `null`
-///   only for the system model's own `Concept` declaration, else the implicit
-///   `'Concept'` (TS: the `this.modelFile.isSystemModelFile() && this.name
-///   === 'Concept'` exemption).
-/// - `idField`/`addIdentifierField`: mirrors the `this.ast.identified` match;
-///   `addIdentifierField` tells the view to still call its own
-///   `addIdentifierField()` (it pushes a real `Field` view).
-/// - `addTimestampField`: `this.fqn` is the system `Transaction` or `Event`.
+/// TS: `ClassDeclaration.process`'s superType/idField decision, as
+/// `{superType, idField, addIdentifierField, addTimestampField}`.
+/// `superType` is the AST's `superType.name` as is (`undefined` stays
+/// `undefined`; only `name: null` is no super type), else `null` for the
+/// system `Concept` and `'Concept'` otherwise. `addTimestampField` is set
+/// for the system `Transaction` and `Event`.
 #[wasm_bindgen(js_name = classDeclarationProcess)]
 pub fn class_declaration_process(declaration: JsValue) -> JsResult<JsValue> {
     let body = || -> Result<JsValue> {
         let ast = get(&declaration, "ast")?;
 
-        // TS: `if (this.ast.superType) { this.superType = this.ast.superType.name; }
-        // else if (!(isSystemModelFile && name === 'Concept')) { this.superType = 'Concept'; }`
-        // Neither branch ever calls `.toString()`: the outer test is plain JS
-        // truthiness of the whole `superType` node (not merely non-nullish —
-        // a fuzzed AST can put `false`/`0`/`""` there too, all falsy), and
-        // once truthy, whatever `.name` holds (string, number, boolean,
-        // `null`, absent, object, array) is stored on `this.superType`
-        // as-is, UNSTRINGIFIED and uncoerced. That raw JS value's own type
-        // and truthiness are themselves observable later: `_resolveSuperType`
-        // (`classDeclarationResolveSuperType` above) keys off its truthiness,
-        // `getProperty`/`getProperties` (below) off strict non-null, and
-        // every "Could not find super type" message off its `ToString` —
-        // three different tests a fuzzer can pull apart (`undefined` is
-        // falsy but not `null`; `ToString(undefined)` is `"undefined"`, not
-        // `""`). A single Rust `String` cannot answer the first two at once
-        // (accordproject/concerto-rust#219, P5-05 stage-2 T2c), so the raw
-        // `JsValue` is threaded straight through to the snapshot below
-        // instead of being coerced or blanked here the way `receiver` would.
+        // TS: `if (this.ast.superType) { this.superType = this.ast.superType.name; } else if
+        // (!(isSystemModelFile && name === 'Concept')) { this.superType = 'Concept'; }`. The
+        // outer test is JS truthiness of the node, and `.name` is stored as is, uncoerced:
+        // its truthiness (`_resolveSuperType`), strict non-null (`getProperty`/
+        // `getProperties`) and `ToString` (the error messages) can all differ, so the raw
+        // `JsValue` goes to the snapshot.
         let super_type_ast = get(&ast, "superType")?;
         let raw_super_type = if super_type_ast.is_truthy() {
             Some(get(&super_type_ast, "name")?)
@@ -143,10 +102,7 @@ pub fn class_declaration_process(declaration: JsValue) -> JsResult<JsValue> {
             None
         };
         // `process_decision` only needs to know whether the AST named a
-        // super type at all (`None` applies its own implicit-`Concept`
-        // default, or leaves it unset for the system model's own `Concept`);
-        // once it has named one, the placeholder's content is never read —
-        // `raw_super_type` is what actually reaches the snapshot.
+        // super type; `raw_super_type` is what reaches the snapshot.
         let explicit_super_type = raw_super_type.as_ref().map(|_| String::new());
         let is_system_model_file = if explicit_super_type.is_none() {
             let model_file = call(&declaration, "getModelFile", &[], "this.getModelFile")?;
@@ -158,50 +114,23 @@ pub fn class_declaration_process(declaration: JsValue) -> JsResult<JsValue> {
             )?
             .is_truthy()
         } else {
-            // TS never evaluates `this.modelFile.isSystemModelFile()` on this
-            // branch (short-circuited by `this.ast.superType`); no collaborator
-            // call to make.
+            // TS never evaluates `isSystemModelFile()` on this branch.
             false
         };
-        // TS: `name === 'Concept'` — a strict equality, not a `.toString()`
-        // call, so a non-string `this.name` (reachable through a fuzzed
-        // `ast.name`, missing, `null`, a bool, an array, ...) simply can
-        // never equal the literal `'Concept'`, and TS accepts every one of
-        // those without throwing (accordproject/concerto-rust#217); the
-        // empty string can't equal `'Concept'` either, so it stands in
-        // without a `receiver`/`js_string` call that could itself throw
-        // (or, for a value like `["Concept"]` whose `toString()` happens to
-        // read `"Concept"`, wrongly coerce a non-match into a match that
-        // real `===` never would).
+        // TS: `name === 'Concept'`, a strict equality, so a non-string name
+        // never matches and is never coerced.
         let name = get(&declaration, "name")?.as_string().unwrap_or_default();
 
-        // TS: `if (this.ast.identified) { ... }` — again plain truthiness of
-        // the whole node, not merely non-nullish.
+        // TS: `if (this.ast.identified) { ... }`, JS truthiness.
         let identified = get(&ast, "identified")?;
         let (identified_class, identified_name, raw_identified_name) = if identified.is_truthy() {
-            // TS: `this.ast.identified.$class === '...IdentifiedBy'` (strict
-            // equality) and `this.idField = this.ast.identified.name` (plain
-            // assignment) — neither coerces. A non-string `$class` can never
-            // match the literal comparison, so the empty string (never a
-            // real `$class`) stands in for it without a receiver check.
+            // TS: `this.ast.identified.$class === '...IdentifiedBy'` (strict)
+            // and `this.idField = this.ast.identified.name` (uncoerced).
             let class_value = get(&identified, "$class")?;
             let identified_class = class_value.as_string().unwrap_or_default();
-            // `raw_identified_name` is `this.ast.identified.name`, UNSTRINGIFIED
-            // and uncoerced, exactly as TS's plain assignment leaves it — a
-            // fuzzed AST can put a number, boolean, `null`, or leave it
-            // absent (`undefined`), and every one of those is falsy in TS,
-            // so `idField`'s later truthiness guard (in
-            // `ClassDeclaration.validate`, still TS) skips its
-            // `getProperty(this.idField)` check entirely rather than
-            // looking up a property literally named `"undefined"`/`"null"`/
-            // `"false"` the way stringifying here would produce
-            // (accordproject/concerto-rust#219 review: "Match TS name
-            // handling: keep undefined, not the string \"undefined\"").
-            // `identified_name` (a `&str`, for `process_decision` below) is
-            // only ever consulted on this same branch, and only to decide
-            // `process_decision`'s own placeholder `id_field` — which
-            // `id_field_js` below always overrides with the raw value once
-            // this branch is taken — so it need not itself be coerced.
+            // `raw_identified_name` is `this.ast.identified.name` as TS
+            // leaves it, so a falsy value skips `idField`'s later checks
+            // rather than naming a property `"undefined"`.
             let raw_identified_name = if identified_class == "concerto.metamodel@1.0.0.IdentifiedBy"
             {
                 Some(get(&identified, "name")?)
@@ -225,10 +154,8 @@ pub fn class_declaration_process(declaration: JsValue) -> JsResult<JsValue> {
             &fqn,
         );
 
-        // `raw_super_type` (the AST's own `.name` value, untouched) when the
-        // AST named a super type at all; otherwise `process_decision`'s own
-        // string decision (the implicit `'Concept'`, or `null` for the
-        // system model's own `Concept`).
+        // The AST's own `.name` value when it named a super type, else
+        // `process_decision`'s decision.
         let super_type_js = match raw_super_type {
             Some(v) => v,
             None => decision
@@ -236,11 +163,8 @@ pub fn class_declaration_process(declaration: JsValue) -> JsResult<JsValue> {
                 .as_deref()
                 .map_or(JsValue::NULL, JsValue::from_str),
         };
-        // `raw_identified_name` (the AST's own `.identified.name` value,
-        // untouched) when the AST named an explicit `IdentifiedBy`;
-        // otherwise `process_decision`'s own string decision (`$identifier`
-        // for the system-identified case, or `null` for no identity at
-        // all).
+        // The AST's own `.identified.name` value for an `IdentifiedBy`, else
+        // `process_decision`'s decision (`$identifier`, or `null`).
         let id_field_js = match raw_identified_name {
             Some(v) => v,
             None => decision
@@ -271,10 +195,9 @@ pub fn class_declaration_process(declaration: JsValue) -> JsResult<JsValue> {
 }
 
 /// TS: the super-type identifier redeclaration check in
-/// `ClassDeclaration.validate` (the block guarded by `superType.isIdentified()`,
-/// which the caller checks before calling this): `true` when the super type's
-/// existing identifier cannot be redeclared. Resolving `superType` itself
-/// (`getModelFile().getType(this.superType)`) stays TS.
+/// `ClassDeclaration.validate`, under `superType.isIdentified()` (the
+/// caller's check): `true` when the super type's identifier cannot be
+/// redeclared.
 #[wasm_bindgen(js_name = classDeclarationIdentifierRedeclareConflict)]
 pub fn class_declaration_identifier_redeclare_conflict(
     child_is_system_identified: bool,
@@ -289,21 +212,16 @@ pub fn class_declaration_identifier_redeclare_conflict(
 }
 
 /// `target[name] = value`, the write-back `_resolveSuperType` makes onto its
-/// own `this.superTypeDeclaration` field (a real field, not a getter — TS
-/// reads it directly as a cache in `getSuperTypeDeclaration`).
+/// `this.superTypeDeclaration` field.
 pub(crate) fn set_property(target: &JsValue, name: &str, value: &JsValue) -> Result<()> {
     Reflect::set(target, &JsValue::from_str(name), value).map_err(Error::Js)?;
     Ok(())
 }
 
-/// A real `IllegalModelException`, decorated with `model_file`/`location`
-/// exactly as `new IllegalModelException(message, modelFile, location)`
-/// would (`engine/errors.ts`'s `IllegalModel` factory applies the same
-/// decoration to `message` unconditionally): `model_file: Some(None)` marks
-/// the error as one TS passes a model file to, so [`throw`] attaches the
-/// caller's own JS model file object to the payload. `code` stays
-/// `"pre-port"` (`message` is TS's own un-templated string concatenation,
-/// not a catalogue entry).
+/// An `IllegalModelException` as `new IllegalModelException(message,
+/// modelFile, location)` builds it: `model_file: Some(None)` makes [`throw`]
+/// attach the caller's JS model file. `code` is `"pre-port"`: `message` is
+/// TS's own string concatenation.
 pub(crate) fn illegal_model_error(message: String, location: Option<Value>) -> Error {
     ContractError {
         kind: ErrorKind::IllegalModel,
@@ -317,12 +235,10 @@ pub(crate) fn illegal_model_error(message: String, location: Option<Value>) -> E
     .into()
 }
 
-/// BC-11 (R1): the `IllegalModelException` for a cyclic inheritance chain
-/// met by a walk over the JS declaration views, the same error the engine's
-/// own walk raises (concerto-core `ModelManager::class_info_of`). `cycle` is
-/// the loop from the declaration met again round to the one whose super type
-/// it is; `repeated` is that declaration. TS 5.0.0 overflowed V8's stack or
-/// ran out of memory instead (DV-013).
+/// BC-11: the `IllegalModelException` for a cyclic inheritance chain met by
+/// a walk over the JS declaration views, as the engine's own walk raises it.
+/// `cycle` is the loop from the declaration met again round to the one whose
+/// super type it is; `repeated` is that declaration.
 pub(crate) fn circular_inheritance_error(cycle: &[JsValue], repeated: &JsValue) -> Result<Error> {
     let fqn = |declaration: &JsValue| -> Result<String> { js_string(&get(declaration, "fqn")?) };
     let mut names = cycle.iter().map(fqn).collect::<Result<Vec<_>>>()?;
@@ -382,13 +298,11 @@ pub(crate) fn ast_location(declaration: &JsValue) -> Result<Option<Value>> {
     to_json(&get(&get(declaration, "ast")?, "location")?)
 }
 
-/// TS: the `classDecl = ...` resolution duplicated in
-/// `ClassDeclaration._resolveSuperType`, `.getProperty` and `.getProperties`
-/// (src/introspect/classdeclaration.ts): `this.getModelFile().isImportedType(name)`
-/// ? `this.modelFile.getModelManager().getType(this.getModelFile().resolveImport(name))`
-/// : `this.getModelFile().getType(name)`. `type_name` is the JS string being
-/// resolved (`this.superType`, in every caller here); the result may be
-/// nullish, exactly as `ModelFile.getType`/`ModelManager.getType` can answer.
+/// TS: the `classDecl = ...` resolution of `_resolveSuperType`,
+/// `getProperty` and `getProperties`:
+/// `this.getModelFile().isImportedType(name) ?
+/// this.modelFile.getModelManager().getType(this.getModelFile().resolveImport(name))
+/// : this.getModelFile().getType(name)`. The result may be nullish.
 pub(crate) fn resolve_named_type(declaration: &JsValue, type_name: &JsValue) -> Result<JsValue> {
     let model_file = call(declaration, "getModelFile", &[], "this.getModelFile")?;
     let is_imported = call(
@@ -441,17 +355,12 @@ pub(crate) const RESERVED_SYSTEM_TYPE_KINDS: [&str; 5] = [
     "isEvent",
 ];
 
-/// TS: `Declaration.validate`'s own check (P5-11,
-/// accordproject/concerto-rust#287), after `super.validate()` (the view's
-/// `Decorated.validate`): a declaration may not take the name of a type its
-/// model file imports (#648), unless the model manager's
-/// `dangerouslyAllowReservedSystemTypeNamesInUserModels` option is set and
-/// `this.isReservedSystemTypeImport(modelFile, name)` says the name
-/// resolves to a reserved system type. The same rule as concerto-core's
-/// `check_import_clash` (validation.rs), run over the view's collaborators,
-/// since a direct call may be on a view of a stubbed model file. Throws
-/// the `IllegalModelException` TS throws, naming `this.modelFile` and at
-/// `this.ast.location`; a collaborator's own error propagates unchanged.
+/// TS: `Declaration.validate`'s own check, after `super.validate()`: a
+/// declaration may not take the name of a type its model file imports,
+/// unless `dangerouslyAllowReservedSystemTypeNamesInUserModels` is set and
+/// `this.isReservedSystemTypeImport(modelFile, name)` holds (concerto-core's
+/// `check_import_clash`, over the view's collaborators). Throws TS's
+/// `IllegalModelException`; a collaborator's error propagates.
 #[wasm_bindgen(js_name = declarationValidate)]
 pub fn declaration_validate(declaration: JsValue) -> JsResult<()> {
     let body = || -> Result<()> {
@@ -506,13 +415,9 @@ pub fn declaration_validate(declaration: JsValue) -> JsResult<()> {
     )
 }
 
-/// TS: `Declaration.isReservedSystemTypeImport(modelFile, typeName)`
-/// (P5-11, accordproject/concerto-rust#287): whether `typeName` resolves,
-/// through `modelFile.getType`, to a declaration of a system model file
-/// that is one of the reserved kinds ([`RESERVED_SYSTEM_TYPE_KINDS`]). The
-/// same rule as concerto-core's `is_reserved_system_type_import`
-/// (validation.rs), run over the view's collaborators; their own errors
-/// propagate unchanged.
+/// TS: `Declaration.isReservedSystemTypeImport(modelFile, typeName)`:
+/// `typeName` resolves, through `modelFile.getType`, to a system model
+/// file's declaration of a reserved kind ([`RESERVED_SYSTEM_TYPE_KINDS`]).
 #[wasm_bindgen(js_name = declarationIsReservedSystemTypeImport)]
 pub fn declaration_is_reserved_system_type_import(
     model_file: JsValue,
@@ -544,12 +449,11 @@ pub fn declaration_is_reserved_system_type_import(
     })
 }
 
-/// TS: `ClassDeclaration._resolveSuperType`. Resolves `this.superType`
-/// through [`resolve_named_type`], throws the same `IllegalModelException`
-/// TS does when it cannot find the super type or the two kinds are
-/// incompatible ([`concerto_core::ClassDeclaration::kinds_compatible`]), and
-/// caches the result onto `this.superTypeDeclaration` before returning it —
-/// the same field `getSuperTypeDeclaration` reads back as a cache.
+/// TS: `ClassDeclaration._resolveSuperType`: resolves `this.superType`
+/// ([`resolve_named_type`]), throws TS's `IllegalModelException` when it is
+/// not found or the kinds are incompatible
+/// ([`concerto_core::ClassDeclaration::kinds_compatible`]), and caches the
+/// result in `this.superTypeDeclaration`.
 #[wasm_bindgen(js_name = classDeclarationResolveSuperType)]
 pub fn class_declaration_resolve_super_type(declaration: JsValue) -> JsResult<JsValue> {
     let body = || -> Result<JsValue> {
@@ -598,9 +502,8 @@ pub fn class_declaration_resolve_super_type(declaration: JsValue) -> JsResult<Js
     )
 }
 
-/// TS: `ClassDeclaration.getSuperTypeDeclaration`: the branch is pure field
-/// reads; the fallback calls back `this._resolveSuperType()` (a collaborator
-/// call — that method resolves and validates the super type).
+/// TS: `ClassDeclaration.getSuperTypeDeclaration`: field reads, else
+/// `this._resolveSuperType()`.
 #[wasm_bindgen(js_name = classDeclarationGetSuperTypeDeclaration)]
 pub fn class_declaration_get_super_type_declaration(declaration: JsValue) -> JsResult<JsValue> {
     run(|| {
@@ -643,11 +546,9 @@ pub fn class_declaration_get_super_type(declaration: JsValue) -> JsResult<JsValu
     })
 }
 
-/// TS: `ClassDeclaration.getAllSuperTypeDeclarations`: repeats
-/// `type = type.getSuperTypeDeclaration()` from `this`, collecting every
-/// non-null result. A declaration met again is a cyclic inheritance chain,
-/// the BC-11 `IllegalModelException` (R1; TS 5.0.0 looped until it ran out
-/// of memory, DV-013).
+/// TS: `ClassDeclaration.getAllSuperTypeDeclarations`: repeats `type =
+/// type.getSuperTypeDeclaration()`, collecting every non-null result. A
+/// declaration met again is the BC-11 `IllegalModelException`.
 #[wasm_bindgen(js_name = classDeclarationGetAllSuperTypeDeclarations)]
 pub fn class_declaration_get_all_super_type_declarations(declaration: JsValue) -> JsResult<Array> {
     run(|| {
@@ -679,11 +580,9 @@ pub fn class_declaration_get_all_super_type_declarations(declaration: JsValue) -
 }
 
 /// TS: `ClassDeclaration.getIdentifierFieldName`: `this.idField` if set,
-/// otherwise the super type's own answer, found through `getLocalType` (or,
-/// failing that, the model manager). A `null` super type resolution reaches
-/// the same unguarded `classDecl.getIdentifierFieldName()` call TS makes
-/// (and the same host `TypeError` `call` raises for it). A declaration met
-/// again is a cyclic inheritance chain (BC-11, [`SuperWalk`]).
+/// else the super type's answer, through `getLocalType` or the model
+/// manager; a `null` resolution reaches TS's unguarded call (a host
+/// `TypeError`). A declaration met again is BC-11's error ([`SuperWalk`]).
 #[wasm_bindgen(js_name = classDeclarationGetIdentifierFieldName)]
 pub fn class_declaration_get_identifier_field_name(declaration: JsValue) -> JsResult<JsValue> {
     run(|| {
@@ -727,36 +626,12 @@ pub fn class_declaration_get_identifier_field_name(declaration: JsValue) -> JsRe
     })
 }
 
-/// P5-19 (accordproject/concerto-rust#317): TS `ClassDeclaration
-/// .getIdentifierFieldName`, including its super type walk, in one binding.
-///
-/// Each level of the walk does what
-/// [`class_declaration_get_identifier_field_name`] does, but runs the
-/// `ClassDeclaration` methods the TS body reaches here instead of crossing
-/// back into JS: `this.getSuperType()` (through `getSuperTypeDeclaration()`,
-/// the field reads of [`class_declaration_get_super_type_declaration`], and
-/// `getFullyQualifiedName()`, a read of `fqn`), `this.getModelFile()` (a
-/// read of `modelFile`) and, the walk itself, `classDecl
-/// .getIdentifierFieldName()`. `_resolveSuperType`, `getLocalType`,
-/// `getModelManager` and `getType` are still called, as TS calls them, so
-/// every error is raised by the same collaborator as before.
-///
-/// P5-36 (BC-50, accordproject/concerto-rust#346): the walk always inlines.
-/// A `ClassDeclaration` method replaced at runtime (on the object or its
-/// prototype) is not called; replacing these methods is not supported. A
-/// `ScalarDeclaration` or `MapDeclaration` reached as a super type gives the
-/// same `null` its own `getIdentifierFieldName` does (no truthy `idField`
-/// or `superType`).
-///
-/// A super type seen earlier in the walk is a cyclic inheritance chain: the
-/// BC-11 `IllegalModelException` (R1; TS 5.0.0 recursed until V8's stack
-/// overflowed, DV-013).
-///
-/// Returns `[answer, cacheable, ...chain]`: `chain` is every declaration the
-/// walk read, from `declaration` on, and `cacheable` is false when the walk
-/// ended in a call (a nullish super type resolution), so its answer depends
-/// on more than the chain's fields (engine/views.ts keeps the answer only
-/// when it is true).
+/// TS `ClassDeclaration.getIdentifierFieldName` with its super type walk in
+/// one binding, calling `_resolveSuperType`, `getLocalType`,
+/// `getModelManager` and `getType` as TS does (BC-50: replaced methods are
+/// not called; BC-11 for a cycle). Returns `[answer, cacheable, ...chain]`:
+/// every declaration read, and whether the walk ended without a call, so
+/// the answer depends only on the chain's fields.
 #[wasm_bindgen(js_name = classDeclarationGetIdentifierFieldNameWalk)]
 pub fn class_declaration_get_identifier_field_name_walk(declaration: JsValue) -> JsResult<Array> {
     run(|| {
@@ -814,9 +689,9 @@ pub fn class_declaration_get_identifier_field_name_walk(declaration: JsValue) ->
                 )?;
             }
 
-            // `return classDecl.getIdentifierFieldName();` -- a nullish
-            // `classDecl` raises the same TypeError through `call`. A
-            // declaration met again is a cyclic inheritance chain (BC-11).
+            // `return classDecl.getIdentifierFieldName();`: a nullish
+            // `classDecl` raises TS's `TypeError` through `call`; a
+            // declaration met again is BC-11's error.
             if let Some(start) = chain.iter().position(|d| Object::is(d, &class_decl)) {
                 return Err(circular_inheritance_error(
                     chain.get(start..).unwrap_or_default(),
@@ -847,18 +722,10 @@ pub fn class_declaration_get_identifier_field_name_walk(declaration: JsValue) ->
     })
 }
 
-/// TS: `ClassDeclaration.getProperty`: the receiver's own property if it has
-/// one, otherwise the super type's answer (through [`resolve_named_type`]).
-/// A `null` super type resolution reaches the same unguarded
-/// `classDecl.getProperty(name)` call TS makes.
-///
-/// The guard is `this.superType !== null` — strict, not TS truthiness — so a
-/// fuzzer-produced `this.superType` that is merely falsy (`undefined`, `0`,
-/// `false`, `""`, from a `superType` AST node whose `name` was itself falsy;
-/// [`class_declaration_process`]'s own module doc) still reaches the same
-/// resolution TS does, rather than being treated as "no super type" the way
-/// `getSuperType`/`_resolveSuperType`'s own, separate, truthiness guard
-/// would (accordproject/concerto-rust#219, P5-05 stage-2 T2c).
+/// TS: `ClassDeclaration.getProperty`: the own property, else the super
+/// type's answer ([`resolve_named_type`]), a `null` resolution reaching TS's
+/// unguarded call. The guard is `this.superType !== null`, not truthiness,
+/// so a falsy super type name is still resolved.
 #[wasm_bindgen(js_name = classDeclarationGetProperty)]
 pub fn class_declaration_get_property(declaration: JsValue, name: JsValue) -> JsResult<JsValue> {
     run(|| {
@@ -872,9 +739,7 @@ pub fn class_declaration_get_property(declaration: JsValue, name: JsValue) -> Js
         if !nullish(&own) {
             return Ok(own);
         }
-        // TS tests `this.superType !== null` (classdeclaration.ts), not
-        // truthiness: an empty-string or `undefined` super type still goes
-        // on to be resolved (#218).
+        // TS tests `this.superType !== null`, not truthiness.
         let super_type = get(&declaration, "superType")?;
         if super_type.is_null() {
             return Ok(JsValue::NULL);
@@ -884,14 +749,10 @@ pub fn class_declaration_get_property(declaration: JsValue, name: JsValue) -> Js
     })
 }
 
-/// TS: `ClassDeclaration.getProperties`: the receiver's own properties, plus
-/// (when it has a super type) the super type's own answer, found through
-/// [`resolve_named_type`] — unlike `getProperty`, TS itself guards this
-/// resolution with the same "Could not find super type" `IllegalModelException`
-/// `_resolveSuperType` raises.
-///
-/// Same `this.superType !== null` guard as `getProperty` above (not
-/// truthiness): accordproject/concerto-rust#219.
+/// TS: `ClassDeclaration.getProperties`: the own properties, then the super
+/// type's answer ([`resolve_named_type`]), the resolution guarded by
+/// `_resolveSuperType`'s "Could not find super type" error. The same
+/// `this.superType !== null` guard as `getProperty`.
 #[wasm_bindgen(js_name = classDeclarationGetProperties)]
 pub fn class_declaration_get_properties(declaration: JsValue) -> JsResult<Array> {
     let body = || -> Result<Array> {
@@ -906,10 +767,8 @@ pub fn class_declaration_get_properties(declaration: JsValue) -> JsResult<Array>
         for property in Array::from(&own).iter() {
             result.push(&property);
         }
-        // TS tests `this.superType !== null` (classdeclaration.ts), not
-        // truthiness: an empty-string or `undefined` super type still goes
-        // on to be resolved, fails to, and throws "Could not find super
-        // type" (#218).
+        // TS tests `this.superType !== null`, not truthiness, so a falsy
+        // name is resolved, fails, and throws "Could not find super type".
         let super_type = get(&declaration, "superType")?;
         if super_type.is_null() {
             return Ok(result);
@@ -1022,44 +881,23 @@ pub fn class_declaration_get_nested_property(
 
 // ---------------------------------------------------------------------------
 // MapDeclaration, MapKeyType, MapValueType (src/introspect/mapdeclaration.ts,
-// mapkeytype.ts, mapvaluetype.ts) — P4-07
+// mapkeytype.ts, mapvaluetype.ts)
 // ---------------------------------------------------------------------------
 
-/// TS: MapDeclaration.process, after `super.process()`. Checks the AST's
-/// `key`/`value` shape with the same checks `ModelUtil.isValidMapKey`/
-/// `isValidMapValue` already run through Rust (P2-06), called here
-/// natively ([`mu::is_valid_map_key`], [`mu::is_valid_map_value`]) rather
-/// than through another JS round trip. The view still builds the
-/// `MapKeyType`/`MapValueType` child views itself afterwards, the same way
-/// `propertyProcess` still builds its own `CollectionSizeValidator`.
+/// TS: MapDeclaration.process, after `super.process()`: checks the AST's
+/// `key`/`value` shape ([`mu::is_valid_map_key`],
+/// [`mu::is_valid_map_value`]). The view builds the
+/// `MapKeyType`/`MapValueType` child views itself.
 #[wasm_bindgen(js_name = mapDeclarationProcess)]
 pub fn map_declaration_process(view: JsValue) -> JsResult<()> {
     let body = || -> Result<()> {
         let ast = get(&view, "ast")?;
-        // TS interpolates the raw `this.ast.name` into a template literal
-        // in every one of this function's own messages
-        // (`MapDeclaration must contain Key & Value properties
-        // ${this.ast.name}`, mapdeclaration.ts), which applies JS `ToString`
-        // to whatever value is there — including `undefined` (a missing
-        // `name` key stringifies to the literal text `"undefined"`, not an
-        // empty string) and `null` (`"null"`), not only a real string
-        // (accordproject/concerto-rust#219, P5-05 stage-2 T2c): collapsing
-        // both of those to `String::new()` reported `"MapDeclaration must
-        // contain Key & Value properties  "` (an empty name) where TS
-        // reports `"... properties undefined "`/`"... properties null "`.
+        // TS interpolates the raw `this.ast.name` into every message here,
+        // so `undefined` and `null` read as such, not as an empty name.
         let name = js_string(&opt_get(&ast, "name")?)?;
-        // TS: `if (!this.ast.key || !this.ast.value)` — plain JS truthiness
-        // of the whole node, not merely "not `undefined`": a fuzz-mutated
-        // `key`/`value` of `false`, `0`, `null` or `""` is exactly as falsy
-        // as a missing one, and must fail this same check, not reach
-        // `is_valid_map_key`/`is_valid_map_value`'s own, differently-worded
-        // rejection instead (accordproject/concerto-rust#219, P5-05
-        // stage-2 T2c: `key: 0` reached `to_json`'s `is_undefined`-only gate
-        // here, which passed it through as `Some(0)`, giving "must contain
-        // valid MapKeyType" instead of TS's "must contain Key & Value
-        // properties" — the same theme `MapDeclaration::from_json`'s native
-        // Rust construction path already fixed, here again for this WASM
-        // binding's own, separate check).
+        // TS: `if (!this.ast.key || !this.ast.value)`, JS truthiness: a
+        // falsy `key`/`value` fails this check, not the later key/value
+        // checks.
         let key_raw = get(&ast, "key")?;
         let value_raw = get(&ast, "value")?;
         let key = to_json(&key_raw)?;
@@ -1104,11 +942,8 @@ pub fn map_declaration_process(view: JsValue) -> JsResult<()> {
     )
 }
 
-/// TS: MapKeyType.processType. Pure AST logic (module doc); the `$class`
-/// switch has no default arm, which is unreachable here since
-/// `mapDeclarationProcess`'s `mu::is_valid_map_key` check already restricts
-/// the AST to one of these three kinds before a `MapKeyType` is ever built —
-/// the empty-string fallback below is never actually observed.
+/// TS: MapKeyType.processType. The `$class` switch has no default arm;
+/// `mapDeclarationProcess` already restricts the AST to its three kinds.
 #[wasm_bindgen(js_name = mapKeyTypeProcess)]
 pub fn map_key_type_process(view: JsValue) -> JsResult<JsValue> {
     run(|| {
@@ -1132,10 +967,9 @@ pub fn map_key_type_process(view: JsValue) -> JsResult<JsValue> {
     })
 }
 
-/// TS: MapKeyType.validate. `this.modelFile.getType(...)` is a live TS
-/// collaborator call (`ModelFile` is not yet Rust-backed, P2-08); the
-/// scalar-kind check is [`js_is_valid_map_key_scalar`], over that JS
-/// declaration (the arena's own is [`mu::is_valid_map_key_scalar`]).
+/// TS: MapKeyType.validate, over the JS model file's `getType(...)`; the
+/// scalar-kind check is [`js_is_valid_map_key_scalar`] over that JS
+/// declaration.
 #[wasm_bindgen(js_name = mapKeyTypeValidate)]
 pub fn map_key_type_validate(view: JsValue) -> JsResult<()> {
     run(|| {
@@ -1153,10 +987,8 @@ pub fn map_key_type_validate(view: JsValue) -> JsResult<()> {
             &[type_name_ast],
             "modelFile.getType",
         )?;
-        // `modelFile.getType` returns `null` when the type is not found (not
-        // a thrown error), and TS's `isValidMapKeyScalar(decl)` optional-
-        // chains off that (`decl?.isScalarDeclaration?.()`), so a nullish
-        // `decl` here must become `None`, not `Some` of a JS null.
+        // `modelFile.getType` answers `null` for a type not found, which
+        // `isValidMapKeyScalar` optional-chains off, so it becomes `None`.
         let decl_opt = if nullish(&decl) { None } else { Some(&decl) };
         let valid = js_is_valid_map_key_scalar(decl_opt)?;
         if valid != Some(true) {
@@ -1173,9 +1005,8 @@ pub fn map_key_type_validate(view: JsValue) -> JsResult<()> {
     })
 }
 
-/// TS: MapValueType.processType. Pure AST logic (module doc), except the
-/// `ObjectMapValueType`/`RelationshipMapValueType` arm's own shape checks,
-/// which TS throws inline for.
+/// TS: MapValueType.processType, with the inline checks of the
+/// `ObjectMapValueType`/`RelationshipMapValueType` arm.
 #[wasm_bindgen(js_name = mapValueTypeProcess)]
 pub fn map_value_type_process(view: JsValue) -> JsResult<JsValue> {
     run(|| {
@@ -1190,18 +1021,9 @@ pub fn map_value_type_process(view: JsValue) -> JsResult<JsValue> {
         };
         let type_name = match short_class(&class) {
             "ObjectMapValueType" | "RelationshipMapValueType" => {
-                // TS: `!('type' in ast)`. `ast` is a genuine JS object here
-                // (its own `$class` was just read as a real string above),
-                // so the `in` operator itself cannot throw on this check; it
-                // is exactly "does the key exist", true whenever `type` is
-                // present at all — including an explicit `type: null`, which
-                // is present, not missing. `get` returns real `undefined`
-                // only for a key that is not there at all, so testing that
-                // directly (not `nullish`, which also matches a present
-                // `null`) is what keeps the two apart
-                // (accordproject/concerto-rust#219 stage-2 T2c: `nullish`
-                // here wrongly took the "missing type" branch for a present
-                // `type: null`, which TS does not).
+                // TS: `!('type' in ast)`: `ast` is an object here, so this
+                // is key presence, true for a present `type: null` too
+                // (`get` gives `undefined` only for a missing key).
                 let ast_type = get(&ast, "type")?;
                 if ast_type.is_undefined() {
                     return Err(ContractError::new(
@@ -1211,14 +1033,9 @@ pub fn map_value_type_process(view: JsValue) -> JsResult<JsValue> {
                     )
                     .into());
                 }
-                // TS: `!('$class' in ast.type) || !('name' in ast.type)`.
-                // Unlike the check above, `ast.type` is NOT guaranteed to be
-                // an object here — a fuzzed AST can set it to `null`, a
-                // boolean, a number or a string — and the ECMAScript `in`
-                // operator throws a `TypeError` when its right-hand side is
-                // not an object (an array or a plain object does not throw;
-                // it just falls through to the "malformed type" rejection
-                // below like any other object missing both keys).
+                // TS: `!('$class' in ast.type) || !('name' in ast.type)`:
+                // `ast.type` may be a primitive, for which `in` throws a
+                // `TypeError`.
                 if !ast_type.is_object() && !ast_type.is_function() {
                     return Err(type_error(
                         "engine-typeerror-inoperator",
@@ -1230,18 +1047,8 @@ pub fn map_value_type_process(view: JsValue) -> JsResult<JsValue> {
                 }
                 let type_class = get(&ast_type, "$class")?;
                 let type_name_field = get(&ast_type, "name")?;
-                // TS: `!('$class' in ast.type) || !('name' in ast.type)` —
-                // a key-presence check, not a nullish one
-                // (accordproject/concerto-rust#219 stage-2 T2c: this used
-                // `nullish`, which wrongly took the "malformed type" branch
-                // below for a present `type.$class: null`/`type.name: null`,
-                // when TS's `in` sees the key, skips this branch, and goes
-                // on to the `$class !== 'TypeIdentifier'` check instead —
-                // the same "missing key" vs "present but null" distinction
-                // this function's own `ast_type.is_undefined()` check above
-                // already gets right for the outer `type` key). `get`
-                // returns real `undefined` only for a key that is not there
-                // at all, exactly like the outer check.
+                // Key presence, as TS's `in`: a present `null` passes on to
+                // the `$class !== 'TypeIdentifier'` check.
                 if type_class.is_undefined() || type_name_field.is_undefined() {
                     return Err(ContractError::new(
                         ErrorKind::IllegalModel,
@@ -1272,8 +1079,7 @@ pub fn map_value_type_process(view: JsValue) -> JsResult<JsValue> {
     })
 }
 
-/// TS: MapValueType.validate. `this.modelFile.getType(...)` is a live TS
-/// collaborator call (`ModelFile` is not yet Rust-backed, P2-08), and so is
+/// TS: MapValueType.validate, over the JS model file's `getType(...)` and
 /// the declaration's `isMapDeclaration?.()` ([`js_declaration_is`]).
 #[wasm_bindgen(js_name = mapValueTypeValidate)]
 pub fn map_value_type_validate(view: JsValue) -> JsResult<()> {

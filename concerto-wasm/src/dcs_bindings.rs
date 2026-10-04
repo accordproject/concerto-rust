@@ -1,30 +1,25 @@
-//! The DecoratorManager, DCS converter and extractor bindings (P4-09).
+//! The DecoratorManager, DCS converter and extractor bindings.
 //!
-//! Split out of `lib.rs` (P5-104, review M7); the crate root glob-imports it.
+//! Split out of `lib.rs`; the crate root glob-imports it.
 
 use super::*;
 
 // ---------------------------------------------------------------------------
 // DecoratorManager, DCS converter and extractor (src/decoratormanager.ts,
-// src/decoratorextractor.ts) — P4-09
+// src/decoratorextractor.ts)
 // ---------------------------------------------------------------------------
 //
-// The DecoratorManager operations run on the source ModelManager's own
-// handle (`dcsDecorateModels`, `dcsExtract`, `dcsValidate`) or on a resident
-// `DcsManagerHandle` built from the model ASTs a view reads off its
-// `ModelManager` with `getAst` (P5-27, P5-55); P5-103 removed the per-call
-// bindings that built a throwaway native `ModelManager` on every call. The
-// result is staged into the new ModelManager's handle. `dcsconverter.ts`
-// stays out of this: the seam ledger classifies every one of its members TS
-// ("YAML (de)serialisation via the `yaml` npm lib ... no model semantics"),
-// so `DecoratorManager.jsonToYaml`/`yamlToJson` only need `validate` below —
-// the YAML conversion itself is unchanged TS on both sides of the view.
+// The operations run on the source ModelManager's own handle
+// (`dcsDecorateModels`, `dcsExtract`, `dcsValidate`) or on a resident
+// `DcsManagerHandle` built from the model ASTs a view reads with `getAst`.
+// The result is staged into the new ModelManager's handle. `dcsconverter.ts`
+// (YAML conversion, no model semantics) stays in TS.
 
 /// `new ModelManager()` (`src/modelmanager.ts`), then the ASTs of the
 /// `models` array (anything but an array loads nothing) added the way
 /// `fromAst` does, each moved into its model file
-/// ([`ModelManager::add_owned_model_with_definitions`]) rather than copied
-/// (P5-40, F-B).
+/// ([`ModelManager::add_owned_model_with_definitions`]) rather than
+/// copied.
 pub(crate) fn model_manager_from_owned_asts(models: Value) -> Result<ModelManager> {
     let mut mm = ModelManager::new()?;
     if let Value::Array(models) = models {
@@ -93,10 +88,9 @@ pub(crate) fn extract_options_from_js(options: &Value) -> dcs::ExtractOptions {
     }
 }
 
-/// P5-41 (F-C, accordproject/concerto-rust#351): the `{ "$class", "models" }`
-/// AST of a manager's own models (the system ones included, in load
-/// order), serialised straight from its model ASTs, without cloning them
-/// into a new `Value`.
+/// The `{ "$class", "models" }` AST of a manager's own models (the system
+/// ones included, in load order), serialised straight from its model ASTs,
+/// without cloning them into a new `Value`.
 pub(crate) struct ModelManagerAstView<'a>(&'a ModelManager);
 
 impl serde::Serialize for ModelManagerAstView<'_> {
@@ -169,27 +163,13 @@ pub fn decorator_manager_execute_property_command(
 }
 
 // ---------------------------------------------------------------------------
-// P5-27 (F6, accordproject/concerto-rust#332): a resident DCS manager with
-// staged-handle results. Additive: the `decoratorManager*` bindings above
-// are unchanged.
+// A resident DCS manager with staged-handle results.
 //
-// The bindings above rebuild the input manager from the source models' AST
-// on every call, and hand back the result models as AST only. The view then
-// loads that AST into a new ModelManager (`fromAst`), which sends every
-// model back into Rust (`stageModelFile`), reads each header across the
-// boundary (`modelFileFromAstHeader`) and validates the whole set again
-// (`validateModelFiles`), although Rust has just loaded and validated those
-// same models.
-//
-// [`DcsManagerHandle`] keeps the input manager resident, so the view builds
-// it once per source ModelManager and reuses it while that manager's epoch
-// and model files are unchanged (engine/views.ts `dcsManagerFor`). Each of
-// its operations stages the result's model files into the new
-// ModelManager's own handle (`target`) and returns, with the result AST,
-// each file's stage id and header ([`stage_shared`], in the flat layout since P5-101), and whether the
-// result was validated. The view builds each ModelFile from its stage id and
-// header without sending the AST again, and skips its own
-// `validateModelFiles` when Rust has already validated the same files.
+// [`DcsManagerHandle`] keeps the input manager resident. Each operation
+// stages the result's model files into the new ModelManager's handle
+// (`target`) and returns the result AST, each file's stage id and header
+// ([`stage_shared`], flat layout) and whether the result was validated, so
+// the view neither sends the AST again nor re-runs `validateModelFiles`.
 // ---------------------------------------------------------------------------
 
 /// TS `EXCLUDE_NS` (src/basemodelmanager.ts): the system namespaces
@@ -197,20 +177,12 @@ pub fn decorator_manager_execute_property_command(
 pub(crate) const DCS_EXCLUDE_NS: [&str; 3] =
     ["concerto@1.0.0", "concerto", "concerto.decorator@1.0.0"];
 
-/// P5-101 (D-4, D-13; accordproject/concerto-rust#455): stages each of a
-/// DecoratorManager result's model files, with its header, into `target`'s
-/// staging slot, and returns one entry per file, in
-/// the manager's load order: `null` for a system file `fromAst`
-/// skips ([`DCS_EXCLUDE_NS`]), otherwise the stage in the flat layout every
-/// staging path returns ([`FlatStaged`]). The one helper both
-/// [`stage_result`] and [`dcs_memo::DcsExtractKept::stage`] stage through. Staging
-/// never changes `target`'s manager or epoch, and has one capacity policy:
-/// past [`StagedModelFiles::CAPACITY`] the oldest stage is evicted
-/// ([`StagedModelFiles::insert_shared`]), and its file falls back to
-/// sending its AST, as any evicted stage does.
-///
-/// P5-77 (accordproject/concerto-rust#419): each file is staged shared with
-/// the result (`ModelManager::shared_model_files`), not deep-copied.
+/// Stages each file of a DecoratorManager result, shared and with its
+/// header, into `target`'s staging slot: one entry per file in load order,
+/// `null` for a system file `fromAst` skips ([`DCS_EXCLUDE_NS`]), else a
+/// [`FlatStaged`]. The one helper [`stage_result`] and
+/// [`dcs_memo::DcsExtractKept::stage`] stage through; it never moves
+/// `target`'s epoch, and evicts as [`StagedModelFiles::insert_shared`] does.
 pub(crate) fn stage_shared<'h, 'a: 'h>(
     target: &mut ModelManagerHandle,
     files: impl Iterator<Item = (&'h Arc<ModelFile>, Option<&'h StagedHeader<'a>>)>,
@@ -242,17 +214,12 @@ pub(crate) fn stage_result(target: &mut ModelManagerHandle, result: &ModelManage
     )
 }
 
-/// The input manager of the `DecoratorManager` operations (P5-27, F6), for
-/// a source ModelManager whose own handle cannot stand for it: the source
-/// models, as the view reads them off `modelManager.getAst(resolve,
-/// false).models`, loaded once ([`model_manager_from_owned_asts`]). The
-/// view builds one per operation and frees it (P5-103 removed the copy it
-/// kept per source manager, which only a manager the source handle serves
-/// could use). The operations never change its models; `decorateModels`
-/// sets its `decoratorValidation` to `target`'s and leaves it so (P5-54),
-/// which is harmless, since the view frees it after the one operation
-/// (P5-104, D-11; the source handle's [`ModelManagerHandle::dcs_decorate_models`]
-/// restores its own).
+/// The input manager of the `DecoratorManager` operations, for a source
+/// ModelManager whose own handle cannot stand for it: the source models
+/// (`modelManager.getAst(resolve, false).models`) loaded once
+/// (`model_manager_from_owned_asts`). The view builds one per operation
+/// and frees it, so `decorateModels` setting its `decoratorValidation` to
+/// `target`'s is harmless.
 #[wasm_bindgen]
 pub struct DcsManagerHandle {
     manager: ModelManager,
@@ -271,23 +238,11 @@ impl DcsManagerHandle {
         })
     }
 
-    /// TS: `DecoratorManager.decorateModels` on the resident manager, with
-    /// the result staged into `target` (the new ModelManager's handle, as
-    /// the view's `clearModelFiles` left it). Returns `{ast, staged,
-    /// validated}`: `ast` is the decorated models' AST, `staged` is
-    /// [`stage_result`]'s entries for `ast.models`, and `validated` is
-    /// whether the result manager was validated (every model but the system
-    /// ones).
-    ///
-    /// P5-54 (accordproject/concerto-rust#375): the result is validated
-    /// with `target`'s `decoratorValidation`, as TS validates it in
-    /// `new ModelManager({decoratorValidation: modelManager
-    /// .getDecoratorValidation()}).fromAst(…)`: the view builds `target`
-    /// with the source manager's option, and [`dcs::decorate_models`] gives
-    /// its result the input manager's, so the resident manager takes
-    /// `target`'s before it runs. A fresh resident manager has the default
-    /// (disabled) option, so without this the view, which trusts
-    /// `validated`, skipped the decorator checks.
+    /// TS: `DecoratorManager.decorateModels` on the resident manager, staging
+    /// the result into `target`. Returns `{ast, staged, validated}`. The result
+    /// is validated with `target`'s `decoratorValidation`, as TS's
+    /// `new ModelManager({decoratorValidation: ...}).fromAst(...)` does;
+    /// otherwise the view, which trusts `validated`, would skip those checks.
     #[wasm_bindgen(js_name = decorateModels)]
     pub fn decorate_models(
         &mut self,
@@ -300,11 +255,10 @@ impl DcsManagerHandle {
         run(|| staged_decorate_models(&self.manager, target, &decorator_command_sets, &options))
     }
 
-    /// P5-101 (D-10, accordproject/concerto-rust#455): the three extract
-    /// operations as one binding, `action` selecting which
-    /// ([`extract_action`]: 0 `extractDecorators`, 1 `extractVocabularies`,
-    /// 2 `extractNonVocabDecorators`), the result staged into `target`.
-    /// P5-103 removed the three per-action bindings.
+    /// The three extract operations as one binding, `action` selecting
+    /// which (`extract_action`: 0 `extractDecorators`, 1
+    /// `extractVocabularies`, 2 `extractNonVocabDecorators`), the result
+    /// staged into `target`.
     #[wasm_bindgen(js_name = extract)]
     pub fn extract_with_action(
         &self,
@@ -319,15 +273,11 @@ impl DcsManagerHandle {
 
 #[wasm_bindgen]
 impl ModelManagerHandle {
-    /// TS: `DecoratorManager.validate`'s structural check
-    /// (`serializer.fromJSON(decoratorCommandSet)`), against this handle's
-    /// own resident manager (P5-27, F6). The view calls it on the
-    /// `validationModelManager` it has just built and returns (the
-    /// metamodel, the caller's model files and the DCS model), once that
-    /// manager's rustHandle mirrors its model files; so it neither sends
-    /// the model files again nor rebuilds a manager from them, and
-    /// [`dcs::validate_against`] throws what [`dcs::validate`] throws at the
-    /// same step. Never changes the manager.
+    /// TS: `DecoratorManager.validate`'s structural check, on this handle's
+    /// manager: the view calls it on the `validationModelManager` it has just
+    /// built, once its rustHandle mirrors the files, so nothing is sent or
+    /// rebuilt. [`dcs::validate_against`] throws what [`dcs::validate`] throws
+    /// at the same step. Never changes the manager.
     #[wasm_bindgen(js_name = dcsValidate)]
     pub fn dcs_validate(&self, decorator_command_set: JsValue) -> JsResult<()> {
         run(|| {
@@ -338,9 +288,9 @@ impl ModelManagerHandle {
     }
 }
 
-/// P5-101 (D-10): the extract operation the `action` argument of
-/// `dcsExtract`/`extract` names: 0 `ExtractAll` (`extractDecorators`), 1
-/// `ExtractVocab` (`extractVocabularies`), 2 `ExtractNonVocab`
+/// The extract operation the `action` argument of `dcsExtract`/`extract`
+/// names: 0 `ExtractAll` (`extractDecorators`), 1 `ExtractVocab`
+/// (`extractVocabularies`), 2 `ExtractNonVocab`
 /// (`extractNonVocabDecorators`). Any other number is a plain `Error`, which
 /// the view never passes.
 pub(crate) fn extract_action(action: u32) -> Result<dcs::extractor::Action> {
@@ -389,21 +339,18 @@ pub(crate) fn staged_decorate_models(
     let applied = !sets.is_empty();
     let decorated = dcs::decorate_models(manager, &mut sets, &mut opts)?;
     let validated = applied && opts.disable_metamodel_validation != Some(true);
-    // P5-102 (D-5, C-3): extract's writer. `{ast, staged, validated}` is
-    // written as text straight from the result's model ASTs
-    // ([`ModelManagerAstView`]), then parsed once, with no intermediate
-    // `Value` (P5-104, D-11 removed that fallback). The result's ASTs are not compacted as extract's
-    // are (P5-77): a decorated manager is usually read again (extracted
-    // from, validated, serialised), and re-parsing every compacted AST in
-    // WASM then cost far more than compaction saved (P5-102 measured the
-    // `extract_cold` row 3.7x slower on the synthetic-large set).
+    // Extract's writer: `{ast, staged, validated}` is written as text
+    // straight from the result's model ASTs ([`ModelManagerAstView`]) and
+    // parsed once. The ASTs are not compacted as extract's are: a decorated
+    // manager is usually read again, and re-parsing compacted ASTs in WASM
+    // costs more than compaction saves.
     let staged = stage_result(target, &decorated);
     decorate_result_js(&decorated, &staged, validated)
 }
 
 /// A JS array argument's elements, moved out of its `Value` rather than
-/// copied (P5-102): anything but an array (`undefined` included) gives
-/// none, as `as_array().cloned().unwrap_or_default()` read it.
+/// copied: anything but an array (`undefined` included) gives none, as
+/// `as_array().cloned().unwrap_or_default()` read it.
 pub(crate) fn owned_array(value: Option<Value>) -> Vec<Value> {
     match value {
         Some(Value::Array(items)) => items,
@@ -411,9 +358,8 @@ pub(crate) fn owned_array(value: Option<Value>) -> Vec<Value> {
     }
 }
 
-/// The JSON text of `{ast, staged, validated}` for a decorate result:
-/// byte for byte `serde_json`'s text of [`staged_decorate_models`]'s former
-/// intermediate `Value`, written without copying any AST.
+/// The JSON text of `{ast, staged, validated}` for a decorate result,
+/// written without copying any AST.
 pub(crate) fn decorate_result_text(
     decorated: &ModelManager,
     staged: &[Value],
@@ -433,8 +379,7 @@ pub(crate) fn decorate_result_text(
 }
 
 /// The JS value of a decorate result: [`decorate_result_text`], parsed.
-/// The text is written from values serde built, so neither step fails
-/// (P5-104, D-11: the intermediate-`Value` fallback is gone).
+/// The text is written from values serde built, so neither step fails.
 pub(crate) fn decorate_result_js(
     decorated: &ModelManager,
     staged: &[Value],
@@ -455,25 +400,15 @@ pub(crate) fn staged_extract(
     let options_json = to_json(options)?.unwrap_or_else(|| json!({}));
     let opts = extract_options_from_js(&options_json);
     let result = dcs::extract(manager, &opts, action, false)?;
-    // P5-77: staged shared, with the result's ASTs kept as text.
+    // Staged shared, with the result's ASTs kept as text.
     Ok(compacted_extract_js(target, result)?.0)
 }
 
 // ---------------------------------------------------------------------------
-// P5-55 (T1, F-A1, accordproject/concerto-rust#376): the DecoratorManager
-// operations on the source ModelManager's own rustHandle. Additive: the
-// `decoratorManager*` bindings and [`DcsManagerHandle`] are unchanged and
-// stay the view's fallbacks.
-//
-// The view's source ModelManager already mirrors its model files into its
-// rustHandle (P4-08, P5-34), so the handle holds exactly the models a
-// [`DcsManagerHandle`] would be built from: the same ASTs, loaded the same
-// way, with the same system models. [`dcs::decorate_models`] and
-// [`dcs::extract`] resolve those models themselves
-// (`ModelManager::models_ast`), so running them on the handle's own manager
-// skips the copy (`getAst`, then JsValue to `Value`, then the load) that a
-// cold [`DcsManagerHandle`] costs. Each operation is
-// [`DcsManagerHandle`]'s, staged into `target` the same way.
+// The DecoratorManager operations on the source ModelManager's own
+// rustHandle, which already mirrors the source's model files. Running them
+// on the handle's own manager skips the `getAst` copy and load a cold
+// [`DcsManagerHandle`] costs; results are staged into `target` the same way.
 // ---------------------------------------------------------------------------
 
 #[wasm_bindgen]
@@ -481,9 +416,9 @@ impl ModelManagerHandle {
     /// [`DcsManagerHandle::decorate_models`] on this handle's own manager.
     /// `target` is the new ModelManager's handle, never this one. The result
     /// is validated with `target`'s `decoratorValidation`, as
-    /// [`DcsManagerHandle::decorate_models`] validates it (P5-54): this
-    /// manager's own option is set to it for the call and restored after,
-    /// so the call never changes this manager (nor its epoch).
+    /// [`DcsManagerHandle::decorate_models`] validates it: this manager's
+    /// own option is set to it for the call and restored after, so the call
+    /// never changes this manager (nor its epoch).
     #[wasm_bindgen(js_name = dcsDecorateModels)]
     pub fn dcs_decorate_models(
         &mut self,
@@ -501,9 +436,8 @@ impl ModelManagerHandle {
         result
     }
 
-    /// P5-101 (D-10): [`DcsManagerHandle::extract_with_action`] on this
-    /// handle's own manager, through the per-epoch memo, as the three
-    /// `dcsExtract*` bindings run it. Additive: those are unchanged.
+    /// [`DcsManagerHandle::extract_with_action`] on this handle's own
+    /// manager, through the per-epoch memo.
     #[wasm_bindgen(js_name = dcsExtract)]
     pub fn dcs_extract(
         &self,

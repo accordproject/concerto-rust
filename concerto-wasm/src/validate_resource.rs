@@ -1,29 +1,22 @@
-//! Instance validation in one engine call per resource (task P5-12c,
-//! accordproject/concerto-rust#293; the P5-12 spike's variant B on the
-//! P5-12b transport, accordproject/concerto-rust#289 and #292).
+//! Instance validation in one engine call per resource.
 //!
 //! `ValidatedResource.validate()`, `setPropertyValue` and `addArrayValue`
 //! (concerto-core src/model/validatedresource.ts) hand the value they check
-//! across once, and the existing instance validator
-//! ([`concerto_core::instance::validate`]) runs over it. Additive: nothing
-//! else in this crate calls these bindings.
+//! across once, and the instance validator
+//! ([`concerto_core::instance::validate`]) runs over it.
 //!
 //! # Transport
 //!
 //! The TS side (src/engine/validate-resource.ts) writes the value straight
 //! from the live object into the compact binary layout below, already in
-//! the shape the validator reads (the `validate.rs` module doc, "Scope": a
-//! `$class`-tagged object per Resource, `{$$relationship, $class, <id
-//! field>}` per Relationship, and `$$dayjs`/`$$undefined`/`$$number`/`$$map`
-//! markers), exactly what `Instance::to_validator_value` builds from the
-//! Serializer's wire value. So there is no JSON text, no `decode_wire` and
-//! no `to_validator_value` on this path. wasm-bindgen copies the bytes in as
-//! a `&[u8]`.
+//! the shape the validator reads (the `validate.rs` module doc, "Scope"),
+//! exactly what `Instance::to_validator_value` builds from the Serializer's
+//! wire value. So there is no JSON text, no `decode_wire` and no
+//! `to_validator_value` on this path.
 //!
-//! P5-101 (F-8, accordproject/concerto-rust#455): the layout is concerto-core
-//! `introspect::compact`'s, the model AST's too, with one TS writer (src/
-//! engine/wire.ts) and one reader ([`compact_validator_value`]). One tag
-//! byte, then:
+//! The layout is concerto-core `introspect::compact`'s, the model AST's too,
+//! with one TS writer (src/engine/wire.ts) and one reader
+//! ([`compact_validator_value`]). One tag byte, then:
 //!
 //! | tag | value |
 //! |---|---|
@@ -43,7 +36,7 @@
 //! # Result codes
 //!
 //! Each binding returns a code instead of throwing, so the common outcomes
-//! cost no exception object built in WASM (P5-12b, candidate (e)):
+//! cost no exception object built in WASM:
 //!
 //! - [`CODE_VALID`]: the value is valid;
 //! - [`CODE_VALIDATION`]: a `Validation` error that is not a validator's
@@ -124,9 +117,9 @@ pub fn validate_error_message() -> String {
 /// there is none.
 #[wasm_bindgen(js_name = validateTakeError)]
 pub fn validate_take_error() -> JsValue {
-    // P5-104 (D-11): the error is taken out, and the borrow released,
-    // before `throw` calls the JS error factory, so a re-entrant engine
-    // call from the factory cannot find `LAST_ERROR` still borrowed.
+    // The error is taken out, and the borrow released, before `throw`
+    // calls the JS error factory, so a re-entrant engine call from the
+    // factory cannot find `LAST_ERROR` still borrowed.
     let err = crate::caches::LAST_ERROR.with(|l| l.borrow_mut().take());
     match err {
         Some(err) => throw(err, None),
@@ -145,10 +138,9 @@ fn unsupported(reason: &str) -> Unsupported {
     Unsupported(wire_error(format!("a binary wire value: {reason}")))
 }
 
-/// The whole of `bytes` as one value, in the validator's shape: P5-101
-/// (F-8, accordproject/concerto-rust#455) through concerto-core's one
-/// reader of the layout ([`compact_validator_value`]), which the AST's
-/// staging path reads too. Bytes not in the layout cannot cross.
+/// The whole of `bytes` as one value, in the validator's shape, through
+/// concerto-core's one reader of the layout ([`compact_validator_value`]).
+/// Bytes not in the layout cannot cross.
 fn decode(bytes: &[u8]) -> std::result::Result<Value, Unsupported> {
     compact_validator_value(bytes).map_err(|e| unsupported(&e.to_string()))
 }
@@ -179,7 +171,7 @@ impl ModelManagerHandle {
     /// the value (for `addArrayValue`, the whole new array) in the binary
     /// layout, `class_fqn` the instance's type and `prop_name` the property
     /// TS already found on it. Returns a result code (module doc);
-    /// [`CODE_UNSUPPORTED`] when this manager has no such property.
+    /// `CODE_UNSUPPORTED` when this manager has no such property.
     #[wasm_bindgen(js_name = validatePropertyBinary)]
     pub fn validate_property_binary(
         &self,
@@ -190,10 +182,10 @@ impl ModelManagerHandle {
         flags: u32,
     ) -> u32 {
         code_of(decode(bytes).and_then(|value| {
-            // Validation plan (P5-88, accordproject/concerto-rust#434): the
-            // property from the plan's name index, validated over the plan.
-            // A type whose plan (its chain) does not resolve, or that has
-            // no such property, is not one this manager can check.
+            // Validation plan: the property from the plan's name index,
+            // validated over the plan. A type whose plan (its chain) does
+            // not resolve, or that has no such property, is not one this
+            // manager can check.
             let Ok(class_plan) =
                 concerto_core::instance::plan::class_plan_by_name(&self.manager, class_fqn)
             else {
@@ -214,15 +206,11 @@ impl ModelManagerHandle {
         }))
     }
 
-    /// P5-101 (D-10, accordproject/concerto-rust#455): the slot
-    /// [`Self::validate_property_by_id`] takes for property `prop_name` of
-    /// type `class_fqn`, which TS looks up once per class and property and
-    /// keeps for the model version: `[declId, propIndex, epoch]`, the
-    /// declaration's handle, the property's index in its validation plan
-    /// (P5-88) and this handle's epoch, low 32 bits. `undefined` when
-    /// [`Self::validate_property_binary`] would answer [`CODE_UNSUPPORTED`]
-    /// for them (a type whose plan does not resolve, or no such property).
-    /// Reads only. Additive.
+    /// The `[declId, propIndex, epoch]` slot [`Self::validate_property_by_id`]
+    /// takes for `class_fqn.prop_name` (epoch's low 32 bits), which TS keeps
+    /// per model version. `undefined` where
+    /// [`Self::validate_property_binary`] would answer `CODE_UNSUPPORTED`.
+    /// Reads only.
     #[wasm_bindgen(js_name = validationPropertySlot)]
     pub fn validation_property_slot(&self, class_fqn: &str, prop_name: &str) -> Option<Vec<u32>> {
         let decl = self.manager.type_declaration(class_fqn).ok()?;
@@ -231,24 +219,23 @@ impl ModelManagerHandle {
         Some(vec![decl.index(), index, self.epoch_low()])
     }
 
-    /// P5-101 (D-10, accordproject/concerto-rust#455):
     /// [`Self::validate_property_binary`] by the slot
     /// [`Self::validation_property_slot`] gave (`decl_id`, `prop_index`, at
     /// `epoch`), so neither the type's name nor the property's crosses and
     /// neither is looked up by name, with the outcome in the same call:
     ///
-    /// - `0` ([`CODE_VALID`]): the value is valid;
-    /// - a string: a [`CODE_VALIDATION`] error's message, which TS throws
+    /// - `0` (`CODE_VALID`): the value is valid;
+    /// - a string: a `CODE_VALIDATION` error's message, which TS throws
     ///   as `new ValidationException(message)`;
-    /// - `3` ([`CODE_UNSUPPORTED`]): the transport cannot carry the value
+    /// - `3` (`CODE_UNSUPPORTED`): the transport cannot carry the value
     ///   (the caller runs the visitor);
-    /// - `4` ([`CODE_STALE`]): the slot is not one of this epoch's (the
+    /// - `4` (`CODE_STALE`): the slot is not one of this epoch's (the
     ///   caller looks it up again);
-    /// - any other ([`CODE_ERROR`]) error is thrown, as the exception every
+    /// - any other (`CODE_ERROR`) error is thrown, as the exception every
     ///   other binding throws for it.
     ///
-    /// Nothing is kept for [`validate_error_message`] or
-    /// [`validate_take_error`]. Additive.
+    /// Nothing is kept for `validate_error_message` or
+    /// `validate_take_error`.
     #[wasm_bindgen(js_name = validatePropertyById)]
     pub fn validate_property_by_id(
         &self,

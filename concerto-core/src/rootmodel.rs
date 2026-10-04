@@ -9,14 +9,12 @@
 //! holds the base `Decorator` concept and the built-in decorators such as
 //! `DotNetNamespace`.
 //!
-//! Both ASTs are vendored unchanged under `concerto-core`, matching the copies
-//! `concerto-metamodel` vendors for code generation, so the runtime preloads
-//! exactly what the reference implementation preloads. Nothing here is built
-//! by hand: [`root_model`] and [`decorator_model`] deserialize each JSON into
-//! the metamodel crate's own [`mm::Model`], and [`root_model_ast`] and
-//! [`decorator_model_ast`], which the model manager loads, parse the same
-//! JSON as a `serde_json::Value`, in the file's own key order (P5-104, C-13:
-//! no typed round trip, which moved `decorators` to the end of each node).
+//! Both ASTs are vendored unchanged, matching the copies `concerto-metamodel`
+//! vendors, so the runtime preloads exactly what the reference preloads.
+//! [`root_model`] and [`decorator_model`] deserialize each into
+//! [`mm::Model`]; [`root_model_ast`] and [`decorator_model_ast`], which the
+//! model manager loads, parse the same JSON as a `serde_json::Value`, in the
+//! file's own key order.
 
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 
@@ -54,15 +52,11 @@ pub fn decorator_model_ast() -> serde_json::Value {
         .expect("Decorator model could not be parsed as JSON.")
 }
 
-/// P5-73 (accordproject/concerto-rust#414): the two system models' ASTs
-/// as compact JSON text, decorator model first, each with the file name
-/// TS `addDecoratorModel`/`addRootModel` give it. Each text is the
-/// vendored JSON written out again without whitespace, in its own key
-/// order, which is what JS `JSON.stringify` gives for concerto-core's own
-/// copies of the same files (`src/decoratormodelhelper.ts`,
-/// `src/rootmodelhelper.ts`). concerto-wasm recognises exactly these
-/// texts, so the verdict of their load is computed once
-/// (`systemModelFileHeader`). Computed on first use.
+/// The two system models' ASTs as compact JSON text, decorator model first,
+/// each with the file name TS `addDecoratorModel`/`addRootModel` give it:
+/// what JS `JSON.stringify` gives for concerto-core's own copies, which
+/// concerto-wasm recognises so their load's verdict is computed once
+/// (`systemModelFileHeader`).
 #[cfg(feature = "js-compat")]
 pub fn system_model_json_texts() -> [(&'static str, &'static str); 2] {
     static TEXTS: std::sync::OnceLock<[String; 2]> = std::sync::OnceLock::new();
@@ -86,7 +80,7 @@ fn compact(json: &str) -> String {
 mod tests {
     use super::*;
 
-    /// P5-73: the compact texts are the vendored models, unchanged but for
+    /// The compact texts are the vendored models, unchanged but for
     /// whitespace, and keep the files' key order (`$class` first).
     #[test]
     fn system_model_json_texts_are_the_vendored_models_without_whitespace() {
@@ -132,9 +126,7 @@ mod tests {
         assert!(decls[0].get("identified").is_none()); // Concept
     }
 
-    /// [`decorator_model_ast`] is the same JSON AST view [`decorator_model`]
-    /// (typed) gives, added for [`crate::model_manager::ModelManager::new`]
-    /// (P1-07b), the same way [`root_model_ast`] already backs the root model.
+    /// [`decorator_model_ast`] is the JSON AST view of [`decorator_model`].
     #[test]
     fn decorator_model_ast_matches_the_typed_model() {
         let ast = decorator_model_ast();

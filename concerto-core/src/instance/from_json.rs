@@ -39,7 +39,7 @@ use crate::model_manager::{DeclId, ModelManager, Node, ResolutionContext};
 use crate::{Error, ecma, model_util};
 
 /// What the TS `Factory` gets from its environment rather than from the
-/// model (D7): a new identifier and the current time.
+/// model: a new identifier and the current time.
 pub trait InstanceEnv {
     /// TS: `Factory.newId()`, `uuid.v4()`.
     fn new_id(&mut self) -> String;
@@ -70,9 +70,9 @@ pub struct FromJsonOptions {
     /// `utcOffset || 0`: the offset a `DateTime` gets unless
     /// `strictQualifiedDateTimes` is `true`.
     pub utc_offset: UtcOffset,
-    /// `strictQualifiedDateTimes === true`. Since P5-24 (BC-07, R1)
-    /// every `DateTime` string must have the strict format either way;
-    /// the flag only decides whether `utc_offset` is applied.
+    /// `strictQualifiedDateTimes === true`. With BC-07 every
+    /// `DateTime` string must have the strict format either way; the
+    /// flag only decides whether `utc_offset` is applied.
     pub strict_qualified_date_times: bool,
     /// `acceptResourcesForRelationships`.
     pub accept_resources_for_relationships: bool,
@@ -244,12 +244,12 @@ fn populate_as(
     })
 }
 
-/// The collect-all read (P5-99, accordproject/concerto#1239): `json` read as
+/// The collect-all read (accordproject/concerto#1239): `json` read as
 /// `Serializer.fromJSON` reads it (as its own `$class` when it has one, or
 /// else as `fqn`), then the validation walk collecting every violation (or,
-/// without `all`, the first), each with the JSON Pointer of the value it
-/// was found at. The first is the error [`from_json`] with `validate`
-/// throws. A document that cannot be read fails with the read's error.
+/// without `all`, the first), each with the JSON Pointer of the value it was
+/// found at. The first is the error [`from_json`] with `validate` throws. A
+/// document that cannot be read fails with the read's error.
 pub(crate) fn collect_violations(
     mm: &ModelManager,
     json: &Value,
@@ -340,7 +340,7 @@ fn get_property<'v>(value: Option<&'v Value>, key: &str) -> Result<Js<'v>> {
 
 /// `Object.keys(value)`: V8's `TypeError` for `undefined` and `null`, and
 /// the integer-like keys first, in ascending order. Each key an object
-/// holds is borrowed (P5-13).
+/// holds is borrowed.
 fn object_keys(value: Option<&Value>) -> Result<Vec<Cow<'_, str>>> {
     Ok(match value {
         None | Some(Value::Null) => {
@@ -462,7 +462,7 @@ pub struct ResourceCheck {
     pub timestamped: bool,
 }
 
-/// The model checks of `Factory.newResource`, in TS order (#32 point 4):
+/// The model checks of `Factory.newResource`, in TS order:
 /// the type lookup, the abstract type, the identifier's type, the empty
 /// identifier and the identifier regex, plus the non-identifiable type
 /// given an identifier. `new_id` is `Factory.newId`, called only for a
@@ -482,8 +482,8 @@ pub fn check_new_resource(
     check_new_resource_of(&class_decl, ns, type_name, id, new_id)
 }
 
-/// [`check_new_resource`] once its type lookup found `class_decl`
-/// (P5-13): a caller that already holds the declaration of `ns` and
+/// [`check_new_resource`] once its type lookup found `class_decl`:
+/// a caller that already holds the declaration of `ns` and
 /// `type_name` need not look it up again.
 pub fn check_new_resource_of(
     class_decl: &TypeRef,
@@ -527,8 +527,8 @@ pub fn check_new_resource_of(
             ));
         }
         // `if (id)`: a non-empty string here. The regex validator comes
-        // from the validation plan, built once (P5-88), as does the
-        // error building it.
+        // from the validation plan, built once, as does the error
+        // building it.
         let planned = plan::class_plan(class_decl.mm, class_decl.id)?;
         let regex = match &planned.id_regex {
             Prepared::Built(v) => Some(v),
@@ -601,10 +601,9 @@ pub enum FieldDefault {
     /// A `DateTime` default: `dayjs.utc(default)`, of a strict
     /// `DateTime` string (BC-45).
     DateTime(Dayjs),
-    /// P5-24 (BC-45, R1; accordproject/concerto-rust#328): a `DateTime`
-    /// default that is not a strict `DateTime` string. It is not
-    /// rejected at model load but when it is applied: the error to
-    /// throw then, a `ValidationException`
+    /// BC-45: a `DateTime` default that is not a strict `DateTime`
+    /// string. It is not rejected at model load but when it is applied:
+    /// the error to throw then, a `ValidationException`
     /// (`typed-assignfielddefaults-datetime`). Instance creation
     /// (`Factory.newResource`) always applies it; population
     /// (`fromJSON`) only when the document gives the field no value.
@@ -628,15 +627,10 @@ pub fn assign_field_defaults(
     assign_field_defaults_of(&class_decl, assign)
 }
 
-/// [`assign_field_defaults`] for the declaration `class_fqn` names.
-///
-/// Every step but `assign` depends only on the model, so the converted
-/// defaults are cached per declaration (P5-13,
-/// `ModelManager::cached_field_defaults`). TS resolves each field's
-/// type and assigns its default in one pass, so a field whose type does
-/// not resolve fails only after every earlier default was assigned: the
-/// list is cached only when every field resolves, and otherwise this
-/// runs that same pass field by field, so the first error is TS's.
+/// [`assign_field_defaults`] for the declaration `class_fqn` names. The
+/// converted defaults are cached per declaration, but only when every
+/// field's type resolves; otherwise this runs TS's single pass field by
+/// field, so the first error comes after the earlier defaults, as in TS.
 pub fn assign_field_defaults_of(
     class_decl: &TypeRef,
     assign: &mut dyn FnMut(&str, FieldDefault) -> Result<()>,
@@ -654,12 +648,12 @@ pub fn assign_field_defaults_of(
     Ok(())
 }
 
-/// P5-24 (BC-45, R1): the fields of `class_decl` whose `DateTime`
-/// default is not a strict `DateTime` string
-/// ([`FieldDefault::InvalidDateTime`]), each with the error applying it
-/// throws, in `getProperties()` order: read off the cached defaults, and
-/// empty for almost every declaration (and when a field's type does not
-/// resolve, which fails the instance's creation first).
+/// BC-45: the fields of `class_decl` whose `DateTime` default is not a
+/// strict `DateTime` string ([`FieldDefault::InvalidDateTime`]), each
+/// with the error applying it throws, in `getProperties()` order: read
+/// off the cached defaults, and empty for almost every declaration (and
+/// when a field's type does not resolve, which fails the instance's
+/// creation first).
 #[cfg_attr(not(feature = "js-compat"), expect(dead_code, reason = "js-compat seam only"))]
 pub fn invalid_date_time_defaults_of(class_decl: &TypeRef) -> Vec<(String, Error)> {
     let Ok(defaults) = class_decl
@@ -717,11 +711,10 @@ fn field_defaults(
             }
             "Double" => FieldDefault::Number(ecma::parse_float(&ecma::to_js_string(default_value))),
             "Boolean" => FieldDefault::Bool(*default_value == Value::Bool(true)),
-            // P5-24 (BC-45, R1; accordproject/concerto-rust#328): the
-            // default must be a strict `DateTime` string, the rule a field
-            // value follows, checked when it is applied (instance creation
-            // or population), not at model load. TS builds
-            // `dayjs.utc(default)` whatever it is.
+            // BC-45: the default must be a strict `DateTime` string, the
+            // rule a field value follows, checked when it is applied
+            // (instance creation or population), not at model load. TS
+            // builds `dayjs.utc(default)` whatever it is.
             "DateTime" => strict_date_time_default(default_value, owner_fqn, name),
             // String, and "if we get this far the field should be an enum".
             _ => FieldDefault::Json(default_value.clone()),
@@ -736,7 +729,7 @@ fn field_defaults(
 /// [`Dayjs::utc_parse`] reads as a valid instant, or else
 /// [`FieldDefault::InvalidDateTime`] with a `ValidationException` (the class
 /// a strict `DateTime` field value's rejection has) naming the field. A
-/// number, which `dayjs.utc(n)` used to read, is not a `DateTime` string
+/// number, which TS's `dayjs.utc(n)` reads, is not a `DateTime` string
 /// either.
 fn strict_date_time_default(default_value: &Value, owner_fqn: &str, name: &str) -> FieldDefault {
     if let Some(parsed) = default_value
@@ -783,9 +776,9 @@ struct Resource {
     /// `this.$identifierFieldName`.
     identifier_key: String,
     props: Map<String, Value>,
-    /// P5-24 (BC-45): each property whose `DateTime` default is not strict,
-    /// with the error applying it throws. Population throws it only when
-    /// the document gives the property no value, so the default stays
+    /// BC-45: each property whose `DateTime` default is not strict, with
+    /// the error applying it throws. Population throws it only when the
+    /// document gives the property no value, so the default stays
     /// ([`Populator::visit_class_declaration`]).
     invalid_defaults: Vec<(String, Error)>,
 }
@@ -822,8 +815,9 @@ struct Populator<'a> {
     env: &'a mut dyn InstanceEnv,
     options: &'a FromJsonOptions,
     /// `parameters.path`, a `TypedStack` that starts as `['$']`, kept
-    /// joined (P5-13): what `path.stack.join('')` reads, with
-    /// [`Self::path_marks`] recording where each pushed segment starts.
+    /// joined: what `path.stack.join('')` reads, with
+    /// [`Self::path_marks`] recording where each pushed segment
+    /// starts.
     path: String,
     path_marks: Vec<usize>,
     /// The declaration of each resource built, for the identifier
@@ -871,7 +865,7 @@ impl Populator<'_> {
         self.new_resource_at(&class_decl, ns, type_name, id)
     }
 
-    /// [`Self::new_resource`] for a declaration already found (P5-13):
+    /// [`Self::new_resource`] for a declaration already found:
     /// `newResource(decl.getNamespace(), decl.getName(), id)`, whose own
     /// type lookup finds `decl` again.
     fn new_resource_of(&mut self, decl: &TypeRef, id: Js) -> Result<Resource> {
@@ -922,9 +916,9 @@ impl Populator<'_> {
             invalid_defaults: Vec::new(),
         };
         let mm = self.mm;
-        // The validation plan (P5-88), for each default's check (B-5,
-        // P5-99), found at the first default. `check_new_resource_of` has
-        // read the declaration's identifier field, so its chain resolves.
+        // The validation plan, for each default's check, found at the
+        // first default. `check_new_resource_of` has read the
+        // declaration's identifier field, so its chain resolves.
         let mut class_plan: Option<std::sync::Arc<ClassPlan>> = None;
         assign_field_defaults_of(class_decl, &mut |name, value| {
             let value = match value {
@@ -991,8 +985,8 @@ impl Populator<'_> {
     ) -> Result<Resource> {
         let properties = get_assignable_properties(json, class_declaration)?;
         // `classDeclaration.getProperties()` (and each `getProperty` below)
-        // from the validation plan (P5-88, P5-99): the same answer every
-        // time, and its chain's error first, as `getProperties()` raises it.
+        // from the validation plan: the same answer every time, and its
+        // chain's error first, as `getProperties()` raises it.
         let class_plan = plan::class_plan(self.mm, class_declaration.id)?;
         if self.options.reject_unknown_keys {
             self.reject_unknown_keys(json, class_declaration, &class_plan)?;
@@ -1099,11 +1093,10 @@ impl Populator<'_> {
         };
         let key_type = map.key_type_name().to_string();
         let value_type = map.value_type_name().to_string();
-        // P5-58 (BC-05, R1; DV-007): a relationship-typed value is read as
-        // a relationship property is, not as an embedded concept. Its
-        // target type, and its slot, are resolved once (B-5, P5-99); an
-        // error resolving them is raised at the first value, as TS resolves
-        // it there.
+        // BC-05, DV-007: a relationship-typed value is read as a
+        // relationship property is, not as an embedded concept. Its target
+        // type, and its slot, are resolved once; an error resolving them is
+        // raised at the first value, as TS resolves it there.
         let relationship = model::is_relationship_map(map_declaration).then(|| {
             let target = model::map_relationship_target(map_declaration)?
                 .expect("is_relationship_map was checked");
@@ -1116,14 +1109,13 @@ impl Populator<'_> {
             _ => None,
         };
         // `processMapType`'s declaration for a key or value with no `$class`
-        // of its own: the same for every entry, so resolved once (B-5).
+        // of its own: the same for every entry, so resolved once.
         let mut key_declaration = None;
         let mut value_declaration = None;
         let mut result: Vec<(Value, Value)> = Vec::new();
         // `new Map(Object.entries(jsonObj))`. The keys are an object's, so
-        // each is new, and each `map.set` appends (B-4, P5-99): a key or
-        // value's `processMapType` hands a primitive or scalar key back as
-        // it is.
+        // each is new, and each `map.set` appends: a key or value's
+        // `processMapType` hands a primitive or scalar key back as it is.
         for key in object_keys(json)? {
             let value = get_property(json, &key)?;
             if key == "$class" {
@@ -1163,7 +1155,7 @@ impl Populator<'_> {
 
     /// TS: JSONPopulator.processMapType. `declaration` holds the
     /// declaration `type_name` names in the map's model file, resolved at
-    /// the first entry that needs it (B-5, P5-99).
+    /// the first entry that needs it.
     fn process_map_type<'d>(
         &mut self,
         map_declaration: &TypeRef<'d>,
@@ -1275,9 +1267,9 @@ impl Populator<'_> {
                 let Some(Value::String(s)) = json else {
                     return Err(wrong_type());
                 };
-                // P5-24 (BC-07, R1): only the strict format, whatever
-                // `strictQualifiedDateTimes` says; the flag now decides
-                // only whether `utcOffset` applies, as it did before.
+                // BC-07: only the strict format, whatever
+                // `strictQualifiedDateTimes` says; the flag decides only
+                // whether `utcOffset` applies.
                 if !strict_qualified_date_time(s) {
                     return Err(Error::new(
                         ErrorKind::Validation,
@@ -1297,8 +1289,8 @@ impl Populator<'_> {
                 result.validator_value()
             }
             "Integer" | "Long" => match json {
-                // P5-51 (BC-10, R1; DV-012): an integral, finite number.
-                // A serde_json number is always finite; the check says so.
+                // BC-10, DV-012: an integral, finite number. A
+                // serde_json number is always finite; the check says so.
                 Some(Value::Number(n))
                     if n.as_f64().is_some_and(|n| n.is_finite() && n.trunc() == n) =>
                 {
@@ -1367,7 +1359,7 @@ impl Populator<'_> {
     /// One relationship value, `visitRelationshipDeclaration`'s non-array
     /// branch: a URI string becomes a relationship, and an object an
     /// embedded resource when `acceptResourcesForRelationships` allows it.
-    /// A relationship-typed map value goes through here too (P5-58, BC-05).
+    /// A relationship-typed map value goes through here too (BC-05).
     fn convert_relationship(
         &mut self,
         slot: &RelationshipSlot,
@@ -1514,7 +1506,7 @@ fn relationship_from_uri(
 
 /// TS `ValidatedResource.setPropertyValue(propName, value)`: the value is
 /// validated against the property before it is assigned, over the
-/// declaration's validation plan (B-5, P5-99).
+/// declaration's validation plan.
 fn set_property_value(
     mm: &ModelManager,
     class_plan: &ClassPlan,
@@ -1592,7 +1584,8 @@ fn get_assignable_properties<'v>(
 }
 
 /// TS `validateProperties(properties, classDeclaration)`, against the
-/// declaration's `getProperties()` (the validation plan's name index, P5-88).
+/// declaration's `getProperties()` (the validation plan's name
+/// index).
 fn validate_properties(
     properties: &[Cow<'_, str>],
     class_declaration: &TypeRef,
@@ -1618,8 +1611,8 @@ fn validate_properties(
 
 /// `json.match(/^((?:(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2}(?:\.\d+)?))(Z|[+-]\d{2}:\d{2}))$/)`:
 /// the `strictQualifiedDateTimes` format, the only `DateTime` string
-/// form accepted (P5-24, BC-07). A string with this format can still
-/// name an impossible instant ([`Dayjs::utc_parse`] is then invalid).
+/// form accepted (BC-07). A string with this format can still name
+/// an impossible instant ([`Dayjs::utc_parse`] is then invalid).
 pub fn strict_qualified_date_time(s: &str) -> bool {
     super::dayjs::is_strict_date_time_format(s)
 }

@@ -15,32 +15,18 @@ impl ModelManager {
         self.files.iter().map(|slot| &*slot.model_file)
     }
 
-    /// TS: `BaseModelManager.getModelFileByFileName(fileName)` —
-    /// `this.getModelFiles().filter(mf => mf.getName() === fileName)[0]`.
-    /// `getModelFiles()` called with no argument excludes the built-in
-    /// decorator and root models (`EXCLUDE_NS`), so this searches the
-    /// same filtered set, not [`model_files`]: the first loaded,
-    /// non-system model file (registration order) whose `getName()`
-    /// equals `file_name`, or `None` (JS `undefined`) if none does —
-    /// including when `file_name` names one of the system files
-    /// (`concerto_1.0.0.cto`, `concerto_decorator_1.0.0.cto`), which TS
-    /// never returns from this default-argument call.
-    ///
-    /// [`model_files`]: Self::model_files
+    /// TS: `BaseModelManager.getModelFileByFileName(fileName)`:
+    /// `this.getModelFiles().filter(mf => mf.getName() === fileName)[0]`, so
+    /// the first non-system model file whose `getName()` equals `file_name`,
+    /// or `None`, also for a system file's name.
     pub fn model_file_by_file_name(&self, file_name: &str) -> Option<&ModelFile> {
         self.model_file_by_optional_file_name(Some(file_name))
     }
 
     js_compat_pub! {
-        /// [`model_file_by_file_name`] for a `fileName` that may be JS
-        /// `undefined`. TS compares with `mf.getName() === fileName`, so an
-        /// omitted or `undefined` argument matches the first non-system model
-        /// file that was loaded without a file name (for example
-        /// `addCTOModel(text)` or `addModel(ast)` with no `fileName`), whose
-        /// `getName()` is `undefined`. `None` here finds that file, the one
-        /// whose [`ModelFile::file_name`] is `None`.
-        ///
-        /// [`model_file_by_file_name`]: Self::model_file_by_file_name
+        /// [`Self::model_file_by_file_name`] for a `fileName` that may be JS
+        /// `undefined`: `None` finds the first non-system model file loaded
+        /// without a file name, as TS's `mf.getName() === fileName` does.
         pub fn model_file_by_optional_file_name(
             &self,
             file_name: Option<&str>,
@@ -73,9 +59,7 @@ impl ModelManager {
     }
 
     js_compat_pub! {
-        /// The property a handle names. Resolves through `ClassLike` so that
-        /// an enum's own values (P2-04), addressed the same as a class
-        /// declaration's fields (`insert_shared`'s doc comment), resolve here too.
+        /// The property a handle names, an enum's values included.
         pub fn property_by_id(&self, id: PropId) -> Option<&Property> {
             let slot = self.properties.get(id.slot())?;
             ClassLike::from_declaration(self.declaration(slot.declaration)?)?
@@ -94,22 +78,12 @@ impl ModelManager {
             .map(DeclId)
     }
 
-    /// Every class-like or enum declaration across every loaded model file
-    /// whose namespace is not in `EXCLUDE_NS`, in file order and then
-    /// declaration order — a map or scalar declaration is left out, as is
-    /// the decorator and root models' own declarations (P2-08 review: this
-    /// previously iterated every loaded file, `EXCLUDE_NS` included, which
-    /// put system declarations like `Concept` into the result).
+    /// Every class-like or enum declaration of the model files whose
+    /// namespace is not in `EXCLUDE_NS`, in file order, then declaration
+    /// order.
     ///
-    /// TS: `Introspector.getClassDeclarations` (src/introspect/introspector.ts):
-    /// `modelFile.getAllDeclarations().filter(d =>
-    /// !d.isMapDeclaration?.() && !d.isScalarDeclaration?.())`, concatenated
-    /// over `modelManager.getModelFiles()` — which, called with no argument,
-    /// already leaves the system and decorator models out by their
-    /// namespace string (`EXCLUDE_NS`), not by `ModelFile.isSystemModelFile`
-    /// (`getModelFiles`, src/basemodelmanager.ts). Delegates to
-    /// `Self::all_class_like`, which [`Self::get_assignable_class_declarations`]
-    /// and [`Self::get_direct_subclasses`] already search this same way.
+    /// TS: `Introspector.getClassDeclarations`: `getAllDeclarations()` less
+    /// maps and scalars, over `modelManager.getModelFiles()`.
     #[cfg(feature = "js-compat")]
     pub fn class_declarations(&self) -> impl Iterator<Item = DeclId> + '_ {
         self.all_class_like().map(|(id, _, _)| id)
@@ -150,17 +124,12 @@ impl ModelManager {
     }
 
     js_compat_pub! {
-        /// A property's own `defaultValue`, read straight off its raw AST (P2-04).
+        /// A property's own `defaultValue`, read straight off its raw AST.
         ///
-        /// TS: `Field.getDefaultValue` (src/introspect/field.ts) reads
-        /// `this.ast.defaultValue` regardless of the property's kind, with
-        /// `Util.isNull` treating a JSON `null` the same as an absent key. The
-        /// generated `mm::DateTimeProperty` carries no `defaultValue` field at
-        /// all (the official metamodel does not declare one there, unlike the
-        /// other five field kinds), so a typed per-variant read would silently
-        /// lose a `DateTime` field's default; reading the raw AST instead, the
-        /// same as TS, keeps it. `None` for a handle the manager never handed
-        /// out, matching every other `PropId` lookup here.
+        /// TS: `Field.getDefaultValue` reads `this.ast.defaultValue` whatever
+        /// the property's kind, a JSON `null` counting as absent. The raw
+        /// AST is read because the generated `mm::DateTimeProperty` has no
+        /// `defaultValue` field. `None` for an unknown handle.
         pub fn property_default_value(&self, id: PropId) -> Option<&Value> {
             let slot = self.properties.get(id.slot())?;
             self.declaration_ast(slot.declaration)?
@@ -172,12 +141,9 @@ impl ModelManager {
     }
 
     js_compat_pub! {
-        /// TS `BaseModelManager.getType(qualifiedName)` (basemodelmanager.ts):
-        /// the model file registered under the name's namespace, then that
-        /// file's own `getType(qualifiedName)`, each failure its own
-        /// `TypeNotFoundException` — `Namespace is not defined for type "<fqn>".`
-        /// when no file holds the namespace, `Type "<short>" is not defined in
-        /// namespace "<ns>".` when the file has no such type (P2-08 review).
+        /// TS `BaseModelManager.getType(qualifiedName)`: the model file of the
+        /// name's namespace, then its `getType(qualifiedName)`, each failure
+        /// its own `TypeNotFoundException`.
         pub fn get_type_declaration(&self, qualified_name: &str) -> Result<DeclId> {
             let namespace = get_namespace(Some(qualified_name))?;
             let Some(file) = self.model_file_id(namespace) else {
@@ -214,9 +180,8 @@ impl ModelManager {
     }
 
     /// Every declaration of the files `files` yields, with its handle and
-    /// its fully-qualified name borrowed from the arena (A-8,
-    /// accordproject/concerto-rust#458): files in the order given, then
-    /// declarations in AST order.
+    /// its fully-qualified name borrowed from the arena: files in the
+    /// order given, then declarations in AST order.
     pub(super) fn declarations_in<'a>(
         &'a self,
         files: impl Iterator<Item = &'a FileSlot> + 'a,
@@ -320,12 +285,9 @@ impl ModelManager {
     }
 
     js_compat_pub! {
-        /// [`ModelManager::resolve_type_name`], with the location of the AST node
-        /// the name was read from.
-        ///
-        /// `location` is the AST node's `location`, copied verbatim into the
-        /// error this raises when the namespace is not registered (PORTING.md
-        /// section 2.1); pass `None` where the caller has no AST node in scope.
+        /// [`ModelManager::resolve_type_name`], with the AST node's
+        /// `location`, copied into the error raised when the namespace is not
+        /// registered; `None` where the caller has no node in scope.
         pub fn resolve_type_name_at(
             &self,
             in_namespace: &str,
@@ -337,7 +299,7 @@ impl ModelManager {
     }
 
     /// [`ModelManager::resolve_type_name_at`], building the location only
-    /// when the error that carries it is raised (P5-48).
+    /// when the error that carries it is raised.
     pub(crate) fn resolve_type_name_lazy(
         &self,
         in_namespace: &str,
@@ -345,9 +307,7 @@ impl ModelManager {
         location: impl FnOnce() -> Option<serde_json::Value>,
     ) -> Result<String> {
         let mf = self.model_file(in_namespace).ok_or_else(|| {
-            // TS: BaseModelManager.getType's unregistered-namespace path
-            // (src/basemodelmanager.ts), reused for the equivalent check
-            // here (error/catalogue.rs doc comment on the entry).
+            // TS: `BaseModelManager.getType`'s unregistered-namespace error.
             let fqn = qualify(in_namespace, short);
             ContractError::type_not_found(
                 "modelmanager-gettype-noregisteredns",
@@ -361,11 +321,9 @@ impl ModelManager {
             .ok_or_else(|| Error::type_not_found(qualify(in_namespace, short)))
     }
 
-    /// The handle `getType(fqn)` finds (TS `BaseModelManager.getType`): the
-    /// exact-name lookup when it succeeds, which is always
-    /// [`ModelManager::get_type_declaration`]'s answer too (a
-    /// fully-qualified name is never a primitive or an import's local
-    /// name), otherwise `get_type_declaration` itself, for its errors.
+    /// The handle `getType(fqn)` finds: the exact-name lookup when it
+    /// succeeds (always `get_type_declaration`'s answer too), else
+    /// [`ModelManager::get_type_declaration`] itself, for its errors.
     pub(super) fn type_declaration_impl(&self, fqn: &str) -> Result<DeclId> {
         match self.declaration_id(fqn) {
             Some(id) => Ok(id),
@@ -375,19 +333,18 @@ impl ModelManager {
 
     js_compat_pub! {
         /// TS `BaseModelManager.getType(qualifiedName)`'s handle, found by
-        /// the exact-name lookup first (P5-13): the same handle and errors
-        /// as [`ModelManager::get_type_declaration`].
+        /// the exact-name lookup first: the same handle and errors as
+        /// [`ModelManager::get_type_declaration`].
         pub fn type_declaration(&self, fqn: &str) -> Result<DeclId> {
             self.type_declaration_impl(fqn)
         }
     }
 
     js_compat_pub! {
-        /// TS `BaseModelManager._throwAlreadyExists(modelFile)` (P5-11,
-        /// accordproject/concerto-rust#287): the plain `Error` for a model
-        /// file named `new_file_name` declaring `namespace`, which the model
-        /// file registered under it already declares; `Ok` when nothing is
-        /// registered under `namespace`.
+        /// TS `BaseModelManager._throwAlreadyExists(modelFile)`: the plain
+        /// `Error` for a model file named `new_file_name` declaring
+        /// `namespace`, which the model file registered under it already
+        /// declares; `Ok` when nothing is registered under `namespace`.
         pub fn check_namespace_available(
             &self,
             namespace: &str,
@@ -400,10 +357,10 @@ impl ModelManager {
         }
     }
 
-    /// TS `BaseModelManager.getType(qualifiedName)`, answered by name
-    /// (P5-11, accordproject/concerto-rust#287): the fully-qualified name
-    /// of the declaration [`ModelManager::type_declaration`] finds, with
-    /// its `TypeNotFoundException`s. The view maps the name to its own
+    /// TS `BaseModelManager.getType(qualifiedName)`, answered by name:
+    /// the fully-qualified name of the declaration
+    /// [`ModelManager::type_declaration`] finds, with its
+    /// `TypeNotFoundException`s. The view maps the name to its own
     /// declaration view.
     #[cfg(feature = "js-compat")]
     pub fn type_declaration_name(&self, fqn: &str) -> Result<String> {
@@ -411,14 +368,9 @@ impl ModelManager {
         self.declaration_fqn(id)
     }
 
-    /// TS `ModelFile.getType(type)` of the model file `file`, answered by
-    /// name (P5-11, accordproject/concerto-rust#287): a primitive type's
-    /// own name, the fully-qualified name of the declaration the type
-    /// resolves to (a local declaration, or an import's target in the
-    /// model file registered under its namespace), or `None` (TS `null`)
-    /// when it resolves to neither. A primitive name never contains a
-    /// dot and a fully-qualified name always does, so the view tells the
-    /// two apart without another call.
+    /// TS `ModelFile.getType(type)` of the model file `file`, by name: a
+    /// primitive's own name (no dot), the fully-qualified name of the local
+    /// or imported declaration it resolves to, or `None` (TS `null`).
     #[cfg(feature = "js-compat")]
     pub fn model_file_type_name(
         &self,
@@ -432,15 +384,12 @@ impl ModelManager {
         }
     }
 
-    /// TS `ModelFile.resolveType(context, type, fileLocation)` of the
-    /// model file `file` (P5-11, accordproject/concerto-rust#287): a
-    /// primitive passes; a name the file imports must resolve in the
-    /// model file of the import's namespace
-    /// ([`ModelManager::resolve_type`], TS
-    /// `this.getModelManager().resolveType(context, this.resolveImport(type))`);
-    /// any other name must be declared locally, or the
-    /// `IllegalModelException` `modelfile-resolvetype-undecltype` naming
-    /// this file is raised, at `location` (TS `fileLocation`).
+    /// TS `ModelFile.resolveType(context, type, fileLocation)` of the model
+    /// file `file`: a primitive passes; an imported name must resolve in its
+    /// namespace's model file ([`ModelManager::resolve_type`]); any other
+    /// name must be declared locally, or the `IllegalModelException`
+    /// `modelfile-resolvetype-undecltype` naming this file is raised, at
+    /// `location`.
     #[cfg(feature = "js-compat")]
     pub fn model_file_resolve_type(
         &self,
@@ -502,7 +451,7 @@ impl ModelManager {
 
     js_compat_pub! {
         /// A declaration's fully-qualified name, borrowed from the arena,
-        /// where [`ModelManager::insert_shared`] built it once (P5-13).
+        /// where it is built once when the file is registered.
         pub fn decl_fqn(&self, id: DeclId) -> Result<&str> {
             self.declarations
                 .get(id.slot())
@@ -511,13 +460,10 @@ impl ModelManager {
         }
     }
 
-    /// TS `BaseModelManager.resolveType(context, type)` (basemodelmanager.ts,
-    /// `private`): a primitive type name passes through unchanged; otherwise
-    /// `type` must name a registered namespace, and within it a type local
-    /// to that namespace's own file (an imported name is rejected, even when
-    /// it resolves). `context` is free text for the error message only (TS
-    /// passes call-site descriptions such as a property's fully qualified
-    /// name).
+    /// TS `BaseModelManager.resolveType(context, type)`: a primitive passes
+    /// through; otherwise `type` must name a registered namespace and a type
+    /// local to that namespace's file (an imported name is rejected).
+    /// `context` only words the error message.
     pub fn resolve_type(&self, context: &str, type_name: &str) -> Result<String> {
         if is_primitive_type(type_name) {
             return Ok(type_name.to_string());
@@ -550,8 +496,8 @@ impl ModelManager {
     }
 
     /// The body of [`ModelManager::ast`] and the deprecated
-    /// [`ModelManager::get_ast`], whose docs say what it returns (A-11):
-    /// [`ModelManager::model_asts`] in the metamodel's `Models` envelope.
+    /// [`ModelManager::get_ast`]: [`ModelManager::model_asts`] in the
+    /// metamodel's `Models` envelope.
     pub(crate) fn models_ast(
         &self,
         resolve: bool,
@@ -564,16 +510,15 @@ impl ModelManager {
     }
 
     /// The models of [`ModelManager::models_ast`]'s envelope, without it:
-    /// what the decorator command sets walk (P5-104, C-8).
+    /// what the decorator command sets walk.
     pub(crate) fn model_asts(
         &self,
         resolve: bool,
         include_concerto_namespaces: bool,
     ) -> Result<Vec<Value>> {
-        // TS re-reads `getAst(false, true)` inside every `resolveMetaModel`
-        // call, but nothing registers or removes a model file in between, so
-        // one borrowed snapshot of the registered models serves every file
-        // (P5-17 F1: the per-file snapshot was an O(N^2) deep clone).
+        // TS re-reads `getAst(false, true)` in every `resolveMetaModel`
+        // call, but nothing changes in between, so one borrowed snapshot
+        // serves every file.
         let prior_models = if resolve {
             Some(self.prior_models())
         } else {
@@ -592,24 +537,18 @@ impl ModelManager {
         Ok(models)
     }
 
-    /// TS `BaseModelManager.resolveMetaModel(metaModel)` (basemodelmanager.ts):
-    /// `meta_model` (typically one of this manager's own model files' AST,
-    /// but any well-formed metamodel `Model` node) with every type name it
-    /// holds resolved to its declaring namespace, against this manager's own
-    /// currently-registered models (`this.getAst(false, true)`) — a port of
-    /// `@accordproject/concerto-metamodel`'s `MetaModelUtil.resolveLocalNames`
-    /// (`metamodel_util`, below this `impl` block), the only consumer this
-    /// manager has for it.
+    /// TS `BaseModelManager.resolveMetaModel(metaModel)`: `meta_model` with
+    /// every type name resolved to its declaring namespace, against this
+    /// manager's registered models (`MetaModelUtil.resolveLocalNames`,
+    /// `metamodel_util`).
     pub fn resolve_meta_model(&self, meta_model: &Value) -> Result<Value> {
         metamodel_util::resolve_local_names(&self.prior_models(), meta_model)
     }
 
-    /// The models `resolve_meta_model` resolves against — TS's
-    /// `this.getAst(false, true).models`, every registered model file's own
-    /// AST (system namespaces included) in [`ModelManager::model_files`]
-    /// order — borrowed and indexed by each AST's own `namespace`, instead
-    /// of deep-cloned into a `Models` envelope. The first model with a given
-    /// namespace wins, the same as TS `findNamespace`'s `Array.find`.
+    /// The models `resolve_meta_model` resolves against (TS
+    /// `this.getAst(false, true).models`), borrowed and indexed by
+    /// namespace; the first model with a namespace wins, as TS's
+    /// `Array.find` does.
     pub(super) fn prior_models(&self) -> metamodel_util::PriorModels<'_> {
         let mut prior_models = metamodel_util::PriorModels::default();
         for mf in self.model_files() {

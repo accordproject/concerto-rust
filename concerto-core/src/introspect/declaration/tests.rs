@@ -42,8 +42,7 @@ fn identified(value: serde_json::Value) -> Result<Declaration> {
 
 /// An `IdentifiedBy` with an empty name: TS's `this.idField =
 /// this.ast.identified.name` is read only by truthiness afterwards
-/// (`if (this.idField)`), so this loads with no id field at all
-/// (accordproject/concerto-rust#217).
+/// (`if (this.idField)`), so this loads with no id field at all.
 #[test]
 fn an_empty_identified_by_name_loads_with_no_id_field() {
     let d = identified(serde_json::json!({
@@ -55,12 +54,11 @@ fn an_empty_identified_by_name_loads_with_no_id_field() {
     assert!(c.own_properties().is_empty());
 }
 
-/// P5-61 (BR-09, accordproject/concerto-rust#393): `identified` is read
-/// strictly. TS 5.0.0 loaded a nullish or falsy non-string
-/// `IdentifiedBy` name as no identity, and a `$class` of another
-/// namespace (`foo.IdentifiedBy`, #244) or any other truthy value as
-/// system identity. BC-19's shape check rejects all of these first; with
-/// the check off they are the loader's error.
+/// BR-09: `identified` is read strictly. TS 5.0.0 loaded a nullish or
+/// falsy non-string `IdentifiedBy` name as no identity, and a `$class`
+/// of another namespace (`foo.IdentifiedBy`) or any other truthy value
+/// as system identity. BC-19's shape check rejects all of these first;
+/// with the check off they are the loader's error.
 #[test]
 fn a_malformed_identified_is_an_error() {
     for value in [
@@ -143,7 +141,7 @@ fn unknown_declaration_kind_errors() {
 #[test]
 fn missing_class_is_rejected() {
     // TS `fromAst`'s `default` case, `thing.$class` interpolated as
-    // `undefined` (P2-08 review: this used to be a pre-port message).
+    // `undefined`.
     let err = Declaration::try_from(&serde_json::json!({ "name": "X" }));
     assert_eq!(
         err.unwrap_err().to_string(),
@@ -186,7 +184,7 @@ fn a_declaration_name_must_be_an_identifier() {
 /// and the six scalar kinds exactly; anything else — a bare short name,
 /// another namespace's, an unknown `*Scalar`, a missing `$class` — is
 /// "Unrecognised model element", ahead of the name check, naming the
-/// file and no location (P2-08 review).
+/// file and no location.
 #[test]
 fn only_the_exact_metamodel_classes_are_recognised() {
     let cases = [
@@ -236,8 +234,7 @@ fn only_the_exact_metamodel_classes_are_recognised() {
 
 /// TS `Declaration.process` checks the name before
 /// `ClassDeclaration.process` looks at the fields, so a bad name wins
-/// over a system property name (P2-08 review), and the error names the
-/// file.
+/// over a system property name, and the error names the file.
 #[test]
 fn an_invalid_class_name_is_reported_before_a_system_field_name() {
     let err = Declaration::from_model_json(
@@ -296,8 +293,8 @@ fn scalar_with_valid_range_is_accepted() {
     );
 }
 
-/// The code of a `modelfile-load-unreadable` error (P5-61): a node the
-/// typed read cannot read, an `IllegalModelException`.
+/// The code of a `modelfile-load-unreadable` error: a node the typed
+/// read cannot read, an `IllegalModelException`.
 fn unreadable(err: Error) -> String {
     let contract = err.contract();
     assert_eq!(contract.kind, ErrorKind::IllegalModel, "{err}");
@@ -305,11 +302,11 @@ fn unreadable(err: Error) -> String {
     err.to_string()
 }
 
-/// P5-61: a class declaration's `properties` must be an array of
-/// property nodes whose `$class` is a full metamodel property class
-/// (BC-19's shape check rejects anything else first). A malformed one
-/// is a `modelfile-load-unreadable` error, not TS 5.0.0's per-site
-/// guards (`classdeclaration-validate-undefined-properties`,
+/// A class declaration's `properties` must be an array of property
+/// nodes whose `$class` is a full metamodel property class (BC-19's
+/// shape check rejects anything else first). A malformed one is a
+/// `modelfile-load-unreadable` error, not TS 5.0.0's per-site guards
+/// (`classdeclaration-validate-undefined-properties`,
 /// `classdeclaration-process-unrecmodelelem`).
 #[test]
 fn a_malformed_properties_value_is_an_unreadable_ast() {
@@ -343,13 +340,13 @@ fn a_malformed_properties_value_is_an_unreadable_ast() {
     }
 }
 
-/// P5-61: a map declaration is read strictly into the generated struct,
-/// so a key or value of a kind the metamodel does not declare, a
-/// missing key, value or name, or an object value without a well-formed
-/// `type` is a `modelfile-load-unreadable` error. TS 5.0.0's per-site
-/// guards for these shapes (`MapDeclaration must contain ...`, the
-/// `'in'` operator `TypeError`) are gone: BC-19's shape check rejects
-/// every one of them first.
+/// A map declaration is read strictly into the generated struct, so a
+/// key or value of a kind the metamodel does not declare, a missing
+/// key, value or name, or an object value without a well-formed `type`
+/// is a `modelfile-load-unreadable` error. TS 5.0.0's per-site guards
+/// for these shapes (`MapDeclaration must contain ...`, the `'in'`
+/// operator `TypeError`) are gone: BC-19's shape check rejects every
+/// one of them first.
 #[test]
 fn a_malformed_map_is_an_unreadable_ast() {
     let object_value = |ty: serde_json::Value| serde_json::json!({ "$class": "concerto.metamodel@1.0.0.ObjectMapValueType", "type": ty });
@@ -407,8 +404,7 @@ fn an_enum_property_in_a_class_declaration_is_kept() {
 }
 
 /// TS `ModelFile.fromAst` matches the fully-qualified `$class`, so a
-/// short scalar `$class` is an unrecognised model element (P2-08 review:
-/// the pre-port loader used to accept it).
+/// short scalar `$class` is an unrecognised model element.
 #[test]
 fn a_scalar_class_given_as_the_short_name_is_unrecognised() {
     let err = Declaration::try_from(&serde_json::json!({
@@ -427,7 +423,7 @@ fn unknown_scalar_kind_errors() {
         "$class": "concerto.metamodel@1.0.0.MysteryScalar",
         "name": "X"
     }));
-    // TS `fromAst` lists the six scalar kinds exactly (P2-08 review).
+    // TS `fromAst` lists the six scalar kinds exactly.
     assert_eq!(
         err.unwrap_err().to_string(),
         "Unrecognised model element \"concerto.metamodel@1.0.0.MysteryScalar\"."
@@ -579,7 +575,7 @@ fn declaration_kind_and_is_map_declaration_agree_with_ts() {
     assert!(!d.is_scalar_declaration());
 }
 
-/// #152, closing the "map key/value decorators aren't read" gap: TS
+/// Map key and value decorators are read: TS
 /// `MapKeyType`/`MapValueType.process` (mapkeytype.ts, mapvaluetype.ts)
 /// each run `Decorated.process()` on their own AST node, independently
 /// of the map's own decorators.
@@ -629,17 +625,16 @@ fn key_and_value_decorators_are_read_independently_of_the_map_s_own() {
 /// substitutes the implicit `'Concept'` default — the "has a `superType`
 /// node at all" signal is `Some(_)` itself, not this string's content.
 /// The real WASM binding (`classDeclarationProcess`) never reads this
-/// value for that branch: it threads the AST's own raw
-/// `superType.name` (which might be `undefined`, `null`, a number, …)
-/// straight through to its snapshot instead, exactly because a bare
-/// `Option<&str>` cannot represent every JSON shape a fuzzed AST can put
-/// there (accordproject/concerto-rust#217, #219) — telling `undefined`
-/// apart from an explicit `null` (both "no super type to resolve" in
-/// different ways: TS's `_resolveSuperType`/`getProperties` treat a
-/// `null` `this.superType` as nothing to resolve, but leave `undefined`
-/// to fail resolution and raise "Could not find super type undefined")
-/// is that caller's job, verified at the binding/smoke-check level, not
-/// this pure decision function's.
+/// value for that branch: it threads the AST's own raw `superType.name`
+/// (which might be `undefined`, `null`, a number, …) straight through to
+/// its snapshot instead, exactly because a bare `Option<&str>` cannot
+/// represent every JSON shape a fuzzed AST can put there — telling
+/// `undefined` apart from an explicit `null` (both "no super type to
+/// resolve" in different ways: TS's `_resolveSuperType`/`getProperties`
+/// treat a `null` `this.superType` as nothing to resolve, but leave
+/// `undefined` to fail resolution and raise "Could not find super type
+/// undefined") is that caller's job, verified at the binding/smoke-check
+/// level, not this pure decision function's.
 #[test]
 fn an_explicit_super_type_is_returned_verbatim_not_defaulted() {
     let decision =

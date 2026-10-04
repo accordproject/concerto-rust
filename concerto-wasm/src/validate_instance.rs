@@ -1,19 +1,17 @@
-//! `validateInstance` (P5-89, accordproject/concerto#1239).
+//! `validateInstance` (accordproject/concerto#1239).
 //!
-//! Split out of `lib.rs` (P5-104, review M7); the crate root glob-imports it.
+//! Split out of `lib.rs`; the crate root glob-imports it.
 
 use super::*;
 
 // ---------------------------------------------------------------------------
-// accordproject/concerto#1239: validateInstance (P5-89)
+// accordproject/concerto#1239: validateInstance
 // ---------------------------------------------------------------------------
 
-/// The options [`diagnose`] reads, from a `fromJSON` call's merged options
-/// as plain JSON, the way `Serializer.fromJSON` reads them (concerto-core-js
-/// `from_json_options`): `utcOffset || 0`, `strictQualifiedDateTimes ===
-/// true`, `acceptResourcesForRelationships === true`, the two #1273 options
-/// for their truthiness, and the validator's own defaults, as
-/// `ValidatedResource.validate` has them.
+/// The options [`diagnose`] reads from a `fromJSON` call's merged options,
+/// as `Serializer.fromJSON` reads them: `utcOffset || 0`, the strict
+/// boolean flags, the truthy `DeserializeOptions` flags, and the
+/// validator's defaults as `ValidatedResource.validate` has them.
 pub(crate) fn native_from_json_options(options: &Value) -> FromJsonOptions {
     let get = |key: &str| options.get(key);
     let utc_offset = match get("utcOffset") {
@@ -63,29 +61,14 @@ pub(crate) fn diagnostics_json(diagnostics: &[Diagnostic]) -> Value {
 
 #[wasm_bindgen]
 impl ModelManagerHandle {
-    /// accordproject/concerto#1239 `validateInstance` (P5-89,
-    /// accordproject/concerto-rust#435): validates `json_text`, the
-    /// document in `Serializer.fromJSON`'s own wire encoding (module doc
-    /// above "Serializer fast path"; plain JSON is its own encoding), as
-    /// `Serializer.fromJSON` with `validate: true` and the options
-    /// `options_text` (a `fromJSON` call's merged options, in the same wire
-    /// encoding as `serializerFromJsonCompact`'s, plain JSON included) would,
-    /// without handing any resource back. Plain JSON is checked by the
-    /// native walk alone ([`diagnose`]); a document with a wire tag (an
-    /// `undefined` field, `-0`, `NaN`, ...) is read by `serializerFromJsonCompact`'s
-    /// engine for the verdict and the error, with the walk's codes, paths and
-    /// collect-all report kept wherever it raises that same error
-    /// ([`diagnose_read`]). A wire shape the codec does not know throws the
-    /// error `serializerFromJsonCompact` throws for it. With `fqn`, the document is
-    /// checked as that type, which its own `$class` (when it has one) must be
-    /// or extend.
-    ///
-    /// `mode` 0 throws the error `Serializer.fromJSON` would throw, with its
-    /// diagnostics as the exception's `details`, and returns `""` for a valid
-    /// document; 1 returns `{"diagnostics": [...]}` with the first error's
-    /// diagnostics only, and 2 with every violation found, the first
-    /// error's first. A valid document has no diagnostics. Malformed JSON
-    /// throws a JS `SyntaxError`. Additive.
+    /// accordproject/concerto#1239 `validateInstance`: validates `json_text`
+    /// (`fromJSON`'s wire encoding) as `Serializer.fromJSON` with `validate:
+    /// true` and `options_text` would, as `fqn` when given. Plain JSON takes
+    /// the native walk ([`diagnose`]); a tagged document takes
+    /// `serializerFromJsonCompact`'s verdict, with the walk's report where it
+    /// raises the same error ([`diagnose_read`]). `mode` 0 throws with the
+    /// diagnostics as `details` (`""` when valid); 1 returns
+    /// `{"diagnostics": [...]}` for the first error, 2 for every violation.
     #[wasm_bindgen(js_name = validateInstance)]
     pub fn validate_instance(
         &self,
@@ -96,9 +79,9 @@ impl ModelManagerHandle {
     ) -> JsResult<String> {
         run(|| {
             let wire = serde_json::from_str::<Value>(json_text).map_err(json_syntax)?;
-            // P5-101 (D-3): the options are read once per options text, and
-            // the serializer built from them reused, as `serializerFromJsonCompact`
-            // reuses them ([`with_serializer_options`]).
+            // The options are read once per options text, and the serializer built
+            // from them reused, as `serializerFromJsonCompact` reuses them
+            // ([`with_serializer_options`]).
             with_serializer_options(options_text, |entry| {
                 validate_wire(
                     &self.manager,
@@ -117,7 +100,7 @@ impl ModelManagerHandle {
 /// [`ModelManagerHandle::validate_instance`]'s check of the wire document
 /// `wire` on `manager`, with `serializer` and the merged options as
 /// `from_json` (`from_json`) and the walk (`options`) read them; shared
-/// with `validateMetaModelInstance` (P5-102, F-7).
+/// with `validateMetaModelInstance`.
 pub(crate) fn validate_wire(
     manager: &ModelManager,
     wire: &Value,
@@ -156,8 +139,8 @@ pub(crate) fn validate_wire(
     snapshot(&json!({ "diagnostics": diagnostics }))
 }
 
-/// Calls back the view's `env.newId()`/`env.nowMs()` (D7: the identifier
-/// and the clock stay with the caller, `InstanceEnv`'s doc). Both trait
+/// Calls back the view's `env.newId()`/`env.nowMs()` (the identifier and
+/// the clock stay with the caller, `InstanceEnv`'s doc). Both trait
 /// methods are infallible, so a callback that throws or returns the wrong
 /// type is reported as best it can be (an empty id, or `0`) rather than
 /// propagated: a real `Factory.newId`/clock never does either.

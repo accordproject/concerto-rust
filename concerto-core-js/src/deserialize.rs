@@ -1,6 +1,6 @@
-//! The `DeserializeOptions` flags (accordproject/concerto#1273, task P3-02,
-//! accordproject/concerto-rust#57): the populate-time flags shared by
-//! `Serializer.fromJSON` and, from P3-04, `validateMetaModel`.
+//! The `DeserializeOptions` flags (accordproject/concerto#1273): the
+//! populate-time flags shared by `Serializer.fromJSON` and
+//! `validateMetaModel`.
 //!
 //! Both flags default to off, which keeps today's `fromJSON` behaviour:
 //!
@@ -27,12 +27,11 @@ pub(crate) const REJECT_UNKNOWN_KEYS: &str = "rejectUnknownKeys";
 /// The serializer option key for [`ValidationOptions::reject_required_null`].
 pub(crate) const REJECT_REQUIRED_NULL: &str = "rejectRequiredNull";
 
-/// #1273's `STRICT_VALIDATE_OPTIONS` preset: both flags on. Core's own
-/// preset ([`ValidationOptions::STRICT`]): P5-102 (C-7) dropped this
-/// crate's copy of #1273's options struct for core's.
+/// The `STRICT_VALIDATE_OPTIONS` preset, both flags on: core's
+/// [`ValidationOptions::STRICT`].
 pub const STRICT_VALIDATE_OPTIONS: ValidationOptions = ValidationOptions::STRICT;
 
-/// #1273's two flags of `options` as serializer options, to pass to
+/// The two flags of `options` as serializer options, to pass to
 /// `Serializer::from_json` (or merge into a larger option bag).
 pub fn serializer_options(options: ValidationOptions) -> SerializerOptions {
     [
@@ -54,7 +53,7 @@ mod tests {
     use super::*;
     use crate::populator::from_json_options;
 
-    /// #1273's flags as `fromJSON` reads them from a serializer option bag.
+    /// The two flags as `fromJSON` reads them from a serializer option bag.
     fn read(options: &SerializerOptions) -> (bool, bool) {
         let read = from_json_options(options);
         (read.reject_unknown_keys, read.reject_required_null)

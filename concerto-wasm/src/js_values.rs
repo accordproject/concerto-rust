@@ -1,6 +1,6 @@
 //! Reading JS values and calling JS collaborators (PORTING.md 1.4).
 //!
-//! Split out of `lib.rs` (P5-104, review M7); the crate root glob-imports it.
+//! Split out of `lib.rs`; the crate root glob-imports it.
 
 use super::*;
 
@@ -44,7 +44,7 @@ pub(crate) fn get(value: &JsValue, name: &str) -> Result<JsValue> {
         ));
     }
     if !value.is_object() && !value.is_function() {
-        // A primitive receiver: none of the trial's collaborator calls reads
+        // A primitive receiver: none of the collaborator calls this backs reads
         // a property of one, so it reads as `undefined`.
         return Ok(JsValue::UNDEFINED);
     }
@@ -75,8 +75,8 @@ pub(crate) fn call(
 
 /// `value.name?.()`: `None` when the method is nullish. `value` itself is
 /// read unguarded, matching every TS call site this backs (including
-/// `MapValueType.validate`'s deliberately-unguarded `decl.isMapDeclaration?.()`,
-/// P4-08e/#189 DV note): a nullish `value` throws the same
+/// `MapValueType.validate`'s deliberately unguarded
+/// `decl.isMapDeclaration?.()`): a nullish `value` throws the same
 /// "Cannot read properties of null/undefined" `TypeError` TS's property
 /// read would.
 pub(crate) fn call_optional(value: &JsValue, name: &str) -> Result<Option<JsValue>> {
@@ -87,22 +87,10 @@ pub(crate) fn call_optional(value: &JsValue, name: &str) -> Result<Option<JsValu
     call(value, name, &[], name).map(Some)
 }
 
-/// A JS value as JSON, `None` for `undefined`. Values JSON cannot hold
-/// (`NaN`, `Infinity`, functions) are not modelled: no model AST holds one.
-///
-/// A JS string may hold an unpaired UTF-16 surrogate (no valid Unicode
-/// scalar exists for one alone); `JSON.stringify` still emits it as a
-/// `\uD800`-range escape, which `serde_json` — building a real (UTF-8) Rust
-/// `String` — rejects. This used to be swallowed by `.ok()`, turning the
-/// *entire* value into `None` and silently discarding every other field
-/// alongside it (accordproject/concerto-rust#73, P5-02 review: a property
-/// AST's `name` field disappearing this way surfaced as a generic
-/// `Error('No name for type null')` instead of `property::process`'s own,
-/// correctly-classed `IllegalModelException` for an invalid name). Each
-/// unpaired escape is replaced with U+FFFD instead, so parsing still
-/// succeeds and every other field survives; the sanitized string content
-/// then fails whatever check reads it on its own, correctly-classed terms
-/// (e.g. `is_valid_identifier`), same as any other invalid string would.
+/// A JS value as JSON, `None` for `undefined`; `NaN`, `Infinity` and
+/// functions are not modelled (no model AST holds one). An unpaired
+/// surrogate escape, which `serde_json` rejects, becomes U+FFFD, so the
+/// string fails its own check with that check's error.
 pub(crate) fn to_json(value: &JsValue) -> Result<Option<Value>> {
     if value.is_undefined() {
         return Ok(None);
@@ -122,13 +110,9 @@ pub(crate) fn to_json(value: &JsValue) -> Result<Option<Value>> {
     }
 }
 
-/// Replaces every `\uXXXX` escape inside a JSON string literal that is an
-/// unpaired UTF-16 surrogate (high without an immediately following low, or
-/// low without an immediately preceding high) with the `�` escape,
-/// leaving every other character — including valid surrogate pairs and
-/// every other escape — untouched. Only escapes inside string literals are
-/// considered; the surrounding JSON structure (keys, punctuation) never
-/// contains a `\u` sequence of its own in text `JSON.stringify` produces.
+/// Replaces each `\uXXXX` escape of an unpaired UTF-16 surrogate inside a
+/// JSON string literal with the `�` escape, leaving pairs and other
+/// escapes untouched. `JSON.stringify` output has no `\u` outside strings.
 pub(crate) fn sanitize_lone_surrogate_escapes(text: &str) -> String {
     /// Reads a `\uXXXX` escape's 4 hex digits starting at `chars[at]`,
     /// returning the unit and its source characters, or `None` if `at` is
@@ -236,13 +220,10 @@ pub(crate) fn receiver(value: &JsValue, expression: &str, method: &str) -> Resul
 // JS collaborator calls (PORTING.md 1.4)
 // ---------------------------------------------------------------------------
 //
-// P5-106 (BC-52, accordproject/concerto-rust#460) retired the JS-callback
-// `ResolutionContext` (`JsContext`): the ModelUtil predicates, scalar and
-// decorator validation and the subclass queries now answer from the
-// manager's arena (the handle methods in "Arena answers", below). These two
-// helpers are what is left of it, for `MapKeyType.validate` and
-// `MapValueType.validate`, which still read the declaration
-// `this.modelFile.getType(...)` returns.
+// The ModelUtil predicates, scalar and decorator validation and the subclass
+// queries answer from the manager's arena (BC-52; "Arena answers", below).
+// These two helpers serve `MapKeyType.validate` and `MapValueType.validate`,
+// which read the declaration `this.modelFile.getType(...)` returns.
 
 /// TS `decl?.isScalarDeclaration?.()` and `decl?.isMapDeclaration?.()`:
 /// `None` when the method is missing.

@@ -1,15 +1,13 @@
 //! A [`ModelManagerHandle`](crate::ModelManagerHandle)'s per-epoch
-//! DecoratorManager extract memo (P5-56; P5-77), in a module of its own
-//! (P5-101, D-7, accordproject/concerto-rust#455). The memo is a `RefCell`
-//! field of the handle, so the extract bindings keep taking `&self`; it never
-//! moves the epoch, and is dropped whenever the epoch moves (the rule on
-//! `ModelManagerHandle::epoch`).
+//! DecoratorManager extract memo, in a module of its own. The memo is a
+//! `RefCell` field of the handle, so the extract bindings keep taking
+//! `&self`; it never moves the epoch, and is dropped whenever the epoch moves
+//! (the rule on `ModelManagerHandle::epoch`).
 
 use super::*;
 
 // ---------------------------------------------------------------------------
-// P5-56 (T2, F-A2, accordproject/concerto-rust#377): a per-epoch extract
-// result memo on the source handle (the P5-42 report's Design 2, on #352).
+// A per-epoch extract result memo on the source handle.
 //
 // With `removeDecoratorsFromModel` false, an extract's result models are the
 // handle's own models, resolved, whatever the action and locale; only the
@@ -30,26 +28,25 @@ use super::*;
 //   `dcs::extract` reports ahead of the transform's, so a repeated call
 //   throws what a full one throws.
 // - Nothing shared is returned: the JS result is parsed from new text on
-//   every call. P5-77: each staged model file is shared with the kept
-//   result manager (a model file never changes once built), not cloned.
+//   every call. Each staged model file is shared with the kept result
+//   manager (a model file never changes once built), not cloned.
 //
-// P5-77 (accordproject/concerto-rust#419): with `removeDecoratorsFromModel`
-// true, the result models are the handle's own models, resolved, with the
-// decorators the action strips removed: they depend on the action, but not
-// on the locale, and the command sets and vocabularies are read before any
-// decorator is stripped ([`dcs::encode_extract_source`]). So the same memo
-// serves that case too, keyed by the action as well; everything above
-// holds for it unchanged.
+// With `removeDecoratorsFromModel` true, the result models are the handle's
+// own models, resolved, with the decorators the action strips removed: they
+// depend on the action, but not on the locale, and the command sets and
+// vocabularies are read before any decorator is stripped
+// ([`dcs::encode_extract_source`]). So the same memo serves that case too,
+// keyed by the action as well; everything above holds for it unchanged.
 // ---------------------------------------------------------------------------
 
-/// A [`ModelManagerHandle`]'s extract memo (P5-56): its key, and the kept
-/// result once the second call at that key has filled it.
+/// A [`ModelManagerHandle`]'s extract memo: its key, and the kept result
+/// once the second call at that key has filled it.
 pub(crate) struct DcsExtractMemo {
     /// `(epoch, system models walked, stripping action)`: `ExtractAll` and
     /// `ExtractVocab` walk the system models too, `ExtractNonVocab` does not
     /// ([`dcs::extract`]); the stripping action is the action when
-    /// `removeDecoratorsFromModel` is true (P5-77), and `None` when it is
-    /// false, since then every action gives the same result models.
+    /// `removeDecoratorsFromModel` is true, and `None` when it is false,
+    /// since then every action gives the same result models.
     pub(crate) key: (u64, bool, Option<dcs::extractor::Action>),
     /// `None` after the first call at `key`, `Some` from the second on.
     pub(crate) kept: Option<DcsExtractKept>,
@@ -58,7 +55,7 @@ pub(crate) struct DcsExtractMemo {
 /// The `{"$class", "models"}` envelope of a manager's model ASTs
 /// (`model_manager_to_ast`'s), from each model's own AST text
 /// ([`ModelManager::compact_model_asts`]): the same compact text, byte for
-/// byte (P5-77).
+/// byte.
 fn models_envelope_text(texts: &[Arc<str>]) -> String {
     let mut out = String::with_capacity(64 + texts.iter().map(|t| t.len() + 1).sum::<usize>());
     out.push_str("{\"$class\":\"concerto.metamodel@1.0.0.Models\",\"models\":[");
@@ -72,8 +69,8 @@ fn models_envelope_text(texts: &[Arc<str>]) -> String {
     out
 }
 
-/// P5-77: stages an extract result into `target` and returns its JS value,
-/// for a result the caller drops once the call returns, through
+/// Stages an extract result into `target` and returns its JS value, for a
+/// result the caller drops once the call returns, through
 /// [`DcsExtractKept`], so the files staged into `target` keep their ASTs as
 /// text ([`DcsExtractKept::new`]). The same JS value, and the same stages,
 /// as [`stage_result`] gives.
@@ -107,16 +104,11 @@ pub(crate) struct DcsExtractKept {
 }
 
 impl DcsExtractKept {
-    /// P5-77 (accordproject/concerto-rust#419): the staged headers are read
-    /// from the result's parsed ASTs first, then the ASTs are compacted
-    /// ([`ModelManager::compact_model_asts`]): each result model file keeps
-    /// its AST as compact JSON text, and [`Self::ast_text`] is spliced
-    /// from those texts, byte for byte the text of `model_manager_to_ast`'s
-    /// value. So the files staged from it (shared, see
-    /// [`Self::stage`]) hold text, not a parsed tree, for as long as the
-    /// result ModelManager lives. Compaction serialises values serde built,
-    /// which cannot fail; should it, the error is [`internal`] (P5-104,
-    /// D-11: no intermediate-`Value` fallback).
+    /// Reads the staged headers from the result's parsed ASTs, then compacts
+    /// them ([`ModelManager::compact_model_asts`]): each file keeps compact JSON
+    /// text, from which [`Self::ast_text`] is spliced byte for byte as
+    /// `model_manager_to_ast`'s value. Compaction cannot fail on values serde
+    /// built; should it, the error is [`internal`].
     pub(crate) fn new(source: Vec<Value>, mut result: ModelManager) -> Result<Self> {
         let headers = result
             .model_files()
@@ -135,7 +127,7 @@ impl DcsExtractKept {
     }
 
     /// [`stage_shared`] from the kept result manager, with its kept headers.
-    /// P5-77: each file is staged shared with the kept manager, which never
+    /// Each file is staged shared with the kept manager, which never
     /// changes, so a repeated extract copies no model file.
     pub(crate) fn stage(&self, target: &mut ModelManagerHandle) -> Vec<Value> {
         stage_shared(
@@ -171,7 +163,7 @@ impl DcsExtractKept {
 
     /// The JS value of the extract result: [`Self::result_text`], parsed.
     /// The text is written from values serde built, so neither step fails
-    /// (P5-104, D-11: the intermediate-`Value` fallback is gone).
+    /// (the intermediate-`Value` fallback is gone).
     fn result_js(
         &self,
         command_sets: &str,
@@ -187,7 +179,7 @@ impl DcsExtractKept {
 
 impl ModelManagerHandle {
     /// [`staged_extract`] on this handle's own manager, through the
-    /// per-epoch memo (P5-56; P5-77 for `removeDecoratorsFromModel` true).
+    /// per-epoch memo (for either `removeDecoratorsFromModel`).
     pub(crate) fn memo_extract(
         &self,
         target: &mut ModelManagerHandle,

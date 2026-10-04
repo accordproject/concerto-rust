@@ -1,5 +1,5 @@
-//! The seeded hasher of the maps keyed by untrusted input (P5-110,
-//! accordproject/concerto-rust#477; PORTING.md 3.7).
+//! The seeded hasher of the maps keyed by untrusted input
+//! (PORTING.md 3.7).
 //!
 //! Instance keys, and the model names and regex patterns a multi-tenant
 //! server takes from its users, must not be hashed with an unseeded or
@@ -15,7 +15,7 @@
 //! process-wide keys: near-FxHash speed, for the per-lookup tables keyed by
 //! user model names (the manager's namespaces, a model file's local types
 //! and import short names), where SipHash cost 20-60% on the introspection
-//! rows (maintainer decision on #477, 2026-10-03).
+//! rows.
 //!
 //! FxHash stays for the internal tables keyed by identifiers.
 
@@ -41,15 +41,11 @@ pub type FastSeededHashMap<K, V> = HashMap<K, V, FastSeededState>;
 /// [`RandomState`] on first use.
 static HASH_KEYS: OnceLock<(u64, u64)> = OnceLock::new();
 
-/// Sets the SipHash keys every [`SeededState`] hashes with, from the host's
-/// entropy. Returns `false`, and changes nothing, once the keys are set: by
-/// an earlier call, or by the first [`SeededState`] built.
-///
-/// A native build needs no call: the keys then come from [`RandomState`],
-/// which the OS seeds. On `wasm32-unknown-unknown` `RandomState`'s keys are
-/// fixed, so they would be public; concerto-wasm calls this at
-/// instantiation, before any seeded map exists, with keys from
-/// `crypto.getRandomValues`.
+/// Sets the SipHash keys every [`SeededState`] uses, from the host's
+/// entropy; `false`, changing nothing, once they are set. A native build
+/// needs no call ([`RandomState`] is OS-seeded); on
+/// `wasm32-unknown-unknown` its keys are fixed, so concerto-wasm calls this
+/// at instantiation with keys from `crypto.getRandomValues`.
 #[cfg_attr(not(feature = "js-compat"), expect(dead_code, reason = "js-compat seam only"))]
 pub fn seed_hasher(k0: u64, k1: u64) -> bool {
     HASH_KEYS.set((k0, k1)).is_ok()
@@ -96,16 +92,11 @@ impl BuildHasher for SeededState {
 /// `crypto.getRandomValues` on WASM ([`seed_hasher`]), never fixed.
 static FOLD_SEED: OnceLock<SharedSeed> = OnceLock::new();
 
-/// foldhash (`fast`) under a per-process secret seed: both foldhash's
-/// shared seed and its per-hasher seed come from the keys [`SeededState`]
-/// uses ([`seed_hasher`]). foldhash's own `RandomState` is not used because
-/// on `wasm32-unknown-unknown` its global seed has no entropy source.
-///
-/// For the per-lookup tables keyed by user model names, where SipHash is
-/// too slow (maintainer decision, accordproject/concerto-rust#477).
-/// foldhash's seeding gives HashDoS resistance against keys chosen without
-/// knowledge of the seed; it is not a keyed PRF like SipHash, so instance
-/// keys ([`SeededState`]) keep SipHash.
+/// foldhash (`fast`) seeded from the [`SeededState`] keys ([`seed_hasher`]),
+/// for per-lookup tables keyed by model names, where SipHash is too slow.
+/// It resists HashDoS from keys chosen without the seed, but is not a keyed
+/// PRF, so instance keys keep SipHash. foldhash's own `RandomState` has no
+/// entropy on `wasm32-unknown-unknown`.
 #[derive(Debug, Clone, Copy)]
 pub struct FastSeededState(SeedableRandomState);
 

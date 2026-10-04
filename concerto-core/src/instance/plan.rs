@@ -1,5 +1,4 @@
-//! The cached per-generation **validation plan** of the instance paths
-//! (P5-88, accordproject/concerto-rust#434; prototyped in P5-80, #424).
+//! The cached per-generation **validation plan** of the instance paths.
 //!
 //! ajv compiles a schema once into a validator specialised for it. The
 //! instance layer here otherwise interprets the model graph on every call:
@@ -25,7 +24,7 @@
 //! - the identifier field's regex validator, for `Factory.newResource`.
 //!
 //! The plan is always on, and it is the only route: it serves `validate`
-//! (`ResourceValidator`, one walk, P5-99), both `fromJSON` populators, the
+//! (`ResourceValidator`, one walk), both `fromJSON` populators, the
 //! `toJSON` generator, the factory's identifier check, and
 //! `setPropertyValue`/`addArrayValue` (including the WASM
 //! `validatePropertyBinary` fast path).
@@ -33,10 +32,9 @@
 //! # Behaviour
 //!
 //! A plan is built lazily, on the first instance call that meets the
-//! declaration, and is total (P5-99, accordproject/concerto-rust#453):
-//! whatever fails while building it is recorded in it, never swallowed, and
-//! raised at the point the check that needs it runs, which is where the
-//! model lookups ran before there was a plan:
+//! declaration, and is total: whatever fails while building it is recorded
+//! in it, never swallowed, and raised at the point the check that needs it
+//! runs, which is where the model lookups ran before there was a plan:
 //!
 //! - the declaration's own chain (an unresolvable super type, a cyclic
 //!   chain): [`class_plan`] returns the recorded error, the one
@@ -55,20 +53,20 @@
 //! # Invalidation and memory
 //!
 //! Plans live in [`ModelManager`]'s plan cache, a per-declaration slot table
-//! next to the inheritance cache (`class_cache`, P5-06/P5-13), under a
-//! `Mutex` so the manager stays `Sync`. `invalidate_caches` clears both on
-//! every change to the registered files (add, a failed batch's rollback,
-//! the metamodel's temporary load), so a plan only ever describes the
-//! current model generation; `updateModelFile`, `deleteModelFile`,
-//! `clearModelFiles` and `updateExternalModels` build a new manager, with
-//! empty caches. A plan holds handles (`DeclId`, `PropId`), never borrows,
-//! so it cannot outlive the arena it indexes, and is dropped with the
-//! cache. A plan costs about 300 bytes per planned property.
+//! next to the inheritance cache (`class_cache`), under a `Mutex` so the
+//! manager stays `Sync`. `invalidate_caches` clears both on every change to
+//! the registered files (add, a failed batch's rollback, the metamodel's
+//! temporary load), so a plan only ever describes the current model
+//! generation; `updateModelFile`, `deleteModelFile`, `clearModelFiles` and
+//! `updateExternalModels` build a new manager, with empty caches. A plan
+//! holds handles (`DeclId`, `PropId`), never borrows, so it cannot outlive
+//! the arena it indexes, and is dropped with the cache. A plan costs about
+//! 300 bytes per planned property.
 //!
 //! # Testing
 //!
 //! With the dev-only `validation-plan-testing` feature (never enabled by a
-//! release build), [`testing`] can run a closure that builds every plan
+//! release build), `testing` can run a closure that builds every plan
 //! afresh instead of reading the cache, so a test can check that a cached
 //! plan (and a cached build error) gives the same outcome as a fresh one,
 //! and count the plans a manager holds.
@@ -118,7 +116,7 @@ pub enum PlanKind {
     /// An enum declaration's own value member.
     EnumValue,
     /// The type did not resolve: the error resolving it raises, at the point
-    /// the type is needed (P5-99).
+    /// the type is needed.
     Unresolved(Error),
 }
 
@@ -161,7 +159,7 @@ pub enum MapSlot {
     /// class nor, under a scalar key, a scalar).
     Skip,
     /// The slot's type did not resolve: the error resolving it, raised for
-    /// each entry that reaches the slot (P5-99).
+    /// each entry that reaches the slot.
     Unresolved(Error),
 }
 
@@ -182,7 +180,7 @@ pub enum Prepared<T> {
     /// Built.
     Built(T),
     /// Building it threw: the error, raised where the validator would have
-    /// been built for a value (P5-99).
+    /// been built for a value.
     Failed(Error),
 }
 
@@ -236,20 +234,17 @@ pub struct ClassPlan {
     /// The error building the plan met (the declaration's chain does not
     /// resolve), which [`class_plan`] returns in place of the plan.
     failure: Option<Error>,
-    /// P5-97 (accordproject/concerto-rust#448): whether every part of the
-    /// plan resolved and was built ([`ClassPlan::is_settled`]).
+    /// Whether every part of the plan resolved and was built
+    /// ([`ClassPlan::is_settled`]).
     settled: bool,
 }
 
 impl ClassPlan {
-    /// P5-97 (accordproject/concerto-rust#448): true when nothing in the
-    /// plan was left unresolved or unplanned: every property's kind
-    /// resolved (a map's key and value too), and every validator, including
-    /// the identifier's, was built or is absent. Such a plan reads only
-    /// declarations that resolved, so adding a model file to the manager
-    /// cannot change it, and the plan cache keeps it across an append
-    /// (`ModelManager::keep_caches_for_append`); any other plan is built
-    /// again.
+    /// True when every property's kind (a map's key and value too) resolved
+    /// and every validator was built or is absent. Such a plan reads only
+    /// resolved declarations, so adding a model file cannot change it and the
+    /// plan cache keeps it across an append
+    /// (`ModelManager::keep_caches_for_append`).
     pub fn is_settled(&self) -> bool {
         self.settled
     }
@@ -319,7 +314,7 @@ impl ClassPlan {
 /// The plan of declaration `id`, built on first use and cached until the
 /// registered files change; the error its chain raises when it does not
 /// resolve (or `id` is not a class-like or enum declaration), cached with
-/// it (P5-99).
+/// it.
 pub fn class_plan(mm: &ModelManager, id: DeclId) -> Result<Arc<ClassPlan>> {
     #[cfg(feature = "validation-plan-testing")]
     if testing::is_uncached() {
@@ -415,9 +410,9 @@ fn build(mm: &ModelManager, id: DeclId) -> ClassPlan {
     plan
 }
 
-/// P5-97: whether a property's kind resolved completely (a map's key and
-/// value, and a map relationship's target, too). A kind holding a resolution
-/// error could resolve once another model file is added, so its plan is not
+/// Whether a property's kind resolved completely (a map's key and value, and
+/// a map relationship's target, too). A kind holding a resolution error
+/// could resolve once another model file is added, so its plan is not
 /// settled.
 fn kind_is_settled(kind: &PlanKind) -> bool {
     let slot_is_settled = |slot: &MapSlot| {
@@ -649,10 +644,10 @@ pub mod testing {
 
 #[cfg(test)]
 mod tests {
-    //! A stale plan is never used (P5-80 item 6). Each test builds plans by
+    //! A stale plan is never used. Each test builds plans by
     //! validating, changes the model, then validates an instance whose
     //! answer depends on the change. And a cached build error is the error a
-    //! fresh build raises (P5-99).
+    //! fresh build raises.
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use serde_json::{Value, json};

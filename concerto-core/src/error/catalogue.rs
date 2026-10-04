@@ -1,76 +1,17 @@
-//! The message catalogue (PORTING.md section 2.2, OD-5).
+//! The message catalogue (PORTING.md section 2.2): the message templates the
+//! engine's errors render.
 //!
-//! Rust owns the message templates the ported units of `concerto-core`
-//! throw. This file holds two kinds of entry:
-//!
-//! - the `messages/en.json` keys OD-5 scopes in, ported verbatim: every key
-//!   a RUST or HYBRID member's throw site uses, plus the
-//!   `factory-newinstance-*` keys and `typenotfounderror-defaultmessage` that
-//!   OD-5 pre-approves ahead of their own call site (P3-01, table 2.3);
-//! - the inline templates (template literals and string concatenations,
-//!   2.2 step 2) of the members the P0-04b trial ported.
-//!
-//! It does not yet hold the inline templates of every RUST or HYBRID member:
-//! each member's own port adds its inline templates, with their golden
-//! tests, in the same PR (6.3). No unused `en.json` key is ported:
-//! `composer-*`, `whereastvalidator-*`, `like` and `test-*` have no throw
-//! site in `concerto-core` and stay in TS.
-//!
-//! **Deriving the OD-5 scope.** "Every `en.json` key used by a RUST or
-//! HYBRID member" (OD-5) means: take the ledger
-//! (`migration/ledger/SEAM_LEDGER.tsv`, commit `c48423c`, PORTING.md OD-6)
-//! rows whose `classification` is `RUST` or `HYBRID`, for each one grep its
-//! `file`/`class`/`member` in the frozen TS reference for
-//! `Globalize.messageFormatter(...)` or `Globalize.formatMessage(...)`, and
-//! port every key that turns up (2.2 step 1), plus the pre-approved keys
-//! above. The call is written several ways in the reference —
-//! `Globalize.messageFormatter('key')`, `Globalize('en').messageFormatter('key')`,
-//! and with the key on the line after the opening parenthesis
-//! (`classdeclaration.ts:278`, `resourcevalidator.ts:592`) — so a
-//! line-oriented `grep` misses some of them. The reproducible form, run
-//! from `packages/concerto-core` in the TS checkout, reads each file whole
-//! and prints `file:line:key` with the line of the `Globalize` token:
-//!
-//! ```text
-//! perl -0777 -ne 'while (/Globalize\s*(?:\(\s*[^)]*\))?\s*\.\s*(?:messageFormatter|formatMessage)\s*\(\s*([\x27"`])([^\x27"`]+)\1/g) { my $l = (substr($_, 0, $-[0]) =~ tr/\n//) + 1; print "$ARGV:$l:$2\n" }' $(find src -name '*.ts')
-//! ```
-//!
-//! Each hit is then attributed to the ledger row for its `file` whose
-//! `line` is the nearest one at or above it, and kept when that row is
-//! `RUST` or `HYBRID`. At `c48423c` the command finds 34 call sites (32
-//! distinct keys), of which 28 call sites (26 distinct keys) are in a RUST
-//! or HYBRID row; with the five pre-approved keys that is the 31 keys
-//! `od5_catalogue_scope_is_present` (mod.rs) lists. The hits it drops are
-//! `Factory.newResource` (TS in the TSV; its three keys are pre-approved
-//! anyway), `Serializer.constructor` (TS: `serializer-constructor-*`) and
-//! `TypeNotFoundException.constructor` (TS; pre-approved). The P1-07
-//! attribution index, OD-10, automates this once it exists; until then a
-//! P1/P2/P3 task that finds a key the census missed adds it here, citing
-//! the ledger row. The trial (P0-04b) and the first cut of P1-05
-//! covered only the keys their own units' call sites used; this file now
-//! also carries the P1-05 exit-condition sweep over `BaseModelManager`
-//! (`resolveType`, `getType`), `ModelFile` (`constructor`, `resolveType`,
-//! `resolveImport`, `validate`), `ClassDeclaration` (`process`, `validate`),
-//! `InstanceGenerator` (RUST: `findConcreteSubclass`, reached from
-//! `newInstance`) and `Serializer.toJSON` (HYBRID), plus the nine
-//! `resourcevalidator-*` keys `ResourceValidator` (HYBRID, every `visit*`
-//! and `report*` method) uses — none of these units has its own call site
-//! yet, so each entry below is pre-approved the same way
-//! `factory-newinstance-*` is (2.2), and the unit that ports the member
-//! deletes the pre-approval note from its doc comment.
-//!
-//! One further entry, `"pre-port"`, is not a TS template at all: it is the
-//! escape hatch [`super::ContractError::pre_port`] uses for a call site that
-//! has not yet been faithfully ported (module doc on [`super`]).
-//!
-//! Nor is a maintainer-accepted replacement for a TS crash (PORTING.md 7.3,
-//! category `maintainer-accepted` in `DIVERGENCES.md`): such an entry cites
-//! its DV row in `sources` in place of a TS throw site
-//! (`property-process-relationshipnotype`, DV-017;
-//! `decorator-process-notobject`, DV-018). Nor is a check TS does not make
-//! at all, added as an intended breaking change: such an entry cites its
-//! BREAKING-CHANGES-PLAN.md row (`typed-assignfielddefaults-datetime`,
-//! BC-45).
+//! - `messages/en.json` keys, verbatim: every key a ported throw site uses,
+//!   plus `factory-newinstance-*` and `typenotfounderror-defaultmessage`
+//!   (table 2.3). Keys with no throw site in concerto-core (`composer-*`,
+//!   `whereastvalidator-*`, `like`, `test-*`) stay out.
+//! - The inline templates (template literals and string concatenations,
+//!   2.2 step 2) of the ported throw sites, each `${expr}` a named `{param}`.
+//! - `"pre-port"`, the escape hatch [`super::ContractError::pre_port`] uses
+//!   for a message with no catalogue entry (module doc on [`super`]).
+//! - Replacements for a TS crash (category `maintainer-accepted` in
+//!   DIVERGENCES.md, citing their DV row in `sources`), and checks TS does
+//!   not make, added as breaking changes (citing their BC row).
 
 use super::{CatalogueEntry, Renderer};
 
@@ -79,8 +20,7 @@ use super::{CatalogueEntry, Renderer};
 /// `sources`) is a verbatim TS template, byte for byte, with the throw
 /// site(s) it was ported from.
 pub const CATALOGUE: &[CatalogueEntry] = &[
-    // ---- P0-04b trial payload (ModelUtil, NumberValidator, ScalarDeclaration),
-    //      absorbed unchanged (PORTING.md, the maintainer's second #42 comment) ----
+    // ---- ModelUtil, NumberValidator, ScalarDeclaration ----
     CatalogueEntry {
         code: "modelutil-getnamespace-nofnq",
         template: "FQN is invalid.",
@@ -147,7 +87,7 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
             "src/introspect/numbervalidator.ts:115",
         ],
     },
-    // ---- P2-02 additions (StringValidator, CollectionSizeValidator) ----
+    // ---- StringValidator, CollectionSizeValidator ----
     CatalogueEntry {
         code: "stringvalidator-constructor-invalidlength",
         template: "Invalid string length, minLength and-or maxLength must be specified.",
@@ -169,7 +109,7 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
     CatalogueEntry {
         code: "stringvalidator-constructor-invalidregex",
         // Not a TS template: the message is whatever the regex engine threw
-        // (V8 in TS, `regress` here), passed through verbatim (OD-4).
+        // (V8 in TS, `regress` here), passed through verbatim.
         template: "{message}",
         renderer: Renderer::Inline,
         sources: &["src/introspect/stringvalidator.ts:84"],
@@ -250,36 +190,25 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         code: "engine-typeerror-inoperator",
         template: "Cannot use 'in' operator to search for '{key}' in {value}",
         renderer: Renderer::Inline,
-        // accordproject/concerto-rust#219 (P5-05 stage-2 T2c): `MapValueType
-        // .processType`'s `'$class' in ast.type`/`'name' in ast.type`
-        // (src/introspect/mapvaluetype.ts) throws this whenever
-        // `ast.type` is present but is not itself a JS object (a JSON
-        // `null`, boolean, number or string) — the ECMAScript `in` operator
-        // requires an object right-hand side.
+        // `MapValueType.processType`'s `'$class' in ast.type` throws this
+        // when `ast.type` is present but not an object.
         sources: &["V8 ('in' operator with a non-object right-hand side)"],
     },
-    // ---- P1-05 additions ----
+    // ---- Model manager, model file and class declaration ----
     CatalogueEntry {
         code: "typenotfounderror-defaultmessage",
         template: "Type \"{typeName}\" not found.",
         renderer: Renderer::Globalize,
-        // OD-5: pre-approved for the catalogue ahead of its call site
-        // (TypeNotFoundException's default message, table 2.3), which lands
-        // wherever a port raises `TypeNotFoundException(typeName)` with no
-        // custom message.
+        // TypeNotFoundException's default message (table 2.3).
         sources: &["src/typenotfoundexception.ts:37 (messages/en.json)"],
     },
     CatalogueEntry {
         code: "modelmanager-gettype-noregisteredns",
         template: "Namespace is not defined for type \"{type}\".",
         renderer: Renderer::Globalize,
-        // BaseModelManager.getType's unregistered-namespace path. Reused,
-        // faithfully, by model_manager::ModelManager::resolve_type_name for
-        // its equivalent check (PORTING.md section 7.2): both ask whether a
-        // namespace is loaded before resolving a name inside it. A future
-        // P2-08 port of ModelManager.getType itself uses the same entry.
-        // ModelFile.validate throws the same key (RUST) for the same check
-        // over an import's namespace, one template, two throw sites (2.2).
+        // BaseModelManager.getType's unregistered-namespace path, and
+        // ModelFile.validate's check of an import's namespace;
+        // `resolve_type_name` raises it for the same check.
         sources: &[
             "src/basemodelmanager.ts:661",
             "src/introspect/modelfile.ts:251",
@@ -289,8 +218,7 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         code: "factory-newinstance-missingidentifier",
         template: "Missing identifier for Type \"{type}\" in namespace \"{namespace}\".",
         renderer: Renderer::Globalize,
-        // OD-5 / #32 point 4: one of Factory.newResource's model checks;
-        // not yet called (P3-01 delegates them to Rust).
+        // One of Factory.newResource's model checks.
         sources: &["src/factory.ts:115"],
     },
     CatalogueEntry {
@@ -309,86 +237,74 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         code: "factory-newinstance-typenotdeclaredinns",
         template: "Cannot instantiate Type \"{type}\" in namespace \"{namespace}\".",
         renderer: Renderer::Globalize,
-        // No TS call site: the key is in messages/en.json but nothing in
-        // src/ uses it. OD-5 pre-approves it with the other three.
+        // No TS call site: the key is in messages/en.json only.
         sources: &["messages/en.json only (no TS call site)"],
     },
-    // ---- P1-05 exit-condition sweep: the rest of the OD-5 scope the first
-    //      cut of this file missed (module doc). Each of these units has no
-    //      call site yet, so the entry is pre-approved the same way
-    //      `factory-newinstance-*` is, ahead of the P1/P2/P3 task that ports
-    //      its unit and deletes the "not yet called" note. ----
     CatalogueEntry {
         code: "modelmanager-resolvetype-nonsfortype",
         template: "No registered namespace for type \"{type}\" in \"{context}\".",
         renderer: Renderer::Globalize,
-        // BaseModelManager.resolveType (RUST, P2-08b).
+        // BaseModelManager.resolveType.
         sources: &["src/basemodelmanager.ts:591"],
     },
     CatalogueEntry {
         code: "modelmanager-resolvetype-notypeinnsforcontext",
         template: "No type \"{type}\" in namespace \"{namespace}\" for \"{context}\".",
         renderer: Renderer::Globalize,
-        // BaseModelManager.resolveType (RUST, P2-08b).
+        // BaseModelManager.resolveType.
         sources: &["src/basemodelmanager.ts:602"],
     },
     CatalogueEntry {
         code: "basemodelmanager-updatemodelfile-notfound",
         template: "Model file for namespace {namespace} not found",
         renderer: Renderer::Inline,
-        // BaseModelManager.updateModelFile (HYBRID, P2-08b): a plain
-        // `Error`, not a Globalize call.
+        // BaseModelManager.updateModelFile: a plain `Error`.
         sources: &["src/basemodelmanager.ts:353"],
     },
     CatalogueEntry {
         code: "basemodelmanager-deletemodelfile-notfound",
         template: "Model file does not exist",
         renderer: Renderer::Inline,
-        // BaseModelManager.deleteModelFile (RUST, P2-08b): a plain `Error`,
-        // not a Globalize call.
+        // BaseModelManager.deleteModelFile: a plain `Error`.
         sources: &["src/basemodelmanager.ts:372"],
     },
     CatalogueEntry {
         code: "basemodelmanager-throwalreadyexists",
         template: "Namespace {namespace}{prefix} is already declared{postfix}",
         renderer: Renderer::Inline,
-        // BaseModelManager._throwAlreadyExists (RUST, P2-08b): a plain
-        // `Error`. `prefix`/`postfix` are pre-formatted (" specified in
-        // file {name}" / " in file {name}"), empty when that model file has
-        // no name, since `Renderer::Inline` does no conditional logic.
+        // BaseModelManager._throwAlreadyExists: a plain `Error`.
+        // `prefix`/`postfix` are pre-formatted (" specified in file {name}"
+        // / " in file {name}"), empty when that model file has no name.
         sources: &["src/basemodelmanager.ts:226"],
     },
     CatalogueEntry {
         code: "metamodelutil-createnametable-declarationnotfound",
         template: "Declaration {name} in namespace {namespace} not found",
         renderer: Renderer::Inline,
-        // MetaModelUtil.createNameTable (RUST, P2-08b): a plain `Error`,
-        // reached through BaseModelManager.resolveMetaModel/getAst(true, …).
+        // MetaModelUtil.createNameTable (`resolveMetaModel`): a plain
+        // `Error`.
         sources: &["@accordproject/concerto-metamodel@3.17.0 lib/metamodelutil.js:75,90"],
     },
     CatalogueEntry {
         code: "metamodelutil-resolvename-notfound",
         template: "Name {name} not found",
         renderer: Renderer::Inline,
-        // MetaModelUtil.resolveName (RUST, P2-08b): a plain `Error`, reached
-        // through BaseModelManager.resolveMetaModel/getAst(true, …).
+        // MetaModelUtil.resolveName (`resolveMetaModel`): a plain `Error`.
         sources: &["@accordproject/concerto-metamodel@3.17.0 lib/metamodelutil.js:117"],
     },
     CatalogueEntry {
         code: "metamodelutil-resolvetypenames-unrecognizedclass",
         template: "Unrecognized $class {class}",
         renderer: Renderer::Inline,
-        // MetaModelUtil.resolveTypeNames (RUST, P2-08b): a plain `Error`,
-        // only reachable for a node with no (or an empty) `$class` — no
-        // corpus fixture reaches it, ported for fidelity with the reference.
+        // MetaModelUtil.resolveTypeNames: a plain `Error`, only for a node
+        // with no (or an empty) `$class`.
         sources: &["@accordproject/concerto-metamodel@3.17.0 lib/metamodelutil.js:196"],
     },
     CatalogueEntry {
         code: "modelmanager-gettype-notypeinns",
         template: "Type \"{type}\" is not defined in namespace \"{namespace}\".",
         renderer: Renderer::Globalize,
-        // BaseModelManager.getType (RUST) and ModelFile.validate (RUST),
-        // one template, two throw sites (2.2); neither is called yet.
+        // BaseModelManager.getType and ModelFile.validate.
         sources: &[
             "src/basemodelmanager.ts:669",
             "src/introspect/modelfile.ts:276",
@@ -398,95 +314,79 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         code: "modelmanager-gettype-duplicatensimport",
         template: "Importing types from different versions (\"{version1}\", \"{version2}\") of the same namespace \"{namespace}\" is not permitted.",
         renderer: Renderer::Globalize,
-        // ModelFile.validate (RUST); not yet called.
+        // ModelFile.validate.
         sources: &["src/introspect/modelfile.ts:266"],
     },
     CatalogueEntry {
         code: "modelfile-resolvetype-undecltype",
         template: "Undeclared type \"{type}\" in \"{context}\".",
         renderer: Renderer::Globalize,
-        // ModelFile.resolveType (RUST); not yet called. TS passes the AST
-        // `fileLocation` argument as the third IllegalModelException
-        // argument here, copied verbatim per PORTING.md 2.1 once ported.
+        // ModelFile.resolveType, with its `fileLocation` argument as the
+        // location (PORTING.md 2.1).
         sources: &["src/introspect/modelfile.ts:326"],
     },
     CatalogueEntry {
         code: "modelfile-resolveimport-failfindimp",
         template: "Failed to find \"{type}\" in list of imports \"[{imports}]\" for namespace \"{namespace}\".",
         renderer: Renderer::Globalize,
-        // ModelFile.resolveImport (RUST). `imports` is
-        // `JSON.stringify(this.imports)` (3.1).
+        // ModelFile.resolveImport. `imports` is `JSON.stringify(this.imports)`.
         sources: &["src/introspect/modelfile.ts:373"],
     },
     CatalogueEntry {
         code: "modelfile-constructor-unrecmodelelem",
         template: "Unrecognised model element \"{type}\".",
         renderer: Renderer::Globalize,
-        // ModelFile.fromAst, called from the ModelFile constructor (HYBRID);
-        // not yet called. Same English text as
-        // `classdeclaration-process-unrecmodelelem` below, but a distinct
-        // `en.json` key (and so a distinct catalogue entry, `code` being
-        // what OD-10 attributes fixtures by): see `catalogue_is_complete`'s
-        // doc comment.
+        // ModelFile.fromAst. Same text as
+        // `classdeclaration-process-unrecmodelelem`, but a distinct key
+        // (`catalogue_is_complete`'s doc comment).
         sources: &["src/introspect/modelfile.ts:859"],
     },
     CatalogueEntry {
         code: "classdeclaration-validate-undefined-properties",
         template: "Properties of Class \"{class}\" has to be defined.",
         renderer: Renderer::Globalize,
-        // ClassDeclaration.process. Not raised since P5-61 (BR-09): the typed
-        // read requires `properties` to be an array (BC-19's shape check
-        // rejects anything else first), so a class without one is a
-        // `modelfile-load-unreadable` error. Kept as the TS template OD-5
-        // scopes (P2-11b-F1, #193).
+        // ClassDeclaration.process. Not raised: the typed read requires
+        // `properties` to be an array, so a class without one is a
+        // `modelfile-load-unreadable` error (BR-09).
         sources: &["src/introspect/classdeclaration.ts:102"],
     },
     CatalogueEntry {
         code: "classdeclaration-process-unrecmodelelem",
         template: "Unrecognised model element \"{type}\".",
         renderer: Renderer::Globalize,
-        // ClassDeclaration.process. Not raised since P5-61 (BR-09): a
-        // property `$class` the typed read does not recognise is a
-        // `modelfile-load-unreadable` error (BC-19's shape check rejects it
-        // first). Same English text as `modelfile-constructor-unrecmodelelem`
-        // above; see that entry's note.
+        // ClassDeclaration.process. Not raised: an unrecognised property
+        // `$class` is a `modelfile-load-unreadable` error (BR-09).
         sources: &["src/introspect/classdeclaration.ts:130"],
     },
     CatalogueEntry {
         code: "classdeclaration-validate-selfextending",
         template: "Class \"{class}\" cannot extend itself.",
         renderer: Renderer::Globalize,
-        // ClassDeclaration.validate (RUST); not yet called.
+        // ClassDeclaration.validate.
         sources: &["src/introspect/classdeclaration.ts:217"],
     },
     CatalogueEntry {
         code: "classdeclaration-validate-identifiernotproperty",
         template: "Class \"{class}\" is identified by field \"{idField}\", but does not contain this property.",
         renderer: Renderer::Globalize,
-        // ClassDeclaration.validate (RUST); not yet called.
+        // ClassDeclaration.validate.
         sources: &["src/introspect/classdeclaration.ts:228"],
     },
     CatalogueEntry {
         code: "classdeclaration-validate-identifiernotstring",
         template: "Class \"{class}\" is identified by field \"{idField}\", but the type of the field is not \"String\".",
         renderer: Renderer::Globalize,
-        // ClassDeclaration.validate (RUST); not yet called.
+        // ClassDeclaration.validate.
         sources: &["src/introspect/classdeclaration.ts:241"],
     },
     CatalogueEntry {
         code: "classdeclaration-validate-duplicatefieldname",
         template: "Class \"{class}\" has more than one field named \"{fieldName}\".",
         renderer: Renderer::Globalize,
-        // ClassDeclaration.validate (RUST); not yet called. The pre-port
-        // check in validation.rs (`check_unique_field_names`) stands in for
-        // it until the task that ports ClassDeclaration.validate replaces
-        // its message with this entry. The call spans two lines in TS
-        // (`Globalize('en').messageFormatter(` then the key), which is why
-        // the line-oriented grep this module doc used to give missed it.
+        // ClassDeclaration.validate (`check_unique_field_names`).
         sources: &["src/introspect/classdeclaration.ts:278"],
     },
-    // ---- P2-03 additions (ClassDeclaration.getNestedProperty's own two
-    //      inline templates; #47) ----
+    // ---- ClassDeclaration.getNestedProperty's inline templates ----
     CatalogueEntry {
         code: "classdeclaration-getnestedproperty-doesnotexist",
         template: "Property {propertyName} does not exist on {fqn}",
@@ -497,30 +397,26 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         code: "classdeclaration-getnestedproperty-primitiveorenum",
         template: "Property {propertyName} is a primitive or enum. Invalid property path: {propertyPath}",
         renderer: Renderer::Inline,
-        // A plain `Error`, not an `IllegalModelException` (`ErrorKind::InvalidArgument`
-        // at the throw site in model_manager.rs): the one throw in
-        // `getNestedProperty` that TS does not build through
-        // `IllegalModelException`.
+        // A plain `Error`: the one throw in `getNestedProperty` not built as
+        // an `IllegalModelException`.
         sources: &["src/introspect/classdeclaration.ts:593"],
     },
     CatalogueEntry {
         code: "instancegenerator-newinstance-noconcreteclass",
         template: "No concrete extending type for \"{type}\".",
         renderer: Renderer::Globalize,
-        // InstanceGenerator.findConcreteSubclass (RUST), reached from
-        // newInstance; not yet called. Thrown as a plain `Error`, not
-        // `IllegalModelException` (ErrorKind::InvalidArgument, table 2.3).
+        // InstanceGenerator.findConcreteSubclass: a plain `Error`.
         sources: &["src/serializer/instancegenerator.ts:204"],
     },
     CatalogueEntry {
         code: "serializer-tojson-notcobject",
         template: "\"Serializer.toJSON\" only accepts \"Concept\", \"Event\", \"Asset\", \"Participant\" or \"Transaction\".",
         renderer: Renderer::Globalize,
-        // Serializer.toJSON (HYBRID); not yet called. `Globalize.formatMessage`
-        // (no params), thrown as a plain `Error` (ErrorKind::InvalidArgument, table 2.3).
+        // Serializer.toJSON: a plain `Error`, `Globalize.formatMessage` with
+        // no params.
         sources: &["src/serializer.ts:102"],
     },
-    // ResourceValidator (HYBRID): every `report*` method's key, none called yet.
+    // ResourceValidator: every `report*` method's key.
     CatalogueEntry {
         code: "resourcevalidator-fieldtypeviolation",
         template: "Model violation in the \"{resourceId}\" instance. The field \"{propertyName}\" has a value of \"{value}\" (type of value: \"{typeOfValue}\"). Expected type of value: \"{fieldType}\".",
@@ -575,9 +471,8 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         renderer: Renderer::Globalize,
         sources: &["src/serializer/resourcevalidator.ts:668"],
     },
-    // ---- P3-01: ResourceValidator's own inline templates (plain `Error`,
-    //      ErrorKind::InvalidArgument — never `ValidationException`, table 2.3), 2.2
-    //      step 2. Each `${expr}` becomes a named `{param}`. ----
+    // ---- ResourceValidator's inline templates (plain `Error`, never
+    //      `ValidationException`, table 2.3) ----
     CatalogueEntry {
         code: "resourcevalidator-checkmaptype-expectedstring",
         template: "Model violation in {mapFqn}. Expected Type of String but found '{value}' instead.",
@@ -598,10 +493,8 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
     },
     CatalogueEntry {
         code: "resourcevalidator-visitmapdeclaration-notamap",
-        // TS: `'Expected a Map, but found ' + JSON.stringify(obj)`: a string
-        // concatenation, so `{obj}` is the caller's own `JSON.stringify`
-        // text (2.1: "Where TS calls JSON.stringify(value) first ... the
-        // param is that JSON text").
+        // TS: `'Expected a Map, but found ' + JSON.stringify(obj)`: `{obj}` is
+        // the caller's `JSON.stringify` text (2.1).
         template: "Expected a Map, but found {obj}",
         renderer: Renderer::Inline,
         sources: &["src/serializer/resourcevalidator.ts:183"],
@@ -612,12 +505,7 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         renderer: Renderer::Inline,
         sources: &["src/serializer/resourcevalidator.ts:503"],
     },
-    // ---- P2-01 review fix: ResourceId (`src/model/resourceid.ts`), the
-    //      ledger group's SEAM_LEDGER.tsv planned_task P2-01+P4-03 members
-    //      the first P2-01 pass left unported (parseUri, the constructor,
-    //      fromURI, toURI). None of these are en.json/Globalize keys, so
-    //      none is in the OD-5 scope test; each is an inline template
-    //      (2.2 step 2), ported with its unit in this same PR (6.3). ----
+    // ---- ResourceId (`src/model/resourceid.ts`) inline templates ----
     CatalogueEntry {
         code: "resourceid-constructor-missingnamespace",
         template: "Missing namespace",
@@ -660,43 +548,35 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         renderer: Renderer::Inline,
         sources: &["src/model/resourceid.ts:165"],
     },
-    // ---- P2-04 additions (Property.getFullyQualifiedTypeName's own inline
-    //      template; #48) ----
+    // ---- Property.getFullyQualifiedTypeName's inline template ----
     CatalogueEntry {
         code: "property-getfullyqualifiedtypename-notfound",
         template: "Failed to find fully qualified type name for property {name} with type {type}",
         renderer: Renderer::Inline,
-        // A plain `Error`, not an `IllegalModelException` (`ErrorKind::InvalidArgument`
-        // at the throw site in model_manager.rs).
+        // A plain `Error`.
         sources: &["src/introspect/property.ts:218"],
     },
-    // ---- P4-07 additions (Property.process's own inline template; #66) ----
+    // ---- Property.process's inline templates ----
     CatalogueEntry {
         code: "property-process-invalidname",
         template: "Invalid property name '{name}'",
         renderer: Renderer::Inline,
         sources: &["src/introspect/property.ts:86"],
     },
-    // ---- P2-08c additions (Property.process's own inline template for a
-    //      nullish name; #144) ----
     CatalogueEntry {
         code: "property-process-noname",
         template: "No name for type {ast}",
         renderer: Renderer::Inline,
-        // A plain `Error`, not an `IllegalModelException` (`ErrorKind::InvalidArgument`
-        // at the throw site).
+        // A plain `Error`.
         sources: &[
             "src/introspect/property.ts:124",
             "src/introspect/property.ts:137",
         ],
     },
-    // ---- #218 addition: not a TS template. DIVERGENCES.md DV-017
-    //      (maintainer-accepted): TS's `Property.process` crashes with a V8
-    //      `TypeError` (`Cannot read properties of undefined|null (reading
-    //      'name')`) on a `RelationshipProperty` whose `type` is missing or
-    //      `null`; Rust raises this `IllegalModelException` instead, worded
-    //      like `RelationshipDeclaration.validate`'s own
-    //      `relationshipdeclaration-validate-*` templates. ----
+    // ---- Not a TS template (DV-017): TS's `Property.process` crashes with
+    //      a V8 `TypeError` on a `RelationshipProperty` whose `type` is
+    //      missing or `null`; this is worded like
+    //      `relationshipdeclaration-validate-*`. ----
     CatalogueEntry {
         code: "property-process-relationshipnotype",
         template: "Relationship {name} must have a type",
@@ -705,14 +585,10 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
             "concerto-rust DV-017: replaces the V8 TypeError at src/introspect/property.ts:165 (maintainer-accepted, accordproject/concerto-rust#218)",
         ],
     },
-    // ---- #218 addition: not a TS template. DIVERGENCES.md DV-018
-    //      (maintainer-accepted): TS's `Decorator.process` crashes with a V8
-    //      `TypeError` (`Cannot read properties of null (reading 'name')`) on
-    //      a `null` element of a `decorators` array; Rust raises this
-    //      `IllegalModelException` instead, worded like `Decorator.validate`'s
-    //      own `... invalid decorator argument. Expected object. Found ...`
-    //      messages. `{value}` is `null` (or `undefined`, through the WASM
-    //      boundary). ----
+    // ---- Not a TS template (DV-018): TS's `Decorator.process` crashes
+    //      with a V8 `TypeError` on a `null` decorator; this is worded like
+    //      `Decorator.validate`'s messages. `{value}` is `null` or
+    //      `undefined`. ----
     CatalogueEntry {
         code: "decorator-process-notobject",
         template: "Invalid decorator. Expected object. Found {value}",
@@ -721,8 +597,8 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
             "concerto-rust DV-018: replaces the V8 TypeError at src/introspect/decorator.ts:139 (maintainer-accepted, accordproject/concerto-rust#218)",
         ],
     },
-    // ---- P4-07 additions (Property.validate, RelationshipDeclaration.validate
-    //      and MapDeclaration/MapKeyType/MapValueType's own inline templates; #66) ----
+    // ---- Property.validate, RelationshipDeclaration.validate and
+    //      MapDeclaration/MapKeyType/MapValueType inline templates ----
     CatalogueEntry {
         code: "property-validate-sizevalidator",
         template: "size validator can only be applied to array or map properties: {fqn}",
@@ -753,14 +629,12 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         renderer: Renderer::Inline,
         sources: &["src/introspect/relationshipdeclaration.ts:86"],
     },
-    // ---- P4-07a additions (Field.getScalarField's own inline templates,
-    //      #154 — the P2-09 partial audit found it still TS) ----
+    // ---- Field.getScalarField's inline templates ----
     CatalogueEntry {
         code: "field-getscalarfield-notscalar",
         template: "Field {name} is not a scalar property.",
         renderer: Renderer::Inline,
-        // A plain `Error`, not an `IllegalModelException` (`ErrorKind::InvalidArgument`
-        // at the throw site).
+        // A plain `Error`.
         sources: &["src/introspect/field.ts:186"],
     },
     CatalogueEntry {
@@ -817,8 +691,8 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         renderer: Renderer::Inline,
         sources: &["src/introspect/mapvaluetype.ts:108"],
     },
-    // ---- P3-01b additions (Serializer, Factory, JSONPopulator, JSONGenerator
-    //      and the Resource-mutating members; accordproject/concerto-rust#124) ----
+    // ---- Serializer, Factory, JSONPopulator, JSONGenerator and the
+    //      Resource-mutating members ----
     CatalogueEntry {
         code: "engine-typeerror-convertnulltoobject",
         template: "Cannot convert undefined or null to object",
@@ -1023,11 +897,9 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
     },
     CatalogueEntry {
         // `'Unrecognised ' + JSON.stringify(thing)` in `JSONPopulator.visit`
-        // and `JSONGenerator.visit`, for an introspection object (a scalar
-        // declaration, an enum value). In TS 5.0.0 `JSON.stringify` met the
-        // model manager again through the model file and threw V8's
-        // circular-structure `TypeError` before the `Error` was built
-        // (DV-010); BC-08 (R1) names the element by its fully-qualified name.
+        // and `JSONGenerator.visit`, for an introspection object: TS 5.0.0
+        // threw V8's circular-structure `TypeError` (DV-010); BC-08 names
+        // the element by its fully-qualified name.
         code: "serializer-visit-unrecognised",
         template: "Unrecognised element \"{name}\"",
         renderer: Renderer::Inline,
@@ -1036,10 +908,8 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         ],
     },
     CatalogueEntry {
-        // A cyclic inheritance chain. TS 5.0.0 has no cycle check: its
-        // recursion overflowed V8's stack (`RangeError: Maximum call stack
-        // size exceeded`) or its loops ran out of memory (DV-013); BC-11
-        // (R1) reports the cycle from every entry point.
+        // A cyclic inheritance chain, reported from every entry point
+        // (BC-11), where TS 5.0.0 overflowed V8's stack (DV-013).
         code: "classdeclaration-circularinheritance",
         template: "The super type chain of \"{type}\" is circular: {cycle}.",
         renderer: Renderer::Inline,
@@ -1047,7 +917,7 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
             "concerto-rust P5-63 / BC-11 (DV-013): replaces the V8 RangeError of ClassDeclaration.getProperties, src/introspect/classdeclaration.ts",
         ],
     },
-    // ---- P3-04 (BaseModelManager.validateAst, concerto_core::instance::metamodel) ----
+    // ---- BaseModelManager.validateAst (`instance::metamodel`) ----
     CatalogueEntry {
         code: "basemodelmanager-validateast-versionmismatch",
         template: "Model file version {modelFileVersion} does not match metamodel version {metamodelVersion}",
@@ -1056,21 +926,15 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
     },
     CatalogueEntry {
         // `throw new MetamodelException(error.message)`: the underlying
-        // `Serializer.fromJSON` error's own already-constructed `.message`,
-        // passed through unchanged (not an inline template with its own
-        // wording; the single `{message}` placeholder is a verbatim
-        // pass-through, ported faithfully through `Renderer::Inline` since
-        // the substitution never re-scans).
+        // error's message, passed through unchanged.
         code: "basemodelmanager-validateast-wrapped",
         template: "{message}",
         renderer: Renderer::Inline,
         sources: &["src/basemodelmanager.ts:296"],
     },
-    // ---- P5-24 addition: not a TS template. BC-45 (R1,
-    //      accordproject/concerto-rust#328): TS does not check a `DateTime`
-    //      default value at all; Rust rejects one that is not a strict
-    //      `DateTime` string when the default is applied to an instance
-    //      (instance creation or population), not at model load. ----
+    // ---- Not a TS template (BC-45): TS does not check a `DateTime`
+    //      default value; it must be a strict `DateTime` string when it is
+    //      applied to an instance. ----
     CatalogueEntry {
         code: "typed-assignfielddefaults-datetime",
         template: "Invalid default value `{value}` for the DateTime field `{fqn}`: expected an ISO 8601 date-time with an offset, YYYY-MM-DDTHH:mm:ss[.SSS](Z|+HH:mm|-HH:mm), naming a real instant",
@@ -1079,11 +943,9 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
             "concerto-rust P5-24 / BC-45: no TS throw site (Typed.assignFieldDefaults builds dayjs.utc(default) unchecked, src/model/typed.ts)",
         ],
     },
-    // ---- P5-49 additions: not TS templates. BC-19, with BC-17 and BC-20
-    //      (R1, accordproject/concerto-rust#370): the strict AST shape check
-    //      `new ModelFile` runs at model load (`instance::metamodel::
-    //      check_ast_shape`). TS 5.0.0 loads these ASTs, or throws a V8
-    //      `TypeError` (BC-18). ----
+    // ---- Not TS templates (BC-19, with BC-17 and BC-20): the strict AST
+    //      shape check at model load (`instance::check_ast_shape`), where
+    //      TS 5.0.0 loads these ASTs or throws a V8 `TypeError` (BC-18). ----
     CatalogueEntry {
         code: "modelfile-load-decoratorsnotarray",
         template: "Invalid decorators. Expected array. Found {value}",
@@ -1132,9 +994,7 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
             "concerto-rust P5-61 / BR-09: no TS throw site (the typed AST read, the only model loader, fails on a node it cannot read; with BC-19's shape check on, the check rejects such an AST first)",
         ],
     },
-    // ---- P5-98 additions (B-10): the model-validation checks
-    //      `validation.rs` raised as `pre-port` though each message was
-    //      already TS's own hardcoded string, verbatim ----
+    // ---- Model validation checks: TS's own hardcoded strings, verbatim ----
     CatalogueEntry {
         code: "modelfile-validate-duplicateclassname",
         template: "Duplicate class name {fqn}",
@@ -1205,13 +1065,10 @@ mod tests {
     /// excepted) it has a golden test in `mod.rs`, named after its code
     /// (checked by name, PORTING.md 6.3).
     ///
-    /// This does *not* also require every entry's `template` to be unique:
-    /// `en.json` itself gives two different keys
+    /// Templates need not be unique: `en.json` gives two keys
     /// (`modelfile-constructor-unrecmodelelem`,
-    /// `classdeclaration-process-unrecmodelelem`) the same English text, and
-    /// OD-5 ports each key it scopes in regardless (2.2 step 1: "the
-    /// catalogue key is `<key>`"). `code` is what a fixture is attributed to
-    /// (OD-10), so it is `code`, not `template`, that must not collide.
+    /// `classdeclaration-process-unrecmodelelem`) the same text, and a
+    /// fixture is attributed by `code`.
     #[test]
     fn catalogue_is_complete() {
         let golden_tests_source = include_str!("mod.rs");

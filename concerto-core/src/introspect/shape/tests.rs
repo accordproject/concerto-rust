@@ -73,10 +73,10 @@ fn assert_exact(ast: &Value) -> (bool, bool) {
     (fast, exact.is_ok())
 }
 
-/// The table of `check_ast_shape`'s rules (P5-49 and P5-61, with
-/// BC-17, BC-19 and BC-20) and where each now lives, with an AST each
-/// rule rejects: every one is still rejected, with the same error, and
-/// not one of them is vouched for by the typed read.
+/// The table of `check_ast_shape`'s rules (with BC-17, BC-19 and
+/// BC-20) and where each now lives, with an AST each rule rejects:
+/// every one is still rejected, with the same error, and not one of
+/// them is vouched for by the typed read.
 #[test]
 fn every_shape_rule_has_a_new_home() {
     let with_property = |key: &str, value: Value| {
@@ -456,7 +456,7 @@ fn the_fold_is_exact_over_every_model_and_its_mutants() {
     );
 }
 
-/// P5-76: a `location` read as a `Location` gets the verdict its
+/// A `location` read as a `Location` gets the verdict its
 /// `Value` gets, from both reads.
 #[test]
 fn a_location_conforms_as_its_value_does() {
@@ -480,8 +480,8 @@ fn a_location_conforms_as_its_value_does() {
     assert_eq!(accepted, 2);
 }
 
-/// P5-76: a `decorators` or `identified` value read as a [`Kept`] gets
-/// the verdict its `Value` gets.
+/// A `decorators` or `identified` value read as a [`Kept`] gets the
+/// verdict its `Value` gets.
 ///
 /// [`Kept`]: crate::introspect::kept::Kept
 #[test]
@@ -506,7 +506,7 @@ fn kept_decorators_and_identified_conform_as_their_values_do() {
         accepted += usize::from(expected);
     }
     // The first six lists, the three that differ from them only in
-    // key order, a repeated key or an escaped key, and two of P5-93's.
+    // key order, a repeated key or an escaped key, and two more.
     assert_eq!(accepted, 11);
     let mut accepted = 0;
     for text in IDENTIFIED_CASES {
@@ -516,7 +516,7 @@ fn kept_decorators_and_identified_conform_as_their_values_do() {
         accepted += usize::from(expected);
     }
     // Both kinds, `null`, and an `IdentifiedBy` in another key order;
-    // and P5-93's two with a repeated key, one with escaped keys and one
+    // and two with a repeated key, one with escaped keys and one
     // with an escaped name.
     assert_eq!(accepted, 8);
 }

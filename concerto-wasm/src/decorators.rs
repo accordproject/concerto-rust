@@ -1,25 +1,18 @@
-//! The `Decorator` and `Decorated` bindings (P4-05).
+//! The `Decorator` and `Decorated` bindings.
 //!
-//! Split out of `lib.rs` (P5-104, review M7); the crate root glob-imports it.
+//! Split out of `lib.rs`; the crate root glob-imports it.
 
 use super::*;
 
 // ---------------------------------------------------------------------------
-// Decorator, Decorated (src/introspect/decorator.ts, decorated.ts) — P4-05
+// Decorator, Decorated (src/introspect/decorator.ts, decorated.ts)
 // ---------------------------------------------------------------------------
 
-/// TS: Decorator.process. Builds `{name, arguments}` from the raw AST node,
-/// through the P2-07 port ([`Decorator::from_ast`]); needs no collaborator
-/// call.
-///
-/// DV-018 (maintainer-accepted, accordproject/concerto-rust#218): a `null`
-/// or `undefined` node, where TS's `this.ast.name` (decorator.ts:139) throws
-/// a `TypeError`, is an `IllegalModelException` instead
-/// ([`decorator::not_an_object`], the error native Rust raises for the same
-/// node). `view` is the `Decorator` being processed, optional so that an
-/// older caller passing the AST alone still works: when given, its
-/// `getParent().getModelFile()` is the model file the exception names, as
-/// TS's `Decorator.handleError` passes it.
+/// TS: Decorator.process: `{name, arguments}` from the raw AST node
+/// ([`Decorator::from_ast`]). DV-018: a `null` or `undefined` node, where TS
+/// throws a `TypeError`, is an `IllegalModelException`
+/// ([`decorator::not_an_object`]) naming the model file of `view`, the
+/// Decorator being processed.
 #[wasm_bindgen(js_name = decoratorProcess)]
 pub fn decorator_process(ast: JsValue, view: JsValue) -> JsResult<JsValue> {
     if ast.is_null() || ast.is_undefined() {
@@ -49,18 +42,10 @@ pub fn decorator_process(ast: JsValue, view: JsValue) -> JsResult<JsValue> {
             arguments.push(&argument_to_js(arg));
         }
         let out = Object::new();
-        // TS: `this.name = ast.name` (decorator.ts) — a plain, uncoerced
-        // assignment, so a decorator node with no `name` key at all leaves
-        // `this.name` genuinely `undefined`, not the empty string. That
-        // distinction only shows up later, in `Decorated.validate`'s
-        // duplicate-decorator scan (`decoratedFindDuplicateName`, TS:
-        // `this.decorators.map(d => d.getName())`) — `js_name` (not
-        // `name`) is what preserves it here (accordproject/concerto-rust#219,
-        // review: a model-file's own `decorators: "__proto__"` — parsed one
-        // UTF-16 code unit at a time into nameless decorators, DV-018 —
-        // wrongly reported "Duplicate decorator " instead of TS's own
-        // "Duplicate decorator undefined" until this used `name()`'s
-        // always-a-string default instead).
+        // TS: `this.name = ast.name`, uncoerced, so a node with no `name`
+        // leaves `this.name` `undefined`, not the empty string. That shows in
+        // `Decorated.validate`'s duplicate scan ("Duplicate decorator
+        // undefined"), so this reads `js_name`, not `name()`.
         let name_js = decorator
             .js_name()
             .map_or(JsValue::UNDEFINED, JsValue::from_str);
@@ -70,13 +55,10 @@ pub fn decorator_process(ast: JsValue, view: JsValue) -> JsResult<JsValue> {
     })
 }
 
-/// One decoded [`DecoratorArgument`], as TS's `Decorator.process` would have
-/// pushed it onto `this.arguments`. Built as a JS value directly, not
-/// through [`to_js`]'s JSON round trip, which cannot represent `undefined`
-/// (TS: `{ type: 'Identifier', name: ..., array: thing.isArray }` — the
-/// object literal always creates the `array` *property*, even when
-/// `thing.isArray` is `undefined`, which is a different, observable state
-/// from the property being absent).
+/// One decoded [`DecoratorArgument`], as TS's `Decorator.process` pushes
+/// it. Built as a JS value directly, not through [`to_js`]'s JSON round
+/// trip: TS's object literal always creates the `array` property, even
+/// when it is `undefined`, which differs observably from it being absent.
 pub(crate) fn argument_to_js(arg: &DecoratorArgument) -> JsValue {
     match arg {
         DecoratorArgument::String(s) => JsValue::from_str(s),
@@ -104,8 +86,8 @@ pub(crate) fn argument_to_js(arg: &DecoratorArgument) -> JsValue {
 #[wasm_bindgen(js_name = decoratedFindDuplicateName)]
 pub fn decorated_find_duplicate_name(names: JsValue) -> JsResult<JsValue> {
     run(|| {
-        // Decorator names come from user models: a seeded set (P5-110,
-        // PORTING.md 3.7).
+        // Decorator names come from user models: a seeded set
+        // (PORTING.md 3.7).
         let mut seen = concerto_core::hash::SeededHashSet::default();
         for name in Array::from(&names).iter() {
             let name = js_string(&name)?;
@@ -151,7 +133,7 @@ pub(crate) fn json_stringify(value: &JsValue) -> Result<String> {
 
 /// One property of a decorator's own type declaration, as
 /// `Decorator.validate` reads it: `p.getName()`, `p.isOptional()`,
-/// `p.getType()`, from the arena (P5-106, BC-52). `id` is kept for the
+/// `p.getType()`, from the arena (BC-52). `id` is kept for the
 /// [`mu::is_assignable_to`] call.
 pub(crate) struct PropertyView {
     id: PropId,
@@ -180,12 +162,9 @@ pub(crate) fn level_js(level: &Option<String>) -> JsValue {
 }
 
 /// TS: `this.handleError(level, err)`, called back on `view` so its own
-/// method builds the exact `IllegalModelException` (message, model file,
-/// location) and logs through `Logger.dispatch`, exactly as every other
-/// call site of `handleError` does. `err` is a message string for one of
-/// this function's own checks, or (from the outer catch,
-/// [`ModelManagerHandle::decorator_validate`]) whatever the try-equivalent
-/// threw — TS passes `handleError` either shape.
+/// method builds the `IllegalModelException` and logs as every other call
+/// site does. `err` is a message string for this function's own checks, or
+/// whatever the outer catch caught.
 pub(crate) fn handle_error(view: &JsValue, level: &Option<String>, err: &JsValue) -> Result<()> {
     call(
         view,
@@ -207,9 +186,9 @@ pub(crate) fn report_invalid(
 }
 
 /// TS `Decorator.validate`'s reads of the model, answered by the arena
-/// (P5-106, BC-52): `mf` is the model file the decorator's parent belongs
-/// to, by handle. The decorator itself (`name`, `arguments`,
-/// `ast.location`) and its `handleError` are the JS view's.
+/// (BC-52): `mf` is the model file the decorator's parent belongs to, by
+/// handle. The decorator itself (`name`, `arguments`, `ast.location`) and
+/// its `handleError` are the JS view's.
 pub(crate) struct DecoratorCheck<'a> {
     pub(crate) manager: &'a ModelManager,
     pub(crate) view: &'a JsValue,
@@ -224,10 +203,9 @@ impl DecoratorCheck<'_> {
         let view = self.view;
         let name = js_string(&get(view, "name")?)?;
         // TS: `mf.resolveType(decoratedName, this.getName(), this.ast.location);
-        // const decoratorDecl = mf.getType(this.getName());` — `getType`
-        // returning nothing is treated as `resolveType` failing to resolve the
-        // name, the same simplification the native `Decorator::validate`
-        // already makes (P2-07 module doc, `resolve_own_name`).
+        // const decoratorDecl = mf.getType(this.getName());`: `getType`
+        // returning nothing is treated as `resolveType` failing, as the
+        // native `Decorator::validate` does (`resolve_own_name`).
         let Some(decorator_decl) =
             ResolutionContext::get_type(self.manager, &Node::ModelFile(self.file), Some(&name))?
         else {
@@ -238,7 +216,7 @@ impl DecoratorCheck<'_> {
             );
             // `ModelFile.resolveType`'s own `IllegalModelException(message, mf,
             // location)`, built by the shim, so that `handleError` rethrows it
-            // as it is (BC-14, R1).
+            // as it is (BC-14).
             let location = to_json(&opt_get(&get(view, "ast")?, "location")?)?;
             let err = illegal_model_error(raw, location);
             return Err(Error::Js(throw(err, Some(self.model_file))));

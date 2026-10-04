@@ -51,7 +51,7 @@ pub fn not_a_function(expression: &str) -> crate::Error {
 
 /// The populator's and generator's `visit` fallthrough for an introspection
 /// object they cannot visit (a scalar declaration, an enum value): a plain
-/// `Error` naming it by its fully-qualified name (BC-08, R1). TS 5.0.0 built
+/// `Error` naming it by its fully-qualified name (BC-08). TS 5.0.0 built
 /// `'Unrecognised ' + JSON.stringify(thing)`, where `JSON.stringify` met the
 /// model manager again and threw V8's circular-structure `TypeError` first
 /// (DV-010).
@@ -72,7 +72,7 @@ pub fn unrecognised_field(field: &Field) -> crate::Error {
 
 impl<'a> TypeRef<'a> {
     /// TS `getFullyQualifiedName()`, which the manager keeps for every
-    /// declaration (P5-13).
+    /// declaration.
     pub fn fqn(&self) -> &'a str {
         self.mm.decl_fqn(self.id).unwrap_or_default()
     }
@@ -162,9 +162,9 @@ impl<'a> TypeRef<'a> {
     }
 
     /// TS `getProperties()`: each property with the fully-qualified name of
-    /// the declaration that declares it, borrowed from the model (P5-13). A
-    /// map or a scalar has none of its own (V8's `TypeError`, which no
-    /// instance path reaches with one).
+    /// the declaration that declares it, borrowed from the model. A map or
+    /// a scalar has none of its own (V8's `TypeError`, which no instance
+    /// path reaches with one).
     pub fn properties(&self, expression: &str) -> Result<ClassProperties<'a>> {
         match self.decl {
             Declaration::Class(_) | Declaration::Enum(_) => self.mm.class_properties_of(self.id),
@@ -186,7 +186,7 @@ impl<'a> TypeRef<'a> {
 /// What a field's declared type resolves to, in the model file of the
 /// declaration that declares it (`Field.isPrimitive`, `isTypeEnum`,
 /// `isTypeScalar`, `ModelUtil.isMap`, and `RelationshipDeclaration`),
-/// borrowed from the model (P5-13).
+/// borrowed from the model.
 #[derive(Debug, Clone)]
 pub enum FieldType<'a> {
     /// A primitive field (`isPrimitive()`): its type name.
@@ -209,7 +209,7 @@ pub enum FieldType<'a> {
     /// A field whose type is a concept-like declaration.
     Class(&'a str),
     /// A relationship: the fully-qualified name of its target, borrowed
-    /// from the validation plan where the plan resolved it (P5-99).
+    /// from the validation plan where the plan resolved it.
     Relationship(std::borrow::Cow<'a, str>),
     /// An enum value member (an `EnumDeclaration`'s own property), which
     /// has no type.
@@ -217,7 +217,7 @@ pub enum FieldType<'a> {
 }
 
 /// A property of an instance's declaration, with what its type resolves
-/// to, borrowed from the model (P5-13).
+/// to, borrowed from the model.
 #[derive(Debug, Clone)]
 pub struct Field<'a> {
     /// The fully-qualified name of the declaration that declares it
@@ -298,13 +298,9 @@ impl Field<'_> {
     }
 }
 
-/// Where a relationship is held (P5-58, BC-05, R1): a relationship property
-/// (`--> T field`), or the value of a map declared with a relationship
-/// value type (`map M { o String --> T }`). The populator's and the
-/// generator's relationship code takes one of these, so a map value is
-/// read and written by the same code as a relationship property, under the
-/// same `acceptResourcesForRelationships`, `convertResourcesToRelationships`
-/// and `permitResourcesForRelationships` options.
+/// Where a relationship is held (BC-05): a relationship property, or the
+/// value of a map with a relationship value type. Both are read and written
+/// by the same code, under the same relationship options.
 #[derive(Debug, Clone, Copy)]
 pub struct RelationshipSlot<'a> {
     /// The fully-qualified name of the class that declares the property,
@@ -347,9 +343,9 @@ pub fn is_relationship_map(map_declaration: &TypeRef) -> bool {
 }
 
 /// The fully-qualified target type of a map whose value type is a
-/// relationship (`RelationshipMapValueType`, P5-58, BC-05, R1), resolved in
-/// the map's own model file as a relationship property's type is; `None`
-/// for any other map. Pair it with the map's [`TypeRef`] to build its
+/// relationship (`RelationshipMapValueType`, BC-05), resolved in the map's
+/// own model file as a relationship property's type is; `None` for any
+/// other map. Pair it with the map's [`TypeRef`] to build its
 /// [`RelationshipSlot`] with [`map_relationship_slot`].
 pub fn map_relationship_target(map_declaration: &TypeRef) -> Result<Option<String>> {
     let Declaration::Map(map) = map_declaration.decl else {

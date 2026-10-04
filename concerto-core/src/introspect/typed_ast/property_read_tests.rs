@@ -5,8 +5,8 @@ use serde::de::{self, DeserializeSeed, Deserializer, MapAccess, Visitor};
 
 use super::{Class, ErrorBridge, PropertySeed, property_kind, read_class, read_property_struct};
 
-/// Reads one property node as every property node was read before
-/// P5-93: `$class`, then the rest by its generated struct.
+/// Reads one property node `$class` first, then the rest by its generated
+/// struct: the reference for the typed read.
 struct ByStruct;
 
 impl<'de> DeserializeSeed<'de> for ByStruct {
@@ -78,10 +78,10 @@ fn by_struct(text: &str) -> String {
 
 const MM: &str = "concerto.metamodel@1.0.0";
 
-/// P5-93: a property node's own keys, read by `read_property` itself,
-/// give exactly the property, and the error, its generated struct
-/// gives, whatever the node; from the first other key the struct reads
-/// the rest, handed the values read before it.
+/// A property node's own keys, read by `read_property` itself, give
+/// exactly the property, and the error, its generated struct gives,
+/// whatever the node; from the first other key the struct reads the
+/// rest, handed the values read before it.
 #[test]
 fn a_property_reads_as_its_generated_struct_reads_it() {
     let range = r#"{"$class":"concerto.metamodel@1.0.0.Range","start":{"offset":1,"line":1,"column":1,"$class":"concerto.metamodel@1.0.0.Position"},"end":{"offset":2,"line":1,"column":2,"$class":"concerto.metamodel@1.0.0.Position"}}"#;

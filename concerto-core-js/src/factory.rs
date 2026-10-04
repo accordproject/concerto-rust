@@ -11,8 +11,9 @@
 //! ([`InstanceEnv`]), so that nothing here generates ids or reads time.
 //!
 //! `options.generate` (`InstanceGenerator` with a sample or empty value
-//! generator) stays in TS (ledger: "Factory generate path (D7)"); these
-//! functions build the instance as TS does when `options.generate` is falsy.
+//! generator) stays in TS; these
+//! functions build the instance as TS does when `options.generate` is
+//! falsy.
 
 use crate::value::{Instance, InstanceKind, JsValue};
 use concerto_core::error::{ContractError, ErrorKind, Result};
@@ -174,7 +175,7 @@ fn new_resource_with(
     build_resource_with(mm, ns, type_name, check, disable_validation, env, mode)
 }
 
-/// [`new_resource`] for a declaration already found (P5-13): what
+/// [`new_resource`] for a declaration already found: what
 /// `newResource(decl.getNamespace(), decl.getName(), id)` does, whose own
 /// type lookup finds `decl` again. The identifiable field name and the
 /// field defaults are read off `decl` itself. Only population calls this,
@@ -437,8 +438,8 @@ pub fn assign_field_defaults(mm: &ModelManager, instance: &mut Instance) -> Resu
     assign_field_defaults_of(&class_decl, instance, Defaults::Create)
 }
 
-/// Who applies the field defaults (P5-24, BC-45): a `DateTime` default
-/// that is not strict throws when it is applied.
+/// Who applies the field defaults (BC-45): a `DateTime` default that
+/// is not strict throws when it is applied.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Defaults {
     /// Instance creation (`Factory.newResource`): every default is applied,
@@ -472,10 +473,10 @@ fn assign_field_defaults_of(
     })
 }
 
-/// P5-24 (BC-45, R1): the error of the first field of `instance` (of
-/// `class_decl`) whose non-strict `DateTime` default population left in
-/// place ([`Defaults::Populate`]): an invalid date, which no populated value
-/// can be.
+/// BC-45: the error of the first field of `instance` (of `class_decl`) whose
+/// non-strict `DateTime` default population left in place
+/// ([`Defaults::Populate`]): an invalid date, which no populated value can
+/// be.
 pub(crate) fn check_populated_date_time_defaults(
     class_decl: &TypeRef,
     instance: &Instance,
@@ -580,9 +581,9 @@ mod tests {
         assert_eq!(car.get("$timestamp"), &JsValue::Null);
     }
 
-    /// P5-24 (BC-45, R1): instance creation applies every default, so a
-    /// `DateTime` default that is not strict throws a `ValidationException`
-    /// there; the model itself loads, and a strict default is set.
+    /// BC-45: instance creation applies every default, so a `DateTime`
+    /// default that is not strict throws a `ValidationException` there; the
+    /// model itself loads, and a strict default is set.
     #[test]
     fn new_resource_rejects_a_non_strict_date_time_default() {
         let model_with = |default: &str| {

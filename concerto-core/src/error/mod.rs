@@ -5,16 +5,12 @@
 //! its message params, its [`Location`] in the model and its structured
 //! [`Detail`]s (docs/public-api.md section 5.6). [`Result`] defaults to it.
 //!
-//! Behind it is the `{kind, code, params, location}` shape every ported
-//! member builds its errors from (section 2.1). `kind` selects the TS
-//! exception class the shim throws (section 2.3); `code` is a key into the
-//! message catalogue, the verbatim port of `messages/en.json` and the inline
-//! templates the reference throws (section 2.2), scoped to the keys OD-5
-//! lists. A call site that has not yet been faithfully ported from TS uses
-//! the catalogue's `"pre-port"` entry instead, so that it compiles against
-//! this contract without claiming a verbatim TS message it does not have; the
-//! unit that later ports that member (named in its doc comment) replaces the
-//! call with a real catalogue entry and its golden test (section 7.2).
+//! Behind it is the `{kind, code, params, location}` shape every error is
+//! built from (section 2.1). `kind` selects the TS exception class the shim
+//! throws (section 2.3); `code` is a key into the message catalogue, the
+//! verbatim port of `messages/en.json` and the reference's inline templates
+//! (section 2.2). A message with no catalogue entry uses the `"pre-port"`
+//! entry, which claims no verbatim TS message.
 //!
 //! That shape (`ContractError`), the catalogue and the TS-specific parts of
 //! the contract are the JS binding's: they are public only with the
@@ -37,11 +33,9 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 /// The error type of `concerto-core`: a model that cannot be loaded, a type
 /// that cannot be resolved, a model or an instance that fails validation.
 ///
-/// It is opaque: read it through its accessors. [`kind`](Error::kind) is the
-/// class of failure (one TS exception class each), and
-/// [`code`](Error::code) the stable catalogue key, safe to match on. The
-/// message (`Display`) is the TS message today, but its wording carries no
-/// stability promise (docs/public-api.md section 2).
+/// Opaque: [`kind`](Error::kind) is the failure class (one TS exception
+/// class each) and [`code`](Error::code) the stable catalogue key. The
+/// message wording carries no stability promise (docs/public-api.md 2).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Error(Box<ContractError>);
 
@@ -59,8 +53,7 @@ impl Error {
     }
 
     /// The catalogue key of the message: a stable identifier, safe to match
-    /// on. An error raised by a check whose message is not yet a faithful
-    /// port of the TS message has the code `"pre-port"`.
+    /// on. A message with no catalogue entry has the code `"pre-port"`.
     pub fn code(&self) -> &'static str {
         self.0.code
     }
@@ -107,9 +100,9 @@ impl Error {
         &mut self.0
     }
 
-    /// A catalogue error ([`ContractError::new`]) as the crate's error type
-    /// (B-14, accordproject/concerto-rust#458): no location and no model
-    /// file; [`Error::at`] adds the location.
+    /// A catalogue error ([`ContractError::new`]) as the crate's error
+    /// type: no location and no model file; [`Error::at`] adds the
+    /// location.
     pub(crate) fn new(
         kind: ErrorKind,
         code: &'static str,
@@ -126,9 +119,9 @@ impl Error {
     }
 
     js_compat_pub! {
-        /// A type that could not be resolved, raised by a check that has no
-        /// catalogue entry yet: `"pre-port"`, `typeName` set, and the message
-        /// `type not found: {type_name}` (the one place that spells it, B-9).
+        /// A type that could not be resolved, with no catalogue entry:
+        /// `"pre-port"`, `typeName` set, and the message
+        /// `type not found: {type_name}`.
         pub fn type_not_found(type_name: impl Into<String>) -> Self {
             let type_name = type_name.into();
             let mut err = ContractError::pre_port(
@@ -143,9 +136,9 @@ impl Error {
     }
 
     js_compat_pub! {
-        /// A model that cannot be loaded, raised by a check that has no catalogue
-        /// entry yet: `"pre-port"`, with `message` verbatim, naming the model
-        /// file `file_name` when there is one ([`ContractError::model_file`]).
+        /// A model that cannot be loaded, with no catalogue entry:
+        /// `"pre-port"`, with `message` verbatim, naming the model file
+        /// `file_name` when there is one ([`ContractError::model_file`]).
         pub fn illegal_model(
             message: impl Into<String>,
             file_name: Option<String>,
@@ -158,8 +151,7 @@ impl Error {
         }
     }
 
-    /// Whether the error was made by [`Error::type_not_found`]: a
-    /// `TypeNotFound` with no catalogue entry yet.
+    /// Whether the error was made by [`Error::type_not_found`].
     pub(crate) fn is_pre_port_type_not_found(&self) -> bool {
         self.0.kind == ErrorKind::TypeNotFound && self.0.code == "pre-port"
     }
@@ -238,13 +230,10 @@ impl Location {
 
 /// The kind of failure an error reports.
 ///
-/// Each kind is one TS exception class (PORTING.md table 2.3), which the
-/// doc comment of each variant names. The variants carry Rust names: the TS
-/// class name is only available to the JS binding, through
-/// `ErrorKind::ts_class` behind the `js-compat` feature. Only the kinds a
-/// ported (or minimally adapted, section 7.2) unit raises exist so far;
-/// `ParseException` and `SecurityException` have no Rust throw site (2.3)
-/// and so no kind.
+/// Each kind is one TS exception class (PORTING.md table 2.3), named in the
+/// variant's doc comment; the TS class name is available to the JS binding
+/// through `ErrorKind::ts_class` (`js-compat`). `ParseException` and
+/// `SecurityException` have no Rust throw site and so no kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ErrorKind {
@@ -253,26 +242,22 @@ pub enum ErrorKind {
     /// TS: `IllegalModelException(message, modelFile, location)`.
     IllegalModel,
     /// A type the model refers to is not declared. `params` must include
-    /// `typeName` (table 2.3); build these with `ContractError::type_not_found`, or,
-    /// for a check with no catalogue entry yet, `Error::type_not_found`.
+    /// `typeName` (table 2.3): build these with `ContractError::type_not_found`
+    /// or `Error::type_not_found`.
     ///
     /// TS: `TypeNotFoundException(typeName, message)`.
     TypeNotFound,
-    /// A value fails a validator declared on a field or scalar.
-    ///
-    /// TS 5.0.0: concerto-util `BaseException(message, undefined,
-    /// errorType)`, thrown by `Validator.reportError`. Since BC-39 (R1) no
-    /// validator raises this kind: a validator error found while a model
-    /// loads is [`ErrorKind::IllegalModel`], and an instance value that fails
-    /// a validator is [`ErrorKind::Validation`], each keeping the
-    /// `errorType` in [`ContractError::validator`]. The variant stays so
-    /// that the enum's public shape does not change.
+    /// A value fails a validator declared on a field or scalar (TS 5.0.0
+    /// `Validator.reportError`). Nothing raises this kind (BC-39): a validator
+    /// error at model load is [`ErrorKind::IllegalModel`], and on an instance
+    /// [`ErrorKind::Validation`], each keeping the `errorType` in
+    /// [`ContractError::validator`]. Kept for the enum's public shape.
     Validator,
     /// An instance does not conform to its model.
     ///
     /// TS: `ValidationException(message)` (table 2.3), thrown by
-    /// `ResourceValidator` (P3-01, `src/serializer/resourcevalidator.ts`,
-    /// every `report*` method).
+    /// `ResourceValidator` (`src/serializer/resourcevalidator.ts`, every
+    /// `report*` method).
     Validation,
     /// An argument or input value is not acceptable to the operation.
     ///
@@ -286,24 +271,22 @@ pub enum ErrorKind {
     MalformedInput,
     /// A recursion point with no cycle check went too deep (PORTING.md 2.5).
     ///
-    /// TS: a `RangeError(message)` the V8 engine raises in the TS code (a
-    /// stack overflow). Since BC-11 (R1) nothing raises this kind: a cyclic
-    /// inheritance chain, its only source, is [`ErrorKind::IllegalModel`].
-    /// The variant stays so that the enum's public shape does not change.
+    /// TS: a `RangeError(message)` the V8 engine raises (a stack overflow).
+    /// Nothing raises this kind: a cyclic inheritance chain is
+    /// [`ErrorKind::IllegalModel`] (BC-11). Kept for the enum's public shape.
     RecursionLimit,
     /// A document fails the metamodel check.
     ///
     /// TS: `MetamodelException(message)` (`src/metamodelexception.ts`),
-    /// thrown by `BaseModelManager.validateAst` (task P3-04,
-    /// `concerto_core::instance::metamodel`).
+    /// thrown by `BaseModelManager.validateAst`
+    /// (`concerto_core::instance::metamodel`).
     Metamodel,
 }
 
 impl ErrorKind {
-    /// The TS class name the shim throws for this kind, as the oracle records
-    /// it in `error.class`. Only for the JS binding (the `js-compat`
-    /// feature).
-    /// PORTING.md table 2.3.
+    /// The TS class name the shim throws for this kind, as the oracle
+    /// records it in `error.class` (PORTING.md table 2.3). Only for the JS
+    /// binding (`js-compat`).
     #[cfg(feature = "js-compat")]
     pub fn ts_class(self) -> &'static str {
         match self {
@@ -328,10 +311,9 @@ js_compat_pub! {
         /// An inline template literal or string concatenation: each `{param}` is
         /// replaced once, and inserted values are never scanned again.
         Inline,
-        /// Not a catalogue template at all: the single `message` param is used
-        /// verbatim. Reserved for [`ContractError::pre_port`]; never cite this
-        /// renderer as a faithful TS port (section 2.2), and its one entry
-        /// (`code = "pre-port"`) is exempt from the OD-5 completeness test.
+        /// Not a catalogue template: the single `message` param is used
+        /// verbatim. Reserved for [`ContractError::pre_port`], whose one
+        /// entry (`code = "pre-port"`) needs no golden test of its own name.
         Raw,
     }
 }
@@ -351,10 +333,9 @@ js_compat_pub! {
     }
 }
 
-/// Debug-asserts that a call site's `code` has a catalogue entry (P5-98,
-/// B-11): the completeness test only checks catalogue entry -> golden test,
-/// so nothing else catches a mistyped code, which [`render`] would show as
-/// the message itself.
+/// Debug-asserts that a call site's `code` has a catalogue entry: nothing
+/// else catches a mistyped code, which [`render`] would show as the
+/// message itself.
 #[inline]
 fn debug_assert_catalogued(code: &str) {
     debug_assert!(
@@ -366,24 +347,17 @@ fn debug_assert_catalogued(code: &str) {
 /// Renders a template with its params.
 fn render(code: &str, params: &[(&'static str, String)]) -> String {
     let Some(entry) = catalogue_entry(code) else {
-        // Not reached in a debug build for an error built through
-        // `ContractError::new` or `ContractError::type_not_found`: both
-        // debug-assert that their code has a catalogue entry (P5-98, B-11),
-        // so the unit and oracle suites catch a mistyped call-site code. A
-        // release build, or a `ContractError` built by hand, falls back to
-        // the code itself.
+        // Not reached in a debug build through `ContractError::new` or
+        // `type_not_found`, which debug-assert the code; a release build, or
+        // a hand-built `ContractError`, falls back to the code itself.
         return code.to_string();
     };
     match entry.renderer {
-        // Globalize.messageFormatter (globalize.ts), ported faithfully
-        // (PORTING.md section 2.2): params are substituted in insertion
-        // order, one param after another over the whole message built so
-        // far, each substitution global (every `{name}` occurrence, not just
-        // the first) and following `String.prototype.replace`'s special
-        // patterns in the *value* (`$$`, `$&`, `` $` ``, `$'`). This means a
-        // value inserted by an earlier param that happens to spell a later
-        // param's placeholder is substituted again — unlike `Inline`, which
-        // never rescans.
+        // Globalize.messageFormatter (PORTING.md section 2.2): params are
+        // substituted in insertion order over the whole message built so
+        // far, each globally and with `String.prototype.replace`'s `$`
+        // patterns in the value, so a value spelling a later param's
+        // placeholder is substituted again, unlike `Inline`.
         Renderer::Globalize => {
             let mut message = entry.template.to_string();
             for (name, value) in params {
@@ -428,13 +402,10 @@ fn render(code: &str, params: &[(&'static str, String)]) -> String {
     }
 }
 
-/// Replaces every `{name}` in `message` with `value`, JS
-/// `message.replace(new RegExp('\\{name\\}', 'g'), value)` style: `$`/`\``
-/// and the match position in `value` are resolved per occurrence, against
-/// `message` as it was *before this call* (JS computes `` $` `` and `$'` from
-/// the string the `.replace` call runs over, not from the output being
-/// built), matching how `Globalize` calls `String.prototype.replace` once
-/// per param (section 2.2).
+/// Replaces every `{name}` in `message` with `value`, as JS
+/// `message.replace(new RegExp('\\{name\\}', 'g'), value)` does: `$`
+/// patterns in `value` are resolved per occurrence against `message` as it
+/// was before this call (section 2.2).
 fn globalize_replace_all(message: &str, name: &str, value: &str) -> String {
     let pattern = format!("{{{name}}}");
     if !message.contains(pattern.as_str()) {
@@ -524,13 +495,12 @@ js_compat_pub! {
         /// exception, holding that file's name (`modelFile.getName()`, `None`
         /// when it has none). The WASM shim passes the real JS model file instead.
         pub model_file: Option<Option<String>>,
-        /// A validator error only (an `IllegalModel` or `Validation` error
-        /// since BC-39, `Validator` before): what `Validator.reportError` adds.
+        /// A validator error only (an `IllegalModel` or `Validation` error,
+        /// BC-39): what `Validator.reportError` adds.
         pub validator: Option<ValidatorReport>,
         /// `ValidationException.details` (accordproject/concerto#1273): one
-        /// entry per violation the error reports, for callers that enumerate
-        /// them instead of parsing the message. Empty for every error that is
-        /// not a [`ValidationOptions`](crate::instance::ValidationOptions)
+        /// entry per violation, for callers that enumerate them. Empty but
+        /// for a [`ValidationOptions`](crate::instance::ValidationOptions)
         /// rejection.
         pub details: Vec<Detail>,
     }
@@ -549,7 +519,7 @@ pub enum DetailCode {
 }
 
 impl DetailCode {
-    /// The code as #1273 spells it (`UNKNOWN_PROPERTY`, `TYPE_VIOLATION`).
+    /// The code's spelling (`UNKNOWN_PROPERTY`, `TYPE_VIOLATION`).
     pub fn as_str(self) -> &'static str {
         match self {
             Self::UnknownProperty => "UNKNOWN_PROPERTY",
@@ -558,7 +528,7 @@ impl DetailCode {
     }
 }
 
-/// One structured violation in [`Error::details`]: #1273's
+/// One structured violation in [`Error::details`]:
 /// `{ path, code, expected, actual }`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -581,7 +551,7 @@ impl ContractError {
     /// An error with no location and no model file.
     ///
     /// `code` must be a catalogue key ([`catalogue_entry`]); a debug build
-    /// asserts it (P5-98, B-11).
+    /// asserts it.
     pub fn new(kind: ErrorKind, code: &'static str, params: Vec<(&'static str, String)>) -> Self {
         debug_assert_catalogued(code);
         Self {
@@ -618,14 +588,10 @@ impl ContractError {
         }
     }
 
-    /// A call site that has not yet been faithfully ported from the TS
-    /// reference (module doc; PORTING.md section 7.2). `message` is used
-    /// verbatim, through [`Renderer::Raw`], never through the catalogue: it
-    /// is not claimed to be a verbatim TS template, and the OD-5
-    /// completeness test does not expect a golden test with its own name for
-    /// every such call site, only for the one shared `"pre-port"` entry.
-    /// The unit that later ports this member replaces the call with a real
-    /// catalogue entry (and deletes this one).
+    /// A message with no catalogue entry (PORTING.md section 7.2): `message`
+    /// is used verbatim, through [`Renderer::Raw`], claiming no verbatim TS
+    /// template; the completeness test needs a golden test only for the
+    /// shared `"pre-port"` entry.
     pub fn pre_port(kind: ErrorKind, message: String, location: Option<serde_json::Value>) -> Self {
         Self {
             kind,
@@ -658,8 +624,8 @@ impl ContractError {
     }
 
     /// The message the TS exception ends up with, after its constructor has
-    /// decorated it (OD-2). Used by the native oracle harness only; the WASM
-    /// shim hands [`ContractError::message`] to the real TS constructor.
+    /// decorated it. Used by the native oracle harness only; the WASM shim
+    /// hands [`ContractError::message`] to the real TS constructor.
     pub fn final_message(&self) -> String {
         let message = self.message();
         match self.kind {
@@ -714,13 +680,10 @@ impl ContractError {
             ErrorKind::IllegalModel | ErrorKind::TypeNotFound => {
                 Some("@accordproject/concerto-core")
             }
-            // TS: `ValidationException` extends concerto-util's `BaseException`
-            // and passes no explicit `component`, so `BaseException`'s own
-            // default (`@accordproject/concerto-util`) applies, the same as
-            // `ErrorKind::Validator` (table 2.3).
-            // TS: `MetamodelException` passes no explicit `component` either,
-            // so `BaseException`'s own default applies, same as `Validator`/
-            // `Validation` (table 2.3).
+            // TS: `ValidationException` and `MetamodelException` extend
+            // concerto-util's `BaseException` with no explicit `component`,
+            // so its default (`@accordproject/concerto-util`) applies (table
+            // 2.3).
             ErrorKind::Validator | ErrorKind::Validation | ErrorKind::Metamodel => {
                 Some("@accordproject/concerto-util")
             }
@@ -737,19 +700,12 @@ impl ContractError {
 /// makes: the typed `Range` is written back out, so any field it does not
 /// model is dropped.
 ///
-/// OD-3 widened the metamodel's number fields to `f64`, so serialising a
-/// `Range` straight back gives `3.0` where the AST said `3`. JS has a single
-/// number type, so both are the same value and `JSON.stringify` writes `3`.
-/// Each integral number that fits an `i64` or `u64` (where the conversion is
-/// exact) is written back as a JSON integer holding its exact value, and
-/// `-0` becomes `0`, as `JSON.stringify(-0)` writes it. Up to 2^53 that
-/// integer's digits are the ones `JSON.stringify` writes; above 2^53 it is
-/// the same number, but JS may print it with different digits (it prints the
-/// shortest string that round-trips, so 2^63 + 2^11 is `9223372036854778000`
-/// in JS, `9223372036854777856` here), so it matches in value, not in text.
-/// Non-integral numbers are left as they are, and so is an integral number
-/// of 2^64 or more, which `serde_json` cannot hold as an integer and so
-/// keeps its float form. No real source position comes near 2^53.
+/// The metamodel's number fields are `f64`, so a `Range` serialised back
+/// gives `3.0` where the AST said `3`; `JSON.stringify` writes `3`. Each
+/// integral number that fits an `i64` or `u64` is written as a JSON integer
+/// of its exact value (`-0` as `0`). Above 2^53 JS may print different
+/// digits for the same value; a non-integral number, or one of 2^64 or
+/// more, keeps its float form. No real source position comes near 2^53.
 pub(crate) fn location_value(
     range: &concerto_metamodel::concerto_metamodel_1_0_0::Range,
 ) -> Option<serde_json::Value> {
@@ -788,8 +744,8 @@ mod tests {
         )
     }
 
-    // Golden tests: one per trial catalogue entry (PORTING.md 6.3). Each
-    // expected string is what the TS reference produces for the same params.
+    // Golden tests: one per catalogue entry (PORTING.md 6.3), each the
+    // string the TS reference produces for the same params.
 
     #[test]
     fn golden_modelutil_getnamespace_nofnq() {
@@ -922,7 +878,7 @@ mod tests {
         );
     }
 
-    // ---- P2-02 additions (StringValidator, CollectionSizeValidator) ----
+    // ---- StringValidator, CollectionSizeValidator ----
 
     #[test]
     fn golden_stringvalidator_constructor_invalidlength() {
@@ -1103,7 +1059,7 @@ mod tests {
         );
     }
 
-    // ---- P2-01 review fix: ResourceId (src/model/resourceid.ts) ----
+    // ---- ResourceId (src/model/resourceid.ts) ----
 
     #[test]
     fn golden_resourceid_constructor_missingnamespace() {
@@ -1220,7 +1176,7 @@ mod tests {
         );
     }
 
-    // ---- P3-04 (BaseModelManager.validateAst) ----
+    // ---- BaseModelManager.validateAst ----
 
     #[test]
     fn golden_basemodelmanager_validateast_versionmismatch() {
@@ -1252,7 +1208,7 @@ mod tests {
         );
     }
 
-    // ---- the P1-05 additions (beyond the P0-04b trial payload above) ----
+    // ---- Model manager, model file and class declaration ----
 
     #[test]
     fn golden_typenotfounderror_defaultmessage() {
@@ -1326,7 +1282,7 @@ mod tests {
         );
     }
 
-    // ---- the P1-05 exit-condition sweep (catalogue.rs module doc) ----
+    // ---- Model manager, model file and class declaration, continued ----
 
     #[test]
     fn golden_modelmanager_resolvetype_nonsfortype() {
@@ -1604,11 +1560,11 @@ mod tests {
         );
     }
 
-    /// P2-04 (#48): TS `'Failed to find fully qualified type name for
-    /// property ' + this.name + ' with type ' + this.type`
-    /// (src/introspect/property.ts:218), checked against the frozen TS 5.0.0
-    /// reference. `this.type` is JS `null` for an enum value, coerced to the
-    /// literal string `null` by the `+` concatenation.
+    /// TS `'Failed to find fully qualified type name for property ' +
+    /// this.name + ' with type ' + this.type` (src/introspect/property.ts),
+    /// checked against the frozen TS 5.0.0 reference. `this.type` is JS
+    /// `null` for an enum value, coerced to the literal string `null` by the
+    /// `+` concatenation.
     #[test]
     fn golden_property_getfullyqualifiedtypename_notfound() {
         assert_eq!(
@@ -1644,7 +1600,7 @@ mod tests {
         );
     }
 
-    // Not a TS template: DIVERGENCES.md DV-017 (maintainer-accepted, #218),
+    // Not a TS template: DIVERGENCES.md DV-017 (maintainer-accepted),
     // Rust's replacement for TS's `TypeError` on a `RelationshipProperty`
     // with no `type`.
     #[test]
@@ -1655,8 +1611,8 @@ mod tests {
         );
     }
 
-    // Not a TS template: BC-45 (P5-24, accordproject/concerto-rust#328),
-    // Rust's check of a `DateTime` default value when it is applied.
+    // Not a TS template: BC-45, Rust's check of a `DateTime` default
+    // value when it is applied.
     #[test]
     fn golden_typed_assignfielddefaults_datetime() {
         assert_eq!(
@@ -1669,8 +1625,8 @@ mod tests {
         );
     }
 
-    // Not TS templates: BC-17, BC-19 and BC-20 (P5-49,
-    // accordproject/concerto-rust#370), the strict AST shape check at load.
+    // Not TS templates: BC-17, BC-19 and BC-20, the strict
+    // AST shape check at load.
     #[test]
     fn golden_modelfile_load_decoratorsnotarray() {
         assert_eq!(
@@ -1738,7 +1694,7 @@ mod tests {
         );
     }
 
-    // Not a TS template: DIVERGENCES.md DV-018 (maintainer-accepted, #218),
+    // Not a TS template: DIVERGENCES.md DV-018 (maintainer-accepted),
     // Rust's replacement for TS's `TypeError` on a `null` decorator node.
     #[test]
     fn golden_decorator_process_notobject() {
@@ -1749,8 +1705,8 @@ mod tests {
     }
 
     // TS: `Property.validate`'s own inline template
-    // (src/introspect/property.ts:161), checked against the frozen TS 5.0.0
-    // reference.
+    // (src/introspect/property.ts), checked against the
+    // frozen TS 5.0.0 reference.
     #[test]
     fn golden_property_validate_sizevalidator() {
         assert_eq!(
@@ -1764,7 +1720,7 @@ mod tests {
     }
 
     // TS: `RelationshipDeclaration.validate`'s own inline templates
-    // (src/introspect/relationshipdeclaration.ts:54,61,80,86), checked
+    // (src/introspect/relationshipdeclaration.ts,61,80,86), checked
     // against the frozen TS 5.0.0 reference.
     #[test]
     fn golden_relationshipdeclaration_validate_notype() {
@@ -1811,8 +1767,8 @@ mod tests {
     }
 
     // TS: `Field.getScalarField`'s own inline templates
-    // (src/introspect/field.ts:186,215), checked against the frozen TS
-    // 5.0.0 reference (#154).
+    // (src/introspect/field.ts,215), checked against the
+    // frozen TS 5.0.0 reference.
     #[test]
     fn golden_field_getscalarfield_notscalar() {
         assert_eq!(
@@ -1834,8 +1790,8 @@ mod tests {
     }
 
     // TS: `MapDeclaration.process`'s own inline templates
-    // (src/introspect/mapdeclaration.ts:63,67,71), checked against the
-    // frozen TS 5.0.0 reference.
+    // (src/introspect/mapdeclaration.ts,67,71), checked
+    // against the frozen TS 5.0.0 reference.
     #[test]
     fn golden_mapdeclaration_process_missingkeyvalue() {
         assert_eq!(
@@ -1861,8 +1817,8 @@ mod tests {
     }
 
     // TS: `MapKeyType.validate`'s own inline template
-    // (src/introspect/mapkeytype.ts:78), checked against the frozen TS
-    // 5.0.0 reference.
+    // (src/introspect/mapkeytype.ts), checked against the
+    // frozen TS 5.0.0 reference.
     #[test]
     fn golden_mapkeytype_validate_invalidscalar() {
         assert_eq!(
@@ -1876,7 +1832,7 @@ mod tests {
     }
 
     // TS: `MapValueType.validate`/`processType`'s own inline templates
-    // (src/introspect/mapvaluetype.ts:78,98,103,108), checked against the
+    // (src/introspect/mapvaluetype.ts,98,103,108), checked against the
     // frozen TS 5.0.0 reference.
     #[test]
     fn golden_mapvaluetype_validate_mapnotsupported() {
@@ -2109,7 +2065,7 @@ mod tests {
         );
     }
 
-    // ---- P3-02: DeserializeOptions (accordproject/concerto#1273) ----
+    // ---- DeserializeOptions (accordproject/concerto#1273) ----
 
     #[test]
     fn golden_jsonpopulator_rejectunknownkeys_unknownproperties() {
@@ -2470,12 +2426,11 @@ mod tests {
         );
     }
 
-    // ---- P5-98 additions (B-10): the model-validation checks' own TS
-    //      hardcoded strings, checked against the frozen TS 5.0.0
-    //      reference ----
+    // ---- The model-validation checks' TS hardcoded strings, checked
+    //      against the frozen TS 5.0.0 reference ----
 
     // TS: `ModelFile.validate`'s duplicate-name check
-    // (src/introspect/modelfile.ts:293).
+    // (src/introspect/modelfile.ts).
     #[test]
     fn golden_modelfile_validate_duplicateclassname() {
         assert_eq!(
@@ -2488,7 +2443,7 @@ mod tests {
         );
     }
 
-    // TS: `Declaration.validate` (src/introspect/declaration.ts:91).
+    // TS: `Declaration.validate` (src/introspect/declaration.ts).
     #[test]
     fn golden_declaration_validate_importclash() {
         assert_eq!(
@@ -2497,7 +2452,7 @@ mod tests {
         );
     }
 
-    // TS: `Decorated.validate` (src/introspect/decorated.ts:143); a
+    // TS: `Decorated.validate` (src/introspect/decorated.ts); a
     // decorator with no name reads `undefined`.
     #[test]
     fn golden_decorated_validate_duplicatedecorator() {
@@ -2516,7 +2471,7 @@ mod tests {
     }
 
     // TS: `ClassDeclaration._resolveSuperType` and `getSuperTypeDeclaration`
-    // (src/introspect/classdeclaration.ts:184,190,553).
+    // (src/introspect/classdeclaration.ts,190,553).
     #[test]
     fn golden_classdeclaration_resolvesupertype_notfound() {
         assert_eq!(
@@ -2546,7 +2501,7 @@ mod tests {
         );
     }
 
-    // TS: `ClassDeclaration.validate` (src/introspect/classdeclaration.ts:249,
+    // TS: `ClassDeclaration.validate` (src/introspect/classdeclaration.ts,
     // 258, 263).
     #[test]
     fn golden_classdeclaration_validate_identifieroptional() {
@@ -2568,8 +2523,8 @@ mod tests {
         );
     }
 
-    /// P5-98 (B-11): a call-site code with no catalogue entry fails a debug
-    /// build instead of rendering the code itself as the message.
+    /// A call-site code with no catalogue entry fails a debug build instead
+    /// of rendering the code itself as the message.
     #[test]
     #[cfg(debug_assertions)]
     #[should_panic(expected = "has no catalogue entry")]
@@ -2578,8 +2533,7 @@ mod tests {
     }
 
     /// The one non-catalogue renderer: [`ContractError::pre_port`] carries a
-    /// hand-written message verbatim, for a call site not yet faithfully
-    /// ported (module doc). This is not a golden test against the TS
+    /// hand-written message verbatim. This is not a golden test against the TS
     /// reference; it only pins the passthrough behaviour.
     #[test]
     fn golden_pre_port() {
@@ -2613,31 +2567,19 @@ mod tests {
         );
     }
 
-    /// OD-5: the Rust catalogue holds exactly the en.json keys used by a
-    /// RUST or HYBRID member, plus `factory-newinstance-*` and
-    /// `typenotfounderror-defaultmessage` (pre-approved ahead of their P3-01
-    /// call site). Every key in that scope has an entry; see `catalogue.rs`
-    /// for the completeness check the other way (every entry has a golden
-    /// test).
-    ///
-    /// This list is derived from the ledger (`SEAM_LEDGER.tsv`, commit
-    /// `c48423c`, OD-6) and the frozen TS reference, not from what the
-    /// catalogue happens to hold today: `catalogue.rs`'s module doc records
-    /// the reproducible grep, and the "RUST or HYBRID" scope is exactly
-    /// [`Renderer::Globalize`] — a literal `en.json` key ported from
-    /// `Globalize.messageFormatter`/`formatMessage` (2.2 step 1) — as
-    /// opposed to [`Renderer::Inline`] (2.2 step 2: an inline template given
-    /// an en.json-style name, not an actual en.json key, such as
-    /// `modelutil-parsenamespace-invalidnamespace`). So this test also
-    /// asserts the two lists coincide exactly, in both directions: every
-    /// `Renderer::Globalize` entry is scoped by OD-5 (nothing unscoped
-    /// sneaks in under this renderer) and every OD-5 key has an entry.
+    /// The catalogue holds exactly the en.json keys the ported throw sites
+    /// use, plus `factory-newinstance-*` and
+    /// `typenotfounderror-defaultmessage`, and those keys are exactly its
+    /// [`Renderer::Globalize`] entries (a [`Renderer::Inline`] entry is an
+    /// inline template given an en.json-style name, such as
+    /// `modelutil-parsenamespace-invalidnamespace`). `catalogue.rs` checks
+    /// the other way (every entry has a golden test).
     #[test]
     fn od5_catalogue_scope_is_present() {
         const OD5_EN_JSON_KEYS: &[&str] = &[
             // Used today: ModelUtil.getNamespace (src/modelutil.ts, RUST).
             "modelutil-getnamespace-nofnq",
-            // OD-5: pre-approved ahead of their call site.
+            // Not used by a call site of their own.
             "typenotfounderror-defaultmessage",
             "factory-newinstance-missingidentifier",
             "factory-newinstance-invalididentifier",
@@ -2675,9 +2617,8 @@ mod tests {
             "resourcevalidator-abstractclass",
             "resourcevalidator-undeclaredfield",
             "resourcevalidator-invalidfieldassignment",
-            // `Serializer.constructor`: TS in the TSV, but the plan owner
-            // moved `Serializer.new` to Rust under P3-01b
-            // (tests/oracle/ledger.rs, `PLAN_OWNER_OVERRIDES`).
+            // `Serializer.constructor` (tests/oracle/ledger.rs,
+            // `PLAN_OWNER_OVERRIDES`).
             "serializer-constructor-factorynull",
             "serializer-constructor-modelmanagernull",
         ];

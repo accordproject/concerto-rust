@@ -9,41 +9,25 @@
 //! `yamlToJson` (the short DCS YAML format).
 //!
 //! Both TS classes work on the metamodel AST as plain, dynamically shaped
-//! objects (`ModelFile.getAst()`, mutated with `rfdc` and fed back through
-//! `ModelManager.fromAst`), not through the typed `ClassDeclaration`/
-//! `Property` views `crate::introspect` builds. This port keeps that shape:
-//! every command, target, decorator and AST node here is a [`serde_json::Value`],
-//! and [`decorate_models`] round-trips a [`ModelManager`] through
-//! [`ModelFile::ast`] the way `fromAst` does, rather than adding a typed
-//! `Command`/`DecoratorCommandSet` struct the reference has no counterpart
-//! for. Where TS reads a property of `undefined`/`null` along the way (a
-//! command set with no `commands`, a command with no `decorator`), this
-//! port raises the same JS `TypeError`.
+//! objects (`ModelFile.getAst()`, mutated and fed back through
+//! `ModelManager.fromAst`), not through the typed introspection views. This
+//! port keeps that shape: every command, target, decorator and AST node is a
+//! [`serde_json::Value`], and [`decorate_models`] round-trips a
+//! [`ModelManager`] through [`ModelFile::ast`] as `fromAst` does. Where TS
+//! reads a property of `undefined`/`null` (a command set with no `commands`,
+//! a command with no `decorator`), this port raises the same JS `TypeError`.
 //!
-//! ## What stays out of this port (PORTING.md 7.3-style divergence)
+//! `DecoratorManager.validate` and `migrateAndValidate` check each command
+//! set with `Serializer.fromJSON` against a validation model manager (the
+//! metamodel, the user's model files, then `DCS_MODEL`), built here from the
+//! metamodel and `DCS_MODEL` ASTs (CTO stays in JS); the `$class` check and
+//! `getType` are hand-ported to keep TS's errors (`from_json_against`), and
+//! the rest is [`crate::instance::from_json`].
 //!
-//! **The DCS instance check.** `DecoratorManager.validate` and
-//! `migrateAndValidate` build a validation model manager (the metamodel,
-//! the user's model files, then `DCS_MODEL` compiled with `addCTOModel`) and
-//! check each command set against it with `Serializer.fromJSON`. The model
-//! manager is built here the same way, from the metamodel and `DCS_MODEL`
-//! ASTs (`metamodel.json`, `dcsmodel.json`; CTO stays in JS), and
-//! [`validate_command`] runs against it as in TS. Of `Serializer.fromJSON`,
-//! the `$class` check and `getType` are hand-ported here to keep TS's own
-//! errors for a missing or non-string `$class`
-//! (`from_json_against`); the rest — the `JSONPopulator` walk and the
-//! `ResourceValidator` pass — now runs as the real, ported
-//! `Serializer.fromJSON` over plain JSON (P3-01b; `crate::instance::from_json` since P6-01), raising
-//! the same `ValidationException`-style errors TS does.
-//!
-//! **Metamodel resolution.** `decorateModels` and the `extract*` statics read
-//! `modelManager.getAst(true, …)`, which runs `BaseModelManager.resolveMetaModel`
-//! over every model; so does this port, through [`ModelManager::get_ast`]
-//! (P2-08b). In rust mode the concerto-wasm bindings are handed ASTs the TS
-//! ModelManager has already resolved (concerto `src/engine/views.ts`), and
-//! Rust then resolves them again here. That second pass is idempotent: every
-//! type reference already carries the namespace it resolves to, so the
-//! result is the same as resolving once, as in ts mode.
+//! `decorateModels` and the `extract*` statics read `modelManager.getAst(true,
+//! …)`, which resolves every model (`BaseModelManager.resolveMetaModel`), as
+//! [`ModelManager::get_ast`] does here. Resolving an already resolved AST is
+//! idempotent.
 pub mod dcsconverter;
 #[cfg(test)]
 #[path = "tests/decoratormanager.rs"]
@@ -76,15 +60,9 @@ const MAP_DECLARATION_CLASS: &str = metamodel_class!("MapDeclaration");
 const IMPORT_TYPE_CLASS: &str = metamodel_class!("ImportType");
 
 /// `falsyOrEqual(test, values)` (`src/decoratormanager.ts`): `true` when
-/// `test` is JS-falsy (`None` for `undefined`, `null`, `false`, `0`, `""`),
-/// an array intersecting `values`, or a string `values` contains. Any other
-/// truthy `test` (a number, `true`, an object) is never in the string array
-/// `values` (`Array.prototype.includes` is strict equality).
-///
-/// The array case is TS's `intersect(test, values).length > 0` (the
-/// elements both have in common, deduplicated), tested without building
-/// either side's string array (P5-102, C-3): some string element of `test`
-/// is in `values`.
+/// `test` is JS-falsy (`None` for `undefined` and `null`), an array with a
+/// string element in `values`, or a string in `values`. Any other truthy
+/// `test` is never in `values` (`includes` is strict equality).
 pub fn falsy_or_equal(test: Option<&Value>, values: &[&str]) -> bool {
     match test {
         Some(Value::Array(arr)) => arr
@@ -119,9 +97,7 @@ fn falsy_or_equal_in_string(test: Option<&Value>, values: &str) -> bool {
 /// commands collected from several of [`get_decorator_maps`]'s maps can be
 /// put back into command-set order before they run.
 ///
-/// It borrows the command from the command sets it was collected from
-/// (P5-102, C-3): a command reached through several maps, or through
-/// several entries of `target.properties`, is never copied.
+/// It borrows the command, which is never copied.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct DcsIndexWrapper<'a> {
     command: &'a Value,
@@ -141,10 +117,8 @@ impl<'a> DcsIndexWrapper<'a> {
     }
 }
 
-/// `DecoratorManager.getDecoratorMaps`'s five return maps
-/// (`src/decoratormanager.ts`), each keyed by the target value commands in
-/// it share.
-/// Keyed by the target value the commands share, borrowed from the commands.
+/// `DecoratorManager.getDecoratorMaps`'s five return maps, each keyed by the
+/// target value its commands share, borrowed from the commands.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct DecoratorMaps<'a> {
     /// Commands targeting a `target.namespace`.
@@ -169,13 +143,10 @@ fn add_dcs_with_index_to_map<'a>(
     map.entry(key).or_default().push(dcs_with_index);
 }
 
-/// `DecoratorManager.getDecoratorMaps` (`src/decoratormanager.ts`): indexes
-/// `commands` by target type. Each command is added to exactly one map,
-/// chosen by the first target field present, in this order: `type`,
-/// `property`, `properties` (one entry per property named), `mapElement`,
-/// `declaration`, `namespace` — matching the reference's `switch (true)`,
-/// whose `case`s fall through to nothing (each `break`s) and so also try in
-/// that order.
+/// `DecoratorManager.getDecoratorMaps`: indexes `commands` by target. Each
+/// command goes into one map, by the first target field present, in the
+/// order of TS's `switch (true)`: `type`, `property`, `properties` (one entry
+/// per property named), `mapElement`, `declaration`, `namespace`.
 pub(crate) fn get_decorator_maps<'a>(
     commands: impl IntoIterator<Item = &'a Value>,
 ) -> DecoratorMaps<'a> {
@@ -236,24 +207,17 @@ fn sorted_by_index(mut commands: Vec<DcsIndexWrapper<'_>>) -> Vec<DcsIndexWrappe
     commands
 }
 
-/// `DecoratorManager.migrateTo` (`src/decoratormanager.ts`): rewrites every
-/// `$class` naming the `org.accordproject.decoratorcommands` namespace,
-/// in place, to [`DCS_VERSION`]. TS accepts a `version` parameter but its
-/// body only ever substitutes the module-level `DCS_VERSION` constant, never
-/// the parameter — this port keeps that (every call site passes
-/// [`DCS_VERSION`] as the argument regardless, so the difference is not
-/// observable), dropping the unused parameter rather than porting the bug
-/// literally (AGENTS.md: idiomatic Rust over dead parameters).
-///
-/// As in TS, the rewrite reads the version through `ModelUtil.getNamespace`
-/// and `ModelUtil.parseNamespace`, whose errors (an unparseable namespace
-/// in a nested `$class`) propagate, and since BC-02 that includes a
-/// namespace with no version.
+/// `DecoratorManager.migrateTo`: rewrites every `$class` naming the
+/// `org.accordproject.decoratorcommands` namespace, in place, to
+/// `DCS_VERSION`. TS's `version` parameter is never read (its body uses
+/// the module constant), so it is dropped. As in TS, the version is read
+/// through `ModelUtil.getNamespace` and `parseNamespace`, whose errors
+/// propagate, an unversioned namespace included (BC-02).
 pub fn migrate_to(value: &mut Value) -> Result<()> {
     match value {
         Value::Object(map) => {
-            // P5-104 (C-13): the `$class` is read borrowed, and copied only
-            // when it is rewritten.
+            // The `$class` is read borrowed, and copied only when it is
+            // rewritten.
             let migrated = match map.get("$class") {
                 Some(Value::String(class))
                     if class.contains("org.accordproject.decoratorcommands") =>
@@ -284,7 +248,7 @@ pub fn migrate_to(value: &mut Value) -> Result<()> {
 }
 
 /// A bare version string (`"0.4.0"`) as strict SemVer 2.0.0, the grammar
-/// `parseNamespace` uses (BC-41, P5-38): `semver::Version` itself, so that
+/// `parseNamespace` uses (BC-41): `semver::Version` itself, so that
 /// components above 2^53 compare exactly.
 fn parse_version(version: &str) -> Option<semver::Version> {
     semver::Version::parse(version).ok()
@@ -319,13 +283,10 @@ fn js_read<'a>(object: Option<&'a Value>, key: &str) -> Result<Option<&'a Value>
     }
 }
 
-/// `DecoratorManager.canMigrate` (`src/decoratormanager.ts`): whether
-/// `decorator_command_set`'s `$class` version can be migrated to
-/// `target_version` — same major version, and strictly lower minor version.
-/// Its failures are TS's: `ModelUtil.getNamespace` rejects a missing
-/// `$class` ("FQN is invalid."), and `ModelUtil.parseNamespace` an invalid
-/// namespace, including, since BC-02 (R1, P5-50), one with no version (in
-/// TS 5.0.0 node-semver rejected that one, with a `TypeError`).
+/// `DecoratorManager.canMigrate`: whether `decorator_command_set`'s `$class`
+/// version can be migrated to `target_version` (same major, strictly lower
+/// minor). `getNamespace` rejects a missing `$class`, and `parseNamespace`
+/// an invalid namespace, an unversioned one included (BC-02).
 pub(crate) fn can_migrate(decorator_command_set: &Value, target_version: &str) -> Result<bool> {
     let class = js_read(Some(decorator_command_set), "$class")?;
     let class = match class {
@@ -446,8 +407,8 @@ static NULL: Value = Value::Null;
 /// decorator, type } = command` reads them: `type` as JS would interpolate
 /// it into `Unknown command type ${type}` (`"undefined"` when absent), and
 /// `decorator` and `target` as `null` when absent. All three are borrowed
-/// from `command` (P5-102, C-3), but for a `type` that is not a string,
-/// which is spelled as JS would print it.
+/// from `command`, but for a `type` that is not a string, which is spelled
+/// as JS would print it.
 fn command_parts(command: &Value) -> (Cow<'_, str>, &Value, &Value) {
     let command_type = match command.get("type") {
         Some(Value::String(s)) => Cow::Borrowed(s.as_str()),
@@ -491,11 +452,9 @@ fn apply_decorator_for_map_element(
     Ok(())
 }
 
-/// `DecoratorManager.checkForNamespaceTargetAndApplyDecorator`
-/// (`src/decoratormanager.ts`): applies the decorator to `declaration` only
-/// when the command actually targets a declaration (`target.declaration`
-/// truthy) — a bare namespace-level command is handled instead by
-/// [`execute_namespace_command`], not here.
+/// `DecoratorManager.checkForNamespaceTargetAndApplyDecorator`: applies the
+/// decorator to `declaration` only when `target.declaration` is truthy (a
+/// namespace-level command is [`execute_namespace_command`]'s).
 fn check_for_namespace_target_and_apply_decorator(
     declaration: &mut Value,
     command_type: &str,
@@ -662,17 +621,12 @@ pub(crate) fn execute_command(
     Ok(())
 }
 
-/// `DecoratorManager.validateCommand` (`src/decoratormanager.ts`): checks a
-/// single command's target resolves against `model_manager` — its
-/// `target.type` names a real type, its `target.namespace` (which must be
-/// versioned, BC-02) a loaded model, and, together with a `target.namespace` and
-/// `target.declaration`, its `target.property`/`target.properties` a real
-/// property of that declaration.
-///
-/// Errors here use [`ContractError::pre_port`] with the reference's own
-/// message text: the exact `{kind, code}` catalogue entry (PORTING.md
-/// section 2.2) is left for the task that ports `resolveType`'s error
-/// messages generally (the module doc comment's divergence note).
+/// `DecoratorManager.validateCommand`: checks a single command's target
+/// resolves against `model_manager`: its `target.type` names a real type,
+/// its `target.namespace` (versioned, BC-02) a loaded model, and, with a
+/// `target.namespace` and `target.declaration`, its
+/// `target.property`/`target.properties` a real property of that
+/// declaration. The messages are the reference's own text.
 pub(crate) fn validate_command(model_manager: &ModelManager, command: &Value) -> Result<()> {
     // `command.target.type`: reading through an absent or `null` target is
     // a JS `TypeError`.
@@ -693,11 +647,9 @@ pub(crate) fn validate_command(model_manager: &ModelManager, command: &Value) ->
         .filter(|v| !v.is_empty())
     {
         resolved_model_file = model_manager.model_file(namespace);
-        // `ModelUtil.parseNamespace(target.namespace)`: since BC-02 (R1,
-        // P5-50; maintainer decision on accordproject/concerto-rust#371,
-        // option 1) an unversioned target namespace is rejected with the
-        // error an invalid namespace throws, instead of matching any
-        // version of that namespace as in TS 5.0.0.
+        // `ModelUtil.parseNamespace(target.namespace)`: BC-02 rejects an
+        // unversioned target namespace with the invalid-namespace error,
+        // where TS 5.0.0 matched any version.
         if resolved_model_file.is_none() {
             model_util::parse_namespace(namespace)?;
         }
@@ -714,10 +666,8 @@ pub(crate) fn validate_command(model_manager: &ModelManager, command: &Value) ->
         }
     }
 
-    // TS: "the guard above throws unless modelFile was resolved for the
-    // namespace" — this runs whenever both `namespace` and `declaration` are
-    // given, regardless of `property`/`properties`, so a command that names
-    // no property still has its declaration checked.
+    // TS: whenever both `namespace` and `declaration` are given, the
+    // declaration is checked, with or without a property.
     if let (Some(_), Some(declaration)) = (
         target
             .get("namespace")
@@ -757,8 +707,8 @@ pub(crate) fn validate_command(model_manager: &ModelManager, command: &Value) ->
         let model_file = resolved_model_file.expect("guarded above: namespace resolved or errored");
         let fqn = format!("{}.{declaration}", model_file.namespace());
 
-        // `target.property`, then each of `target.properties` (P5-104,
-        // C-13: one check, on the borrowed lookup).
+        // `target.property`, then each of `target.properties` (one
+        // check, on the borrowed lookup).
         let property = target
             .get("property")
             .and_then(Value::as_str)
@@ -786,14 +736,10 @@ pub(crate) fn validate_command(model_manager: &ModelManager, command: &Value) ->
     Ok(())
 }
 
-/// `BaseModelManager.resolveType` (`src/basemodelmanager.ts`), as
-/// `validateCommand` calls it: `type_name` resolves if it is a primitive, or
-/// if its namespace has a loaded model file that recognises it (as a local
-/// declaration, primitive, or import) under that exact fully-qualified name.
-/// Errors use the reference's own catalogue templates
-/// (`modelmanager-resolvetype-nonsfortype`/`-notypeinnsforcontext`,
-/// `messages/en.json`), so message text matches `BaseModelManager.resolveType`
-/// byte for byte.
+/// `BaseModelManager.resolveType`, as `validateCommand` calls it: a
+/// primitive, or a type its namespace's loaded model file recognises under
+/// that exact name, with the reference's catalogue templates
+/// (`modelmanager-resolvetype-nonsfortype`/`-notypeinnsforcontext`).
 fn resolve_type(model_manager: &ModelManager, context: &str, type_name: &str) -> Result<()> {
     if model_util::is_primitive_type(type_name) {
         return Ok(());
@@ -827,12 +773,10 @@ fn resolve_type(model_manager: &ModelManager, context: &str, type_name: &str) ->
     }
 }
 
-/// The AST of `DCS_MODEL` (`src/decoratormanager.ts`), the CTO text that
-/// `DecoratorManager.validate`/`migrateAndValidate` compile with
-/// `addCTOModel`. It is concerto-metamodel 3.17.0's `lib/dcsmodel.json`
-/// with the one field where the two differ, `concertoVersion`, set to
-/// `DCS_MODEL`'s own `">3.0.0"` (checked against the oracle's recorded
-/// `DecoratorManager.validate` outcomes).
+/// The AST of `DCS_MODEL`, the CTO text `DecoratorManager.validate` and
+/// `migrateAndValidate` compile: concerto-metamodel 3.17.0's
+/// `lib/dcsmodel.json` with `concertoVersion` set to `DCS_MODEL`'s
+/// `">3.0.0"`.
 const DCS_MODEL_AST_JSON: &str = include_str!("dcsmodel.json");
 
 /// The file name `DecoratorManager.validate` gives `DCS_MODEL`.
@@ -842,10 +786,7 @@ const VALIDATE_DCS_FILE_NAME: &str = "decoratorcommands@0.3.0.cto";
 const MIGRATE_DCS_FILE_NAME: &str = "decoratorcommands@0.4.0.cto";
 
 /// The `DCS_MODEL` file under `file_name`, read once per thread and file
-/// name and then shared (P5-102, C-2), as the system model files and the
-/// metamodel file are: a model file is a pure function of its AST and
-/// file name, and a manager never changes a registered file. A load error
-/// is returned, and not cached.
+/// name and shared. A load error is returned, not cached.
 fn dcs_model_file(file_name: &'static str) -> Result<Arc<ModelFile>> {
     thread_local! {
         static DCS_MODEL_FILES: std::cell::RefCell<Vec<(&'static str, Arc<ModelFile>)>> =
@@ -872,27 +813,12 @@ fn dcs_model_file(file_name: &'static str) -> Result<Arc<ModelFile>> {
     Ok(mf)
 }
 
-/// The validation model manager `DecoratorManager.validate` and
-/// `migrateAndValidate` build: `new ModelManager({ metamodelValidation:
-/// true, addMetamodel: true })` (the system models and the metamodel), then
-/// `addModelFiles(model_files)` when there are any, then
-/// `addCTOModel(DCS_MODEL, dcs_file_name)`, each step validated as TS's
-/// `addModelFiles`/`addCTOModel` validate it.
-///
-/// P5-102 (accordproject/concerto-rust#456, C-2): built from shared files,
-/// as TS shares the `ModelFile` objects
-/// (`validationModelManager.addModelFiles(modelManager.getModelFiles())`):
-/// the start is a [`ModelManager::fork`] of the resident metamodel manager
-/// (`instance::metamodel::with_resident_metamodel_manager`, already
-/// validated), the caller's files are registered as they are (each with
-/// its [`crate::model_manager::ValidityProof`] from the caller's manager,
-/// if any) and the DCS model file is the per-thread shared one
-/// ([`dcs_model_file`]). Nothing is parsed again. Validation still runs on
-/// every file not already known to be valid, in the same order as before,
-/// so the errors are unchanged.
-///
-/// `metamodelValidation` (each added model's AST checked with
-/// `Serializer.fromJSON` against the metamodel) is not run, as before.
+/// The validation manager `DecoratorManager.validate` and
+/// `migrateAndValidate` build: a [`ModelManager::fork`] of the resident
+/// metamodel manager, then the caller's files, then the DCS model, sharing
+/// files as TS shares `ModelFile`s. Every file not known valid is validated
+/// in TS's order, so the errors are the same; the per-model metamodel check
+/// is not run.
 fn validation_model_manager(
     model_files: Vec<(
         Arc<ModelFile>,
@@ -910,18 +836,11 @@ fn validation_model_manager(
 }
 
 /// `serializer.fromJSON(decoratorCommandSet)` over the validation model
-/// manager, as `DecoratorManager.validate`/`migrateAndValidate` call it.
-///
-/// Its first two steps are hand-ported here rather than left to
-/// `Serializer.fromJSON` (`src/serializer.ts`) itself — an instance with no
-/// `$class` is rejected, then a truthy non-string `$class` fails the way
-/// `ModelUtil.getNamespace`'s `fqn.lastIndexOf('.')` does, which
-/// `Serializer::from_json` does not itself reproduce — so an instance of an
-/// unknown type fails as TS fails ([`get_type`], TS's own `getType` call).
-/// The rest, populating and validating a resource from the JSON, now runs
-/// as the rest of `Serializer.fromJSON` does: its `JSONPopulator` walk and
-/// `ResourceValidator` pass, ported in full by P3-01b, over plain JSON
-/// (`crate::instance::from_json`, P6-01).
+/// manager. Its first steps are hand-ported, as `Serializer::from_json`
+/// does not reproduce them: no `$class` is rejected, a truthy non-string
+/// `$class` fails as `getNamespace`'s `fqn.lastIndexOf('.')` does, and an
+/// unknown type fails as `getType` fails ([`get_type`]). The rest is
+/// [`crate::instance::from_json`].
 fn from_json_against(model_manager: &ModelManager, instance: &Value) -> Result<()> {
     let class = js_read(Some(instance), "$class")?;
     let class = match class {
@@ -945,9 +864,8 @@ fn from_json_against(model_manager: &ModelManager, instance: &Value) -> Result<(
         }
     };
     get_type(model_manager, class)?;
-    // `Factory.newId` and the `dayjs.utc()` clock are never read here: no
-    // declaration in `DCS_MODEL` is system-identified or timestamped. So the
-    // crate's deterministic environment stands in for them (P5-102, C-12).
+    // No `DCS_MODEL` declaration is system-identified or timestamped, so
+    // the deterministic environment stands in for the id and the clock.
     let options = crate::instance::from_json::FromJsonOptions::default();
     crate::instance::from_json::from_json(
         model_manager,
@@ -993,7 +911,7 @@ fn get_type(model_manager: &ModelManager, qualified_name: &str) -> Result<()> {
 /// decorator, root and metamodel models, then `model_files` if given, then
 /// the DCS model), checks `decorator_command_set` against it
 /// (`from_json_against`), and returns it. The model files are shared with
-/// the returned manager, not copied (P5-102, C-2), as TS shares them.
+/// the returned manager, not copied, as TS shares them.
 pub fn validate(
     decorator_command_set: &Value,
     model_files: Option<&[Arc<ModelFile>]>,
@@ -1010,11 +928,8 @@ pub fn validate(
 
 /// The structural check of [`validate`] (`serializer.fromJSON(
 /// decoratorCommandSet)`), against a validation model manager the caller
-/// has already built the way [`validate`] builds its own: the metamodel,
-/// the caller's model files and the DCS model, loaded and validated
-/// (P5-27, F6: `DecoratorManager.validate` builds that manager in the view,
-/// so the engine checks the command set against it instead of building
-/// another). Additive; [`validate`] is unchanged.
+/// built as [`validate`] builds its own (the view builds it in
+/// `DecoratorManager.validate`).
 pub fn validate_against(
     validation_model_manager: &ModelManager,
     decorator_command_set: &Value,
@@ -1037,17 +952,11 @@ pub fn validated_yaml_to_json(yaml_input: &str) -> Result<Value> {
     Ok(json_output)
 }
 
-/// `DecoratorManager.migrateAndValidate` (`src/decoratormanager.ts`):
-/// migrates each command set's `$class` to [`DCS_VERSION`] in place when
-/// `should_migrate` (and [`can_migrate`] allows it), then, when
-/// `should_validate` — matching the reference's nesting, *only* then —
-/// builds the validation model manager (the metamodel, `model_manager`'s own
-/// model files and the DCS model), checks each command set against it
-/// (`from_json_against`) and, when also `should_validate_commands`, runs
-/// [`validate_command`] over every command against it.
-/// `should_validate_commands` alone (`should_validate` false) validates
-/// nothing at all, exactly as the reference's `if (shouldValidate) { ...
-/// if (shouldValidateCommands) {...} }` does.
+/// `DecoratorManager.migrateAndValidate`: migrates each command set's
+/// `$class` to [`DCS_VERSION`] in place when `should_migrate` (and
+/// [`can_migrate`] allows it); then, only when `should_validate`, builds the
+/// validation model manager, checks each command set against it and, with
+/// `should_validate_commands`, runs [`validate_command`] over every command.
 pub(crate) fn migrate_and_validate(
     model_manager: &ModelManager,
     decorator_command_sets: &mut [Value],
@@ -1064,7 +973,7 @@ pub(crate) fn migrate_and_validate(
     }
     if should_validate {
         // `validationModelManager.addModelFiles(modelManager.getModelFiles())`:
-        // the caller's own files, shared (P5-102, C-2).
+        // the caller's own files, shared.
         let validation_model_manager = validation_model_manager(
             model_manager.user_files_with_proofs(),
             MIGRATE_DCS_FILE_NAME,
@@ -1087,13 +996,13 @@ pub(crate) fn migrate_and_validate(
 /// `options` object (`src/decoratormanager.ts`).
 #[derive(Debug, Clone, Default)]
 pub struct DecorateOptions {
-    /// Migrate every command set's `$class` to [`DCS_VERSION`] first.
+    /// Migrate every command set's `$class` to `DCS_VERSION` first.
     pub migrate: bool,
     /// Check every command set against `DCS_MODEL` first
-    /// ([`migrate_and_validate`]). Gates [`validate_commands`](Self::validate_commands),
+    /// (`migrate_and_validate`). Gates [`validate_commands`](Self::validate_commands),
     /// matching the reference.
     pub validate: bool,
-    /// Run [`validate_command`] over every command, when [`validate`](Self::validate) is
+    /// Run `validate_command` over every command, when [`validate`](Self::validate) is
     /// also set.
     pub validate_commands: bool,
     /// The namespace to use for a decorator (or a type-reference argument)
@@ -1113,35 +1022,20 @@ pub struct DecorateOptions {
     pub disable_metamodel_validation: Option<bool>,
 }
 
-/// `DecoratorManager.decorateModels` (`src/decoratormanager.ts`): applies
-/// every command of every set in `decorator_command_sets`, in order, across
-/// `model_manager`'s loaded models, and returns a new [`ModelManager`] built
-/// from the result, as `fromAst` builds one (every model but the system
-/// ones, validated unless `disable_metamodel_validation`).
-///
-/// Like TS, this mutates its arguments: migration rewrites the caller's
-/// command sets in place, and `skip_validation_and_resolution` sets
-/// `options`' two `disable_*` flags.
-///
-/// An empty `decorator_command_sets` (TS: a falsy or empty
-/// `decoratorCommandSet`) returns a manager over the same model files
-/// (shared, with the same options), not validated again, rather than
-/// `model_manager` itself (TS returns the same instance; a caller that only
-/// reads it back cannot tell).
-///
-/// Unless `disableMetamodelResolution` is truthy, the models decorated are
-/// `getAst(true, true)`'s, every one run through
-/// `BaseModelManager.resolveMetaModel` ([`ModelManager::get_ast`]), which
-/// adds the resolved `namespace` to each type reference, super type and
-/// scalar, and fails as TS does for an import that does not resolve.
+/// `DecoratorManager.decorateModels`: applies every command of every set,
+/// in order, and returns a new [`ModelManager`] built as `fromAst` builds
+/// one. Like TS, it mutates its arguments (migration rewrites the command
+/// sets; `skip_validation_and_resolution` sets `options`' `disable_*`
+/// flags). An empty `decorator_command_sets` shares the model files without
+/// validating them again.
 pub fn decorate_models(
     model_manager: &ModelManager,
     decorator_command_sets: &mut [Value],
     options: &mut DecorateOptions,
 ) -> Result<ModelManager> {
     if !prepare_command_sets(model_manager, decorator_command_sets, options)? {
-        // The same model files, shared (P5-102, C-2), under the same
-        // options, and not validated again.
+        // The same model files, shared, under the same options, and
+        // not validated again.
         return model_manager.new_like_with(model_manager.user_files_with_proofs(), false);
     }
     let prepared = index_commands(decorator_command_sets, options)?;
@@ -1149,9 +1043,8 @@ pub fn decorate_models(
 }
 
 /// What [`index_commands`] computes from the command sets before
-/// `decorateModels` reads the model manager's AST: the synthetic imports and
-/// the commands indexed by target, borrowed from the command sets (P5-102,
-/// C-3: no command is copied).
+/// `decorateModels` reads the AST: the synthetic imports and the commands
+/// indexed by target, borrowed.
 #[derive(Debug, Clone)]
 pub struct PreparedDecoration<'a> {
     decorator_imports: Vec<Value>,
@@ -1160,7 +1053,7 @@ pub struct PreparedDecoration<'a> {
 
 /// The first step of [`decorate_models`]: the empty-input early return
 /// (`false`), the `skipValidationAndResolution` option check, then
-/// migration and validation ([`migrate_and_validate`]), which may rewrite
+/// migration and validation (`migrate_and_validate`), which may rewrite
 /// the command sets in place. `true` when there are command sets to apply.
 pub fn prepare_command_sets(
     model_manager: &ModelManager,
@@ -1196,11 +1089,8 @@ pub fn prepare_command_sets(
     Ok(true)
 }
 
-/// The second step of [`decorate_models`], the rest of what
-/// `decorateModels` does before it calls `modelManager.getAst(…)`, over the
-/// command sets as [`prepare_command_sets`] left them: the synthetic
-/// imports and the target maps. Neither step depends on metamodel
-/// resolution (see [`decorate_models`]).
+/// The second step of [`decorate_models`], before `decorateModels` reads
+/// the AST: the synthetic imports and the target maps.
 pub fn index_commands<'a>(
     decorator_command_sets: &'a [Value],
     options: &DecorateOptions,
@@ -1221,12 +1111,9 @@ pub fn index_commands<'a>(
     // Every element is a command object: `synthetic_decorator_imports` has
     // already read `command.decorator` from each.
     let combined_commands: Vec<&'a Value> = combined_commands.into_iter().flatten().collect();
-    // BC-02 (R1, P5-50; maintainer decision on
-    // accordproject/concerto-rust#371, option 1): a command's
-    // `target.namespace` goes through `ModelUtil.parseNamespace`, so an
-    // unversioned one is rejected when the commands are applied, with or
-    // without `validateCommands`, instead of matching any version of that
-    // namespace as in TS 5.0.0.
+    // BC-02: a command's `target.namespace` goes through `parseNamespace`,
+    // so an unversioned one is rejected when the commands are applied,
+    // where TS 5.0.0 matched any version.
     for command in &combined_commands {
         if let Some(namespace) = command
             .get("target")
@@ -1244,13 +1131,10 @@ pub fn index_commands<'a>(
     })
 }
 
-/// The last step of [`decorate_models`]: applies `prepared` to every
-/// model of `model_manager` (the system ones included, as `getAst(…,
-/// true)` returns them), then builds the result as `new ModelManager({
-/// decoratorValidation })` and `fromAst(decoratedAst, { disableValidation })`
-/// do — every model but the system ones, validated unless
-/// `disable_metamodel_validation`. Each decorated AST is moved into the
-/// result, not copied (P5-102, C-3), as the extractor's result is.
+/// The last step of [`decorate_models`]: applies `prepared` to every model
+/// (the system ones included), then builds the result as `new
+/// ModelManager({ decoratorValidation })` and `fromAst(decoratedAst, {
+/// disableValidation })` do. Each decorated AST is moved into the result.
 pub fn apply_decoration(
     model_manager: &ModelManager,
     prepared: &PreparedDecoration<'_>,
@@ -1278,14 +1162,12 @@ pub fn apply_decoration(
     Ok(decorated)
 }
 
-/// The synthetic `ImportType` AST nodes `decorateModels` declares for every
-/// command's decorator, and for each of its type-reference arguments, so a
-/// decorator applied to a model that does not already import it still
-/// resolves. Only entries that end up with a (truthy) namespace — their own,
-/// or `default_namespace` — are kept, as TS's trailing `.filter(i =>
-/// i.namespace)` does. `commands` holds `None` for a JS `undefined`
-/// element; reading `decorator` through one, or `name` through a missing
-/// decorator, is the `TypeError` TS raises.
+/// The synthetic `ImportType` nodes `decorateModels` declares for every
+/// command's decorator and type-reference arguments, so an applied decorator
+/// resolves. Only entries with a truthy namespace (their own, or
+/// `default_namespace`) are kept, as TS's `.filter(i => i.namespace)` does.
+/// `None` in `commands` is a JS `undefined`; reading through one is TS's
+/// `TypeError`.
 fn synthetic_decorator_imports(
     commands: &[Option<&Value>],
     default_namespace: Option<&Value>,
@@ -1381,14 +1263,11 @@ fn decorate_model(
 
     let namespace_name = model_util::namespace_parts(&namespace)?.0.to_string();
 
-    // Detach `declarations` into an owned local: once it is out of `model`,
-    // `execute_namespace_command` below (which mutates `model` itself, for a
-    // bare namespace-level command) and the declaration it is iterating over
-    // are no longer borrowed from the same JSON tree, so both can be passed
-    // as `&mut` in the same loop body.
     // `model.declarations.forEach(...)`: a model with no `declarations` is
     // a JS `TypeError`.
     js_read(js_read(Some(model), "declarations")?, "forEach")?;
+    // The declarations are taken out of `model`, so a namespace command
+    // can mutate `model` while a declaration is mutated.
     let mut declarations = match model.get_mut("declarations") {
         Some(slot) => std::mem::take(slot),
         None => Value::Array(Vec::new()),
@@ -1524,30 +1403,12 @@ impl Default for ExtractOptions {
     }
 }
 
-/// `DecoratorManager.extractDecorators`, `extractVocabularies` or
-/// `extractNonVocabDecorators(modelManager, options)`
-/// (`src/decoratormanager.ts`), by `action`, with the command sets encoded
-/// as JSON text ([`extractor::DecoratorExtractor::extract`]).
-///
-/// - [`extractor::Action::ExtractAll`] (`extractDecorators`): every
-///   decorator of every model, the system models included, extracted into
-///   command sets and vocabularies.
-/// - [`extractor::Action::ExtractVocab`] (`extractVocabularies`): the
-///   vocabulary (`Term`/`Term_*`) decorators only; the command sets are
-///   always `[]` (TS returns no `decoratorCommandSet` at all).
-/// - [`extractor::Action::ExtractNonVocab`] (`extractNonVocabDecorators`):
-///   the non-vocabulary decorators of the user's models only (TS reads
-///   `getAst(true)`, without the system namespaces); the vocabularies are
-///   always empty (TS returns none).
-///
-/// With `keep_source`, the result also holds the source models its walk
-/// read ([`extractor::ExtractResult::source_models`]; P5-56, T2, F-A2,
-/// accordproject/concerto-rust#377), so a caller that keeps them can
-/// rebuild the same command sets and vocabularies with
-/// [`encode_extract_source`] while `model_manager` is unchanged.
-///
-/// P5-103 (C-5) collapsed the per-action wrappers and the `Value` route
-/// into this one function.
+/// `DecoratorManager.extractDecorators` (`ExtractAll`: every model),
+/// `extractVocabularies` (`ExtractVocab`: vocabulary decorators, no command
+/// sets) or `extractNonVocabDecorators` (`ExtractNonVocab`: the user's
+/// models, no vocabularies), by `action`, with the command sets as JSON
+/// text. With `keep_source`, the result keeps the source models for
+/// [`encode_extract_source`].
 pub fn extract(
     model_manager: &ModelManager,
     options: &ExtractOptions,
@@ -1564,11 +1425,11 @@ pub fn extract(
     .extract(model_manager.model_asts(true, include_system)?, keep_source)
 }
 
-/// The command sets (JSON text) and vocabularies [`extract`] gives
-/// for `action` and `options`, rebuilt from `models`, the source models an
-/// earlier [`extract`] keeping its source with the same `action`'s
-/// system flag returned (P5-56). The source models are neither resolved nor
-/// loaded again, and no result manager is built.
+/// The command sets (JSON text) and vocabularies [`extract`] gives for
+/// `action` and `options`, rebuilt from `models`, the source models an
+/// earlier [`extract`] keeping its source with the same `action`'s system
+/// flag returned. The source models are neither resolved nor loaded again,
+/// and no result manager is built.
 pub fn encode_extract_source(
     models: &[Value],
     options: &ExtractOptions,

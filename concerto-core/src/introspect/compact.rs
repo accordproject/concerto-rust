@@ -1,17 +1,15 @@
-//! A model's JSON AST in the compact binary layout (P5-92,
-//! accordproject/concerto-rust#438), read straight into the typed model.
+//! A model's JSON AST in the compact binary layout, read
+//! straight into the typed model.
 //!
-//! The TS `ModelFile` constructor used to `JSON.stringify` an AST that
+//! The TS side (concerto-core `src/engine/ast-codec.ts`) writes an AST that
 //! already exists as a JS object (the CTO parser's output, or an
-//! `addModel`/`addModelFile`/`fromAst` input) for the engine to parse the
-//! text again before its typed read. The TS side (concerto-core
-//! `src/engine/ast-codec.ts`) now writes such an AST straight from the
-//! object into the layout below, and [`Compact`] hands it to the typed read
-//! (`typed_ast`) as a `serde` deserializer, without JSON text or a
-//! [`Value`] of the whole document.
+//! `addModel`/`addModelFile`/`fromAst` input) straight into the layout
+//! below, and [`Compact`] hands it to the typed read (`typed_ast`) as a
+//! `serde` deserializer, without JSON text or a [`Value`] of the whole
+//! document.
 //!
 //! It is the layout of the instance fast path (concerto-wasm
-//! `validate_resource.rs`, P5-12b/P5-12c). One tag byte, then:
+//! `validate_resource.rs`). One tag byte, then:
 //!
 //! | tag | value |
 //! |---|---|
@@ -50,11 +48,10 @@
 //! tag, a string that is not UTF-8, a number that is not finite, or nested
 //! past [`MAX_DEPTH`]) are an error, which [`to_value`] tells apart from a
 //! data error of the typed read; the TS writer never writes them. Every
-//! read checks them, the skip of a value the typed read ignores included
-//! (P5-95, accordproject/concerto-rust#445), so bytes the typed read
-//! accepts are bytes [`to_value`] accepts, and no count in them makes a
-//! visitor reserve more than the bytes left can hold: malformed bytes are
-//! an error, never a panic (a trap in WASM).
+//! read checks them, the skip of a value the typed read ignores included,
+//! so bytes the typed read accepts are bytes [`to_value`] accepts, and no
+//! count in them makes a visitor reserve more than the bytes left can hold:
+//! malformed bytes are an error, never a panic (a trap in WASM).
 
 use serde::Deserialize;
 use serde::de::value::BorrowedStrDeserializer;
@@ -77,7 +74,7 @@ const OBJECT: u8 = 7;
 const MAX_DEPTH: usize = 512;
 
 /// The fewest bytes an array item (a tag) and an object entry (a key's
-/// length, then a value's tag) take. P5-95: an array's or an object's
+/// length, then a value's tag) take. An array's or an object's
 /// `size_hint` is its count bounded by the bytes left over these, so a
 /// visitor that reserves its size hint (`kept::KeptSeed`) never reserves
 /// more than the bytes can hold, whatever count bytes not written by the TS
@@ -136,7 +133,7 @@ fn number(v: f64) -> Number {
 
 /// The finite double `v` as the instance validator spells a JS number
 /// (`instance::validate::js_number`): an integral one below `2^53` in
-/// magnitude as an integer, any other as itself (P5-101, F-8).
+/// magnitude as an integer, any other as itself.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn validator_number(v: f64) -> Number {
     if v.trunc() == v && v.abs() < MAX_SAFE_INTEGER {
@@ -174,8 +171,8 @@ pub(crate) struct Compact<'de> {
     bytes: &'de [u8],
     pos: usize,
     depth: usize,
-    /// P5-101 (F-8): a double read as the instance validator spells a JS
-    /// number ([`to_validator_value`]) rather than as `serde_json` reads
+    /// A double read as the instance validator spells a JS number
+    /// ([`to_validator_value`]) rather than as `serde_json` reads
     /// `JSON.stringify`'s text of it.
     validator_numbers: bool,
 }
@@ -296,8 +293,8 @@ impl<'de> Compact<'de> {
         match tag {
             NULL | FALSE | TRUE => {}
             F64 => {
-                // P5-95: the finiteness check `number` makes, so that bytes
-                // the typed read accepts are bytes `to_value` accepts.
+                // The finiteness check `number` makes, so that bytes the
+                // typed read accepts are bytes `to_value` accepts.
                 let v = f64::from_le_bytes(self.array()?);
                 if !v.is_finite() {
                     return Err(malformed("a number that is not finite"));
@@ -592,12 +589,11 @@ pub fn to_value(bytes: &[u8]) -> Result<Value, Error> {
     Ok(value)
 }
 
-/// P5-101 (E-7, accordproject/concerto-rust#455): `seed` run over the
-/// document `bytes` hold, as over `serde_json`'s deserializer of
-/// `JSON.stringify`'s text of it (module doc), for the Serializer fast
-/// path's binary input (concerto-wasm `parse_wire_bytes`, whose TS writer,
-/// src/engine/wire.ts, is the AST's too). An error for bytes not in the
-/// layout, or the seed's own error.
+/// `seed` run over the document `bytes` hold, as over `serde_json`'s
+/// deserializer of `JSON.stringify`'s text of it (module doc), for the
+/// Serializer fast path's binary input (concerto-wasm `parse_wire_bytes`,
+/// whose TS writer, src/engine/wire.ts, is the AST's too). An error for
+/// bytes not in the layout, or the seed's own error.
 pub fn deserialize_seed<'de, S: DeserializeSeed<'de>>(
     bytes: &'de [u8],
     seed: S,
@@ -608,14 +604,10 @@ pub fn deserialize_seed<'de, S: DeserializeSeed<'de>>(
     Ok(value)
 }
 
-/// P5-101 (F-8, accordproject/concerto-rust#455): the value `bytes` hold
-/// as the instance validator reads it, for the instance fast path
-/// (concerto-wasm `validate_resource.rs`, whose TS writer, src/engine/
-/// wire.ts, is the AST's too): the one reader of the layout, with a double
-/// spelled as `instance::validate::js_number` spells a finite JS number (an
-/// integral one below `2^53` as an integer, any other as itself) rather
-/// than as `JSON.stringify`'s text of it reads. Everything else is
-/// [`to_value`]'s. An error for bytes not in the layout.
+/// The value `bytes` hold as the instance validator reads it, for the
+/// instance fast path: as [`to_value`], except that a double is spelled as
+/// `instance::validate::js_number` spells a finite JS number. An error for
+/// bytes not in the layout.
 pub fn to_validator_value(bytes: &[u8]) -> Result<Value, Error> {
     let mut compact = Compact::new(bytes);
     compact.validator_numbers = true;

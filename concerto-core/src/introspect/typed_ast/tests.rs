@@ -31,8 +31,8 @@ fn key(file: &ModelFile) -> String {
 enum Outcome {
     NotJson,
     Loaded(String),
-    /// The error's kind and code (P5-61: the message of a read error
-    /// names a position only for text).
+    /// The error's kind and code (the message of a read error names
+    /// a position only for text).
     Failed(String),
 }
 
@@ -215,10 +215,10 @@ fn a_duplicate_key_in_the_text_is_unreadable() {
     }
 }
 
-/// P5-61: `identified` and the three validators are read as strictly as
-/// every other field (the module doc, "Strictness"). Each value TS
-/// 5.0.0 read with no type check is rejected by BC-19's shape check and,
-/// with the check off, is unreadable, on both inputs.
+/// `identified` and the three validators are read as strictly as every
+/// other field (the module doc, "Strictness"). Each value TS 5.0.0 read
+/// with no type check is rejected by BC-19's shape check and, with the
+/// check off, is unreadable, on both inputs.
 #[test]
 fn identified_and_the_validators_are_read_strictly() {
     let with = |key: &str, value: Value| {
@@ -280,7 +280,7 @@ fn identified_and_the_validators_are_read_strictly() {
     }
 }
 
-/// P5-61: a key the generated struct for a node does not declare is
+/// A key the generated struct for a node does not declare is
 /// unreadable (the module doc, "Unknown keys"), on both inputs, except
 /// the `defaultValue` the reference parser writes on a
 /// `DateTimeProperty`.
@@ -669,7 +669,7 @@ fn every_shape_checked_model_is_read() {
     assert!(loaded > 0);
 }
 
-/// P5-76: a scalar or map declaration's variant struct is read from the
+/// A scalar or map declaration's variant struct is read from the
 /// object's entries in place, with the same result as from a copy of
 /// the object without `$class` (what the read built before).
 #[test]

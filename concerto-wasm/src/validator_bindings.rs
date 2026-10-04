@@ -1,6 +1,6 @@
 //! The `NumberValidator`, `StringValidator` and `CollectionSizeValidator` bindings.
 //!
-//! Split out of `lib.rs` (P5-104, review M7); the crate root glob-imports it.
+//! Split out of `lib.rs`; the crate root glob-imports it.
 
 use super::*;
 
@@ -165,7 +165,8 @@ pub fn number_validator_compatible_with(
 
 // ---------------------------------------------------------------------------
 // StringValidator (src/introspect/stringvalidator.ts) and
-// CollectionSizeValidator (src/introspect/collectionsizevalidator.ts) (P4-04)
+// CollectionSizeValidator
+// (src/introspect/collectionsizevalidator.ts)
 // ---------------------------------------------------------------------------
 //
 // Neither Rust type derives `Serialize`/`Deserialize` (`StringValidator` owns
@@ -189,20 +190,10 @@ pub(crate) fn tag(mut json: Value, class: &str) -> Value {
     json
 }
 
-/// `{pattern, flags}`, or `None` for a nullish value. Built through
-/// `validators::regex_validator_from_ast`, which reads `pattern`/`flags`
-/// completely untyped — a plain `ToString`-style coercion, matching `new
-/// RegExp(validator.pattern, validator.flags)` — rather than `serde`'s
-/// strict decode this used to run directly: TS's own call site for this
-/// constructor is `Property.process`'s `new StringValidator(this,
-/// this.ast.validator, this.ast.lengthValidator)` (property.ts/field.ts),
-/// reading `this.ast.validator` with no type check at all, so a
-/// fuzz-mutated, wrongly-typed `pattern`/`flags` (a bool, a number, an
-/// array) must coerce here too, not fail the whole property's `process()`
-/// (accordproject/concerto-rust#217: this binding is *TS's* call site for
-/// the same constructor `validators::regex_validator_from_ast`'s own doc
-/// comment already fixed the `Property::try_from` side of, so it needs the
-/// identical fix).
+/// `{pattern, flags}`, or `None` for a nullish value, coerced as
+/// `new RegExp(pattern, flags)` coerces them: TS's `Property.process` reads
+/// the validator with no type check, so a wrongly typed `pattern`/`flags`
+/// must coerce, not fail `process()`.
 pub(crate) fn string_regex_ast(value: &JsValue) -> Result<Option<mm::StringRegexValidator>> {
     if nullish(value) {
         return Ok(None);
@@ -213,9 +204,8 @@ pub(crate) fn string_regex_ast(value: &JsValue) -> Result<Option<mm::StringRegex
 
 /// `{minLength, maxLength}`, or `None` for a nullish value. Built through
 /// `validators::length_validator_from_ast`, for the same reason and in the
-/// same way as [`string_regex_ast`] — TS's own call site for
-/// `new StringValidator(..., this.ast.lengthValidator)`
-/// (accordproject/concerto-rust#217).
+/// same way as [`string_regex_ast`] — TS's own call site for `new
+/// StringValidator(..., this.ast.lengthValidator)`.
 pub(crate) fn string_length_ast(value: &JsValue) -> Result<Option<mm::StringLengthValidator>> {
     if nullish(value) {
         return Ok(None);
@@ -224,18 +214,9 @@ pub(crate) fn string_length_ast(value: &JsValue) -> Result<Option<mm::StringLeng
     Ok(validators::length_validator_from_ast(Some(&json)))
 }
 
-/// `{minSize, maxSize}`. Built through `validators::size_validator_from_ast`,
-/// for the same reason as [`string_regex_ast`] — TS's own call site for
-/// `new CollectionSizeValidator(this, this.ast.sizeValidator)`
-/// (property.ts/field.ts), reading `minSize`/`maxSize` with no type check
-/// (accordproject/concerto-rust#217). A nullish `value` (this binding's own
-/// caller, like TS's constructor call site, only ever passes one when
-/// `this.ast.sizeValidator` is itself present) falls back to the same
-/// "$class only" node `size_validator_from_ast`'s own null-filter maps to
-/// `None` for, so this preserves this function's pre-existing contract of
-/// never itself returning `None`: an absent `minSize`/`maxSize` decodes as
-/// `None` either way, so the unwrap below only ever supplies the
-/// `$class`/bounds-absent shape.
+/// `{minSize, maxSize}`, coerced as [`string_regex_ast`] is, since TS reads
+/// them with no type check. A nullish `value` falls back to the `$class`
+/// only node, so this never returns `None` itself.
 pub(crate) fn collection_size_ast(value: &JsValue) -> Result<mm::CollectionSizeValidator> {
     let json = to_json(value)?.unwrap_or(Value::Null);
     Ok(
@@ -247,13 +228,10 @@ pub(crate) fn collection_size_ast(value: &JsValue) -> Result<mm::CollectionSizeV
     )
 }
 
-/// TS: StringValidator constructor, after `super(field, validator)`. `view`
-/// is the object under construction; the result is its `{minLength,
-/// maxLength}` snapshot. The view builds its own cached `RegExp` from
-/// `validator` afterwards: `StringValidator.getRegex` stays TS (public API
-/// returns a live `RegExp`), and the pluggable `options.regExp` hook is never
-/// reached here (the view only calls this binding when no hook is
-/// configured, PORTING.md section 3).
+/// TS: StringValidator constructor, after `super(field, validator)`; returns
+/// the `{minLength, maxLength}` snapshot for `view`. The view builds its own
+/// `RegExp` (`getRegex` returns a live one) and calls this only when no
+/// `options.regExp` hook is configured (PORTING.md section 3).
 #[wasm_bindgen(js_name = stringValidatorNew)]
 pub fn string_validator_new(
     view: JsValue,
@@ -266,9 +244,9 @@ pub fn string_validator_new(
         // The raw `lengthValidator` AST itself, not just its typed
         // `{minLength, maxLength}` snapshot (`length_ast` above): a
         // fuzz-mutated `minLength`/`maxLength` needs JS's own untyped `>`
-        // comparison, not one against a value already coerced to `f64`
-        // (accordproject/concerto-rust#219). `nullish` mirrors
-        // `string_length_ast`'s own guard: no AST, no raw value to compare.
+        // comparison, not one against a value already coerced to `f64`.
+        // `nullish` mirrors `string_length_ast`'s own guard: no AST, no
+        // raw value to compare.
         let raw_length_ast = if nullish(&length_validator) {
             None
         } else {
@@ -377,7 +355,7 @@ pub fn collection_size_validator_new(view: JsValue, ast: JsValue) -> JsResult<Js
         // The raw `sizeValidator` AST itself, not just its typed `{minSize,
         // maxSize}` snapshot (`typed` above): a fuzz-mutated `minSize`/
         // `maxSize` needs JS's own untyped `>` comparison, not one against a
-        // value already coerced to `f64` (accordproject/concerto-rust#219).
+        // value already coerced to `f64`.
         let raw_ast = to_json(&ast)?;
         let built = CollectionSizeValidator::new(
             &JsElement { validator: &view },

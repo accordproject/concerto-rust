@@ -1,7 +1,7 @@
 // Host-side tests of the pure wire codec (no `js_sys` call is reached on
 // these paths): `cargo test` from concerto-wasm/. A test may unwrap,
 // index and panic: the crate's deny list guards the boundary path, where
-// a panic poisons the object (P5-104: `clippy --all-targets` clean).
+// a panic poisons the object (`clippy --all-targets` clean).
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -12,13 +12,13 @@
 use super::*;
 
 /// The reference the extract and decorate writers are checked against
-/// (P5-104, D-11: test-only since the intermediate-`Value` fallbacks went):
-/// a native `ModelManager`'s own models (the system ones included, in load
-/// order) as `{ $class, models }` — the shape
-/// `BaseModelManager.getAst`/`fromAst` (`src/basemodelmanager.ts`) use. The
-/// view's own `fromAst` filters the system ones back out (`EXCLUDE_NS`)
-/// exactly as it already does for the ts-mode `decorateModels`/`extract*`
-/// bodies, so this need not filter them here.
+/// (test-only since the intermediate-`Value` fallbacks went): a native
+/// `ModelManager`'s own models (the system ones included, in load order) as
+/// `{ $class, models }` — the shape `BaseModelManager.getAst`/`fromAst`
+/// (`src/basemodelmanager.ts`) use. The view's own `fromAst` filters the
+/// system ones back out (`EXCLUDE_NS`) exactly as it already does for the
+/// ts-mode `decorateModels`/`extract*` bodies, so this need not filter them
+/// here.
 fn model_manager_to_ast(mm: &ModelManager) -> Value {
     let models: Vec<Value> = mm.model_files().map(|mf| mf.ast().clone()).collect();
     json!({
@@ -27,7 +27,7 @@ fn model_manager_to_ast(mm: &ModelManager) -> Value {
     })
 }
 
-/// [`staged_header_from_parts`]'s header as a `Value` (P5-76: it is
+/// [`staged_header_from_parts`]'s header as a `Value` (it is
 /// serialized without one).
 fn header_value(namespace: &str, imports: Option<&Value>) -> Option<Value> {
     staged_header_from_parts(namespace, imports)
@@ -38,9 +38,8 @@ fn header_value(namespace: &str, imports: Option<&Value>) -> Option<Value> {
 /// decoratorCommandSet, vocabularies}`, then the resident path's
 /// `staged` and `validated` keys), written from the borrowed
 /// [`dcs::extractor::ExtractResult`]: the text the extract
-/// bindings wrote before the memo (P5-41, P5-57), kept as the test
-/// oracle of [`DcsExtractKept::result_text`] (P5-103 removed the
-/// bindings).
+/// bindings wrote before the memo, kept as the test oracle of
+/// [`DcsExtractKept::result_text`].
 fn extract_result_text(
     result: &dcs::extractor::ExtractResult,
     staged: Option<&[Value]>,
@@ -61,12 +60,11 @@ fn extract_result_text(
     Ok(String::from_utf8(out).unwrap())
 }
 
-/// P5-56 (T2, F-A2): a repeated extract through the memo writes, byte
-/// for byte, the text a full extract writes (result AST, command sets,
-/// vocabularies, staged ids and headers), for every action and locale,
-/// with `removeDecoratorsFromModel` false and (P5-77) true, and stages
-/// files whose ASTs equal the full extract's; moving the epoch drops the
-/// memo.
+/// A repeated extract through the memo writes, byte for byte, the text a
+/// full extract writes (result AST, command sets, vocabularies, staged
+/// ids and headers), for every action and locale, with
+/// `removeDecoratorsFromModel` false and true, and stages files whose
+/// ASTs equal the full extract's; moving the epoch drops the memo.
 #[test]
 fn the_extract_memo_writes_what_a_full_extract_writes() {
     let mm = |v: &str| json!([{"$class": "concerto.metamodel@1.0.0.DecoratorString", "value": v}]);
@@ -137,11 +135,11 @@ fn the_extract_memo_writes_what_a_full_extract_writes() {
     assert!(handle.dcs_memo.get_mut().is_none());
 }
 
-/// P5-94: the flat staging result, read back the way the TS side reads
-/// it (the implicit import's short names appended for a non-system
-/// file), is the `{"id", "header"}` result the removed text staging
-/// bindings returned (P5-103), for a canonical file, a
-/// system file, an unversioned system file and a file with no header.
+/// The flat staging result, read back the way the TS side reads it
+/// (the implicit import's short names appended for a non-system file),
+/// is the `{"id", "header"}` result the removed text staging bindings
+/// returned, for a canonical file, a system file, an unversioned
+/// system file and a file with no header.
 #[test]
 fn flat_staged_text_reads_back_as_the_staged_result() {
     fn read_back(text: &str) -> Value {
@@ -196,7 +194,7 @@ fn flat_staged_text_reads_back_as_the_staged_result() {
     assert_eq!(flat_staged_text(7, None).unwrap(), "[7]");
 }
 
-/// P5-28: [`staged_header_from_parts`] of a canonical file gives what
+/// [`staged_header_from_parts`] of a canonical file gives what
 /// `modelFileFromAstHeader` sets: the version, the short names in
 /// order (an alias in place of its type's name, the implicit system
 /// import last) and the URI map keyed by each import's first name.
@@ -230,15 +228,15 @@ fn staged_header_reads_a_canonical_file() {
     );
 }
 
-/// P5-28: a system file has no implicit import, and an unversioned
-/// system namespace gives a `null` version; no `imports` node is none.
+/// A system file has no implicit import, and an unversioned system
+/// namespace gives a `null` version; no `imports` node is none.
 #[test]
 fn staged_header_reads_a_system_file() {
     // The unversioned `concerto` parses as a name only, so it gets no
     // header and the view reads it through `modelFileFromAstHeader`, as
-    // for any other unversioned namespace (P5-101: this test expected
-    // a header, which `staged_header_from_parts` has never given; it
-    // failed on the integration head before this change).
+    // for any other unversioned namespace (this test expected a header;
+    // which `staged_header_from_parts` has never given; it failed on
+    // the integration head before this change).
     assert_eq!(header_value("concerto", None), None);
     let header = header_value("concerto@1.0.0", Some(&Value::Null)).unwrap();
     assert_eq!(header["version"], json!("1.0.0"));
@@ -246,9 +244,9 @@ fn staged_header_reads_a_system_file() {
     assert_eq!(header["shortNames"], json!([]));
 }
 
-/// P5-28: anything `modelFileFromAstHeader` would throw for, or read
-/// from a shape other than the canonical one, gives no header, so the
-/// view calls that binding over the JS values as before.
+/// Anything `modelFileFromAstHeader` would throw for, or read from a
+/// shape other than the canonical one, gives no header, so the view
+/// calls that binding over the JS values as before.
 #[test]
 fn staged_header_declines_what_the_binding_would_not_simply_set() {
     let one = |imp: Value| header_value("org.x@1.0.0", Some(&json!([imp])));
@@ -302,8 +300,8 @@ fn wire_number(text: &str) -> f64 {
     }
 }
 
-/// P4-10 review: without serde_json's `float_roundtrip` feature these
-/// two doubles came back 1 ULP off (…888 and …2917).
+/// Without serde_json's `float_roundtrip` feature these two doubles
+/// came back 1 ULP off (…888 and …2917).
 #[test]
 fn decode_wire_keeps_doubles_exact() {
     for n in [989.9951327998887_f64, 477.95269883162916_f64] {
@@ -373,9 +371,9 @@ fn decode_wire_keeps_nested_doubles_exact() {
     );
 }
 
-/// A wire `bigint` round-trips through `decode_wire`/`encode_wire`
-/// (task P2-11b-U6): the digit string crosses unchanged in both
-/// directions.
+/// A wire `bigint` round-trips through
+/// `decode_wire`/`encode_wire`: the digit string crosses unchanged
+/// in both directions.
 #[test]
 fn wire_bigint_round_trips() {
     let value: Value = serde_json::from_str(r#"{"@@oracle":"bigint","value":"10"}"#).unwrap();
@@ -383,10 +381,9 @@ fn wire_bigint_round_trips() {
     assert_eq!(encode_wire(&CoreValue::BigInt("10".to_string())), value);
 }
 
-/// P5-02 review (accordproject/concerto-rust#73): a lone (unpaired)
-/// UTF-16 surrogate escape is replaced with the `�` escape, which
-/// `serde_json` accepts, while every other field and a genuine
-/// surrogate *pair* survive untouched.
+/// A lone (unpaired) UTF-16 surrogate escape is replaced with the
+/// `�` escape, which `serde_json` accepts, while every other field
+/// and a genuine surrogate *pair* survive untouched.
 #[test]
 fn sanitize_lone_surrogate_escapes_replaces_only_unpaired_ones() {
     let fffd_escape = "\\uFFFD"; // literal 6-char JSON escape, not U+FFFD itself
@@ -451,9 +448,9 @@ const WIRE_SAMPLES: &[&str] = &[
     r#"{"@@oracle":"typed","ctor":"Resource","fqn":"org.acme@1.0.0.Item","fields":{}}"#,
 ];
 
-/// P5-16: `parse_wire` reads every sample as `decode_wire` does, and
-/// `WireOut` writes each decoded value as `encode_wire` plus `snapshot`
-/// do, byte for byte.
+/// `parse_wire` reads every sample as `decode_wire` does, and `WireOut`
+/// writes each decoded value as `encode_wire` plus `snapshot` do, byte
+/// for byte.
 #[test]
 fn parse_wire_and_wire_out_match_the_value_route() {
     for text in WIRE_SAMPLES {
@@ -484,8 +481,8 @@ fn parse_wire_and_wire_out_match_the_value_route() {
     }
 }
 
-/// P5-16: a wire shape the codec does not recognise fails `parse_wire`
-/// as it fails `decode_wire`, anywhere in the document.
+/// A wire shape the codec does not recognise fails `parse_wire` as it
+/// fails `decode_wire`, anywhere in the document.
 #[test]
 fn parse_wire_rejects_what_decode_wire_rejects() {
     for text in [
@@ -552,8 +549,8 @@ fn compact_bytes(value: &Value, out: &mut Vec<u8>) {
     }
 }
 
-/// P5-101 (E-7): `parse_wire_bytes` reads every sample, written in the
-/// compact layout, as `parse_wire` reads its text, and rejects what
+/// `parse_wire_bytes` reads every sample, written in the compact
+/// layout, as `parse_wire` reads its text, and rejects what
 /// `parse_wire` rejects; bytes not in the layout are rejected too.
 #[test]
 fn parse_wire_bytes_matches_parse_wire() {
@@ -594,8 +591,8 @@ fn parse_wire_bytes_matches_parse_wire() {
     }
 }
 
-/// P5-16: `CompactInstanceOut` writes the header values by position and
-/// the other fields in order, less the ones the view skips.
+/// `CompactInstanceOut` writes the header values by position and the
+/// other fields in order, less the ones the view skips.
 #[test]
 fn compact_instance_out_moves_the_header_out_of_the_fields() {
     let text = r#"{"@@oracle":"typed","ctor":"ValidatedResource","fqn":"org.acme@1.0.0.Item","fields":{"$namespace":"org.acme@1.0.0","$type":"Item","$identifierFieldName":"id","$identifier":"i1","id":"i1","$timestamp":{"@@oracle":"dayjs","valid":true,"ms":5,"utcOffset":0},"n":{"@@oracle":"number","value":"NaN"},"$class":"x","child":{"@@oracle":"typed","ctor":"Relationship","fqn":"org.acme@1.0.0.Other","fields":{"$class":"org.acme@1.0.0.Other"}},"labels":["a","b"]}}"#;
@@ -621,9 +618,9 @@ fn compact_instance_out_moves_the_header_out_of_the_fields() {
     );
 }
 
-/// P5-16: `WireOut::<true>` writes an integral number as an integer
-/// literal, which reads back as the same double, and every other number
-/// exactly as `WireOut::<false>` does.
+/// `WireOut::<true>` writes an integral number as an integer literal,
+/// which reads back as the same double, and every other number exactly
+/// as `WireOut::<false>` does.
 #[test]
 fn wire_out_ints_reads_back_the_same_numbers() {
     for n in [
@@ -654,7 +651,7 @@ fn wire_out_ints_reads_back_the_same_numbers() {
     }
 }
 
-/// P5-101 (D-3, E-7): the merged options read once per options text
+/// The merged options read once per options text
 /// ([`SerializerOptionsEntry`]) give `validateInstance`'s walk the same
 /// reading from `fromJSON`'s wire encoding (`-0` tagged, an `undefined`
 /// option kept as a tag) as from `JSON.stringify`'s text of the same
@@ -692,10 +689,10 @@ fn header_model(namespace: &str, imports: Value) -> Value {
     })
 }
 
-/// P5-101 (D-4): the staged entry [`stage_shared`] writes for a model
-/// file of a DecoratorManager result with this AST, as a value: its
-/// header ([`staged_header_from_parts`]) in the flat layout, under the
-/// stage id 0. `None` when there is no header.
+/// The staged entry [`stage_shared`] writes for a model file of a
+/// DecoratorManager result with this AST, as a value: its header
+/// ([`staged_header_from_parts`]) in the flat layout, under the stage
+/// id 0. `None` when there is no header.
 fn dcs_entry(ast: &Value) -> Option<Value> {
     let namespace = ast.get("namespace")?.as_str()?;
     let header = staged_header_from_parts(namespace, ast.get("imports"))?;
@@ -769,9 +766,9 @@ fn a_dcs_staged_entry_maps_imports_in_order_with_aliases_and_uris() {
     );
 }
 
-/// P5-101 (D-4): a system namespace has a header (no implicit import),
-/// as for any other staged file; every other case the binding would
-/// treat in its own way has none.
+/// A system namespace has a header (no implicit import), as for any
+/// other staged file; every other case the binding would treat in its
+/// own way has none.
 #[test]
 fn a_dcs_staged_entry_leaves_every_other_case_to_the_binding() {
     assert_eq!(
@@ -825,9 +822,10 @@ fn a_dcs_staged_entry_leaves_every_other_case_to_the_binding() {
     }
 }
 
-/// P5-73 (accordproject/concerto-rust#414): the two fixed system model
-/// texts get the header a load of them gives, and any other text, even the same model with other whitespace, key
-/// order or a malformed node, gets none, so it is loaded and checked.
+/// The two fixed system model texts get the header a load of them
+/// gives, and any other text, even the same model with other
+/// whitespace, key order or a malformed node, gets none, so it is
+/// loaded and checked.
 #[test]
 fn system_model_header_is_only_for_the_exact_system_texts() {
     let texts = concerto_core::rootmodel::system_model_json_texts();
@@ -836,7 +834,7 @@ fn system_model_header_is_only_for_the_exact_system_texts() {
             ModelFile::from_json_text_with_imports(text, None, Some(file_name.into()))
                 .unwrap()
                 .unwrap();
-        // P5-101 (D-4): the flat layout, its stage id 0.
+        // The flat layout, its stage id 0.
         let expected = flat_staged_text(
             0,
             staged_header_from_parts(file.namespace(), imports.as_ref()).as_ref(),

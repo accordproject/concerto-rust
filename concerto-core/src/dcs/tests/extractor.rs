@@ -182,10 +182,9 @@ fn map_keys_and_values_are_extracted_and_stripped() {
 
 /// Every action and both `removeDecoratorsFromModel` settings succeed
 /// (or, with `expect_ok` false, fail), and the memo route agrees with a
-/// fresh extraction ([`assert_memo_route_agrees`]). P5-103 (C-5) deleted
-/// the `Value` route this used to hold the encoding to; the golden text
-/// in [`the_encoding_matches_its_golden_text`] and the oracle corpus
-/// cover the encoding directly.
+/// fresh extraction ([`assert_memo_route_agrees`]). The golden text in
+/// [`the_encoding_matches_its_golden_text`] and the oracle corpus cover
+/// the encoding itself.
 fn assert_routes_agree(models: &Value, expect_ok: bool) {
     for action in [
         Action::ExtractAll,
@@ -215,11 +214,11 @@ fn assert_routes_agree(models: &Value, expect_ok: bool) {
     }
 }
 
-/// P5-56 (T2, F-A2): `extract(true)` is `extract(false)` (same result,
-/// same error) plus the source models, and `encode_source` over the kept
-/// models gives the same command sets and vocabularies (or the same
-/// error) as `extract` with any locale and either
-/// `removeDecoratorsFromModel`, every time it is called.
+/// `extract(true)` is `extract(false)` (same result, same error) plus
+/// the source models, and `encode_source` over the kept models gives the
+/// same command sets and vocabularies (or the same error) as `extract`
+/// with any locale and either `removeDecoratorsFromModel`, every time it
+/// is called.
 fn assert_memo_route_agrees(models: &Value, action: Action, remove: bool) {
     let direct = DecoratorExtractor::new(remove, "fr", "0.4.0", action)
         .extract(models_in(models.clone()), false);
@@ -279,10 +278,9 @@ fn assert_memo_route_agrees(models: &Value, action: Action, remove: bool) {
     }
 }
 
-/// P5-103 (C-5): the encoding's output for a model that exercises every
-/// argument kind, escapes, reserved-looking keys and map elements, held
-/// to the text the `Value` route (deleted by P5-103) gave for it, so the
-/// encoding keeps that route's bytes without the route itself.
+/// The encoding's output for a model that exercises every argument kind,
+/// escapes, reserved-looking keys and map elements, held to a golden
+/// text.
 #[test]
 fn the_encoding_matches_its_golden_text() {
     assert_routes_agree(&sample_models(), true);
@@ -423,8 +421,8 @@ fn the_encoding_matches_its_golden_text() {
     }
 }
 
-/// P5-98 (C-11): a `Term_*` decorator's number argument is written in
-/// the vocabulary YAML as JS `String(value)` writes it — TS 5.0.0's
+/// A `Term_*` decorator's number argument is written in the
+/// vocabulary YAML as JS `String(value)` writes it — TS 5.0.0's
 /// `extractDecorators` gives `unit: 0.000001` and `max: 1e+21`, where
 /// serde_json's own `Display` gave `1e-6` and `1e21`.
 #[test]

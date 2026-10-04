@@ -10,8 +10,6 @@
 //! query and fragment, leaving the remainder as the path. It stays private
 //! (`crate`-visible only), matching `parseUri`'s own `@private` marker in TS.
 //!
-//! Ledger: `src/model/resourceid.ts` (`parseUri`, `ResourceId` constructor,
-//! `fromURI`, `toURI`), `planned_task` P2-01+P4-03 (`SEAM_LEDGER.tsv`).
 //! `ResourceId` is otherwise untested directly in TS: its only coupled
 //! tests are `test/model/relationship.js`'s "#uri serialization" cases,
 //! reached through `Relationship.fromURI`/`toURI`. This port's tests lift
@@ -54,17 +52,12 @@ fn is_present(value: &Option<String>) -> bool {
     matches!(value, Some(s) if !s.is_empty())
 }
 
-/// Parse a URI into its component parts. Implements the subset of the
-/// generic URI parsing algorithm (RFC 3986) that `ResourceId` relies on:
-/// fragment, query, scheme, and authority (userinfo/host/port), leaving the
-/// remainder as the path.
+/// Parse a URI into its component parts: the subset of RFC 3986 that
+/// `ResourceId` relies on (fragment, query, scheme, authority), the rest
+/// being the path. Every delimiter is single-byte ASCII, so UTF-8 byte
+/// offsets split where TS splits by UTF-16 unit.
 ///
 /// TS: parseUri (`src/model/resourceid.ts`, private)
-///
-/// All delimiters this function scans for (`#`, `?`, `:`, `/`, `@`) are
-/// single-byte ASCII, so splitting on UTF-8 byte offsets lands on the same
-/// characters TS splits on by UTF-16 code unit (as in `model_util`'s ASCII
-/// splits).
 fn parse_uri(uri: &str) -> Result<UriComponents> {
     let mut s = uri;
     let mut fragment = None;
@@ -182,13 +175,10 @@ fn encode_uri(input: &str) -> String {
     out
 }
 
-/// A malformed percent-escape, as `decodeURIComponent` raises `URIError:
-/// URI malformed` in V8. Not a catalogue entry of its own: `ResourceId`'s
-/// TS source never catches this (only `parseUri`'s errors are caught, in
-/// `fromURI`), so a malformed escape is not a case any current fixture or
-/// coupled test exercises, and no ported member's message catalogue entry
-/// claims it. [`ContractError::pre_port`] carries the real V8 text without
-/// overclaiming a verbatim catalogue port (PORTING.md section 7.2).
+/// A malformed percent-escape, as V8's `decodeURIComponent` raises
+/// `URIError: URI malformed`. TS `ResourceId` never catches it, so it has
+/// no catalogue entry: [`ContractError::pre_port`] carries the V8 text
+/// (PORTING.md section 7.2).
 fn malformed_uri_error() -> Error {
     ContractError::pre_port(
         ErrorKind::InvalidArgument,
@@ -290,14 +280,9 @@ impl ResourceId {
         })
     }
 
-    /// Parse a URI into an identifier.
-    ///
-    /// Three formats are allowable:
-    /// 1. Valid resource URI argument: `resource:qualifiedTypeName#ID`
-    /// 2. Valid resource URI argument with missing URI scheme:
-    ///    `qualifiedTypeName#ID`
-    /// 3. URI argument containing only an ID, with legacy namespace and
-    ///    type arguments supplied.
+    /// Parse a URI into an identifier: `resource:qualifiedTypeName#ID`,
+    /// `qualifiedTypeName#ID`, or an ID alone with the legacy namespace and
+    /// type supplied.
     ///
     /// TS: ResourceId.fromURI (`src/model/resourceid.ts`)
     ///
@@ -416,9 +401,8 @@ mod tests {
     // ---- ResourceId constructor ----
 
     // Lifted from test/model/relationship.js's "#uri serialization" cases,
-    // which exercise ResourceId only through Relationship (no direct
-    // resourceid test file exists in TS; SEAM_LEDGER.tsv's
-    // coupled_tests_grep for `toURI` names this file).
+    // which exercise ResourceId only through Relationship (TS has no
+    // resourceid test file).
 
     #[test]
     fn constructor_missing_namespace() {
