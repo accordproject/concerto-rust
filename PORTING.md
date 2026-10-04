@@ -167,7 +167,7 @@ Mechanical rules. Apply them in order.
 The Rust engine owns the model graph (plan §3). `ModelManager` keeps its
 model files, declarations and properties in an append-only arena, addressed
 by the dense `u32` handles `ModelFileId`, `DeclId` and `PropId`
-(`model_manager.rs`, P1-04). A handle names the same element for the life of
+(`model_manager/`, P1-04). A handle names the same element for the life of
 the manager; loading a model only appends, ids are never reused, and a future
 removal (P1-06's rollback, `deleteModelFile`) must leave a tombstone.
 `ModelManager::generation()` counts mutations. The values of an enum
@@ -655,14 +655,14 @@ added `ErrorKind` with the four kinds its units raise (`IllegalModel`,
 `Validator`, `InvalidArgument`, `MalformedInput`) and the `ConcertoError::Contract` variant
 that carries a `ContractError` (2.1). The rest of `ConcertoError`
 (`concerto-core/src/error.rs`) is pre-port; its variants `ConcertoError::NamespaceNotFound`
-(raised in `model_manager.rs`) and `ConcertoError::ValidationFailed` (raised
+(raised in `model_manager/`) and `ConcertoError::ValidationFailed` (raised
 in `validation.rs`) have no TS class. P1-05 replaces `ConcertoError`'s
 variants with the `{kind, code, params, location}` shape, maps each use of
 those two variants to the kind the TS code throws at that point (`validate()`
 throws `IllegalModelException`), and deletes them. A kind that no TS class
 matches must not exist.
 
-Two failures of P1-04's arena (`model_manager.rs`) have no TS counterpart at
+Two failures of P1-04's arena (`model_manager/mod.rs`) have no TS counterpart at
 all: a full arena (`next_index`, more than `u32::MAX` elements) and a stale or
 foreign handle (`unknown`). TS keeps its graph in unbounded arrays and passes
 object references, so neither can happen there, no fixture observes them, and
@@ -1017,7 +1017,7 @@ concerto-core/src/
   error/            ErrorKind, the error type, the message catalogue and its renderers (P1-05)
   model_util.rs     modelutil.ts
   rootmodel.rs      rootmodelhelper.ts, decoratormodelhelper.ts
-  model_manager.rs  basemodelmanager.ts, modelmanager.ts, introspector.ts; the arena, DeclId/PropId, ResolutionContext (P1-04)
+  model_manager/    basemodelmanager.ts, modelmanager.ts, introspector.ts; the arena, DeclId/PropId, ResolutionContext (P1-04)
   introspect/
     declaration.rs  declaration.ts, classdeclaration.ts and its subclasses, enumdeclaration.ts
     property.rs     property.ts, field.ts, relationshipdeclaration.ts, enumvaluedeclaration.ts
@@ -1043,7 +1043,8 @@ The binding is its own crate at the repository root:
 ```
 concerto-wasm/      wasm-bindgen binding (P4-01): the ModelManagerHandle handle API, plus the P0-04b trial units
   Cargo.toml        its own [workspace]: the host build of concerto-core never compiles wasm-bindgen
-  src/lib.rs        bindings, argument coercion, the JS-callback ResolutionContext, error payloads
+  src/lib.rs        the crate root and its module map (its module docs)
+  src/*.rs          the bindings by area (handle, model_file, declarations, ...), argument coercion (js_values), error payloads (host)
   build.sh          cargo (wasm32) + wasm-bindgen-cli 0.2.128 (+ wasm-opt when present), 4 MiB size budget
   scripts/inline.mjs  pkg/concerto-engine.cjs and .mjs, with the .wasm inlined, instantiated synchronously
   scripts/*-smoke.*   the Node and headless-Chromium smokes (`npm run smoke`)

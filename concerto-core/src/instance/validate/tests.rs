@@ -10,8 +10,8 @@
     use serde_json::json;
 
     /// One model exercising every kind this validator supports: multi-level
-    /// inheritance (`Base` -> `Mid` -> `Leaf`, for the bug #1 fix), an
-    /// abstract concept (`Animal`, bug #2), enums, relationships, maps
+    /// inheritance (`Base` -> `Mid` -> `Leaf`), an
+    /// abstract concept (`Animal`), enums, relationships, maps
     /// (`String`, `DateTime`, `Boolean`, enum and object/relationship
     /// values), a regex-validated scalar, and Integer/Long/DateTime/String
     /// fields with validators.
@@ -182,7 +182,7 @@
         result.expect_err("expected a validation failure")
     }
 
-    // ---- Bug #1: only the direct super type's properties were merged ----
+    // ---- Every super type's properties are merged, not just the direct one's ----
 
     #[test]
     fn a_three_level_inherited_field_is_recognised() {
@@ -201,7 +201,7 @@
         assert!(err.to_string().contains("\"a\""), "{err}");
     }
 
-    // ---- Bug #2: abstract and nested $class values were not checked ----
+    // ---- Abstract and nested $class values are checked ----
 
     #[test]
     fn an_abstract_class_at_the_root_is_rejected() {

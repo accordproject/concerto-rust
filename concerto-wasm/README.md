@@ -57,10 +57,13 @@ are in concerto's `packages/concerto-core/src/engine/bindings.d.ts`.
 **`ModelManagerHandle`**, one per `ModelManager`. Model files, declarations
 and properties are named by the arena's dense `u32` handles, plain JS
 numbers, which keep naming the same element until a model file is updated
-or deleted. `epoch()` is the mutation counter every cached answer is keyed
-on: it moves iff the manager may have changed (staging and the extract memo
-never move it). `fork()` gives an independent copy; `free()` releases the
-handle (a `FinalizationRegistry` does it anyway).
+or deleted. `epoch()` is the handle's mutation counter: it moves iff the
+manager may have changed (staging and the extract memo never move it), and
+it stamps the handle's own caches (the `validatePropertyById` slots and the
+extract memo). The TS views key their caches on their own
+`EngineState.version`, not on `epoch()`. `fork()` gives an independent
+copy; `free()` releases the handle (a `FinalizationRegistry` does it
+anyway).
 
 | Group | Members |
 |---|---|
@@ -168,9 +171,10 @@ handles (`chromium-smoke.mjs` times `epoch()`, `modelFileId`, `getTypeName` and
 These agree with the spike:
 - Handle calls cost a few hundred ns.
 - A snapshot costs about as much as 5–8 string getters, but it carries the
-  element's whole state. A view that caches it and checks `epoch()` (the
-  views' key; `generation()` was measured, at the same cost)
-  pays that cost once per element per mutation.
+  element's whole state. A view that caches it and checks a mutation
+  counter (`generation()` was measured, at the same cost as `epoch()`; the
+  views now key on their own `EngineState.version`) pays that cost once per
+  element per mutation.
 
 Nothing here changes the spike's finding that the load cost is
 concerto-core's own rather than the boundary's; these numbers give no
