@@ -1,6 +1,5 @@
 //! [`Name`]: the `name` of a metamodel node, which borrows its text from
-//! the JSON text the node was read from, where it can (P5-93,
-//! accordproject/concerto-rust#443).
+//! the JSON text the node was read from, where it can.
 
 use std::borrow::{Borrow, Cow};
 use std::cell::RefCell;
