@@ -170,25 +170,6 @@ impl ModelManagerHandle {
             .map(|mf| mf.namespace().to_string())
     }
 
-    /// A model file's snapshot, as JSON text: `{namespace, version, fileName,
-    /// ast}`, `fileName` `null` when the file has none and `ast` as loaded.
-    #[wasm_bindgen(js_name = modelFileSnapshot)]
-    pub fn model_file_snapshot(&self, model_file: u32) -> JsResult<String> {
-        run(|| {
-            let id = ModelFileId::from_index(model_file);
-            let file = self
-                .manager
-                .file(id)
-                .ok_or_else(|| unknown(Node::ModelFile(id)))?;
-            snapshot(&json!({
-                "namespace": file.namespace(),
-                "version": file.version(),
-                "fileName": file.file_name(),
-                "ast": self.manager.file_ast(id).unwrap_or(file.ast()),
-            }))
-        })
-    }
-
     /// `Serializer.fromJSON`'s fast path: the document's wire encoding
     /// (`json_text`) read and validated as `fromJSON` does with
     /// `options_text`, the resulting resource written in the compact shape

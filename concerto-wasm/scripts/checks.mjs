@@ -129,18 +129,21 @@ export function runChecks(engine) {
     return { file, epoch: mm.epoch() };
   });
 
-  check('model file snapshot', () => {
-    const snap = JSON.parse(mm.modelFileSnapshot(file));
-    assert(snap.namespace === 'org.example@1.0.0', `namespace ${snap.namespace}`);
-    assert(snap.version === '1.0.0', `version ${snap.version}`);
-    assert(snap.fileName === 'example.cto', `fileName ${snap.fileName}`);
-    assert(snap.ast.declarations.length === 3, 'ast');
+  // The model file's AST as loaded: a filter that keeps every declaration.
+  const loadedAst = (h, f) => JSON.parse(h.modelFileFilterAst(f, () => true)).ast;
+
+  check('model file lookups', () => {
+    const ast = loadedAst(mm, file);
+    assert(ast.namespace === 'org.example@1.0.0', `namespace ${ast.namespace}`);
+    assert(ast.declarations.length === 3, 'ast');
+    const byName = mm.modelManagerGetModelFileByFileName('example.cto');
+    assert(byName === 'org.example@1.0.0', `fileName lookup ${byName}`);
   });
 
   check('handles stay valid across a later load', () => {
-    const before = mm.modelFileSnapshot(file);
+    const before = JSON.stringify(loadedAst(mm, file));
     mm.addModel(JSON.stringify({ ...MODEL, namespace: 'org.other@1.0.0' }));
-    assert(mm.modelFileSnapshot(file) === before, 'same snapshot for the same handle');
+    assert(JSON.stringify(loadedAst(mm, file)) === before, 'same AST for the same handle');
     assert(mm.modelFileId('org.example@1.0.0') === file, 'same handle');
   });
 
@@ -160,7 +163,7 @@ export function runChecks(engine) {
     const invalid = thrown(() => bad.validateModelFiles({}));
     assert(invalid instanceof EngineError, `validateModelFiles threw ${invalid}`);
     bad.free();
-    const handle = thrown(() => mm.modelFileSnapshot(1e6));
+    const handle = thrown(() => mm.modelFileIsLocalType(1e6, 'Person'));
     assert(handle instanceof EngineError && handle.payload.kind === 'TypeNotFound', `unknown handle threw ${handle}`);
     const json = thrown(() => mm.addModel('{'));
     assert(json instanceof SyntaxError, `malformed JSON threw ${json}`);
@@ -258,7 +261,7 @@ export function runChecks(engine) {
     target.free();
     // The source manager (and the file's own handle within it) is unchanged.
     assert(mm.modelFileId('org.example@1.0.0') === file, 'source manager untouched');
-    assert(JSON.parse(mm.modelFileSnapshot(file)).ast.declarations.length === 3, 'source file untouched');
+    assert(loadedAst(mm, file).declarations.length === 3, 'source file untouched');
   });
 
   check('modelFileFilterAst gives the predicate the imported declaration\'s own FQN', () => {

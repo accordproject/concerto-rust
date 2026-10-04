@@ -25,15 +25,20 @@ inside the budget, and 10-35% faster through the TS views). It writes:
 
 | File | For | Loads by |
 |---|---|---|
-| `pkg/concerto-engine.cjs` | Node `require` | the `nodejs` glue, with the `.wasm` inlined as base64 in place of `readFileSync` |
-| `pkg/concerto-engine.mjs` | `import`, browsers and Node | the `web` glue, `initSync` from the inlined bytes while the module is evaluated |
-| `pkg/package.json` | `@accordproject/concerto-engine` | `exports`: `require` → `.cjs`, `import` → `.mjs` |
+| `pkg/concerto_wasm.wasm` | all three loaders | the optimised module, as a raw `.wasm` file |
+| `pkg/concerto-engine.cjs` | Node `require` | the `nodejs` glue, `readFileSync` of `concerto_wasm.wasm` |
+| `pkg/concerto-engine.node.mjs` | Node `import` | the `web` glue, `initSync` from `readFileSync` of `concerto_wasm.wasm` while the module is evaluated |
+| `pkg/concerto-engine.mjs` | browsers | the `web` glue, `initSync` from the `.wasm` inlined as base64 while the module is evaluated |
+| `pkg/package.json` | `@accordproject/concerto-engine` | `exports`: `browser` → `.mjs`; `node` → `.node.mjs` (`import`) or `.cjs` (`require`); otherwise `import` → `.mjs`, `require` → `.cjs` |
 
-Both loaders instantiate **synchronously** when loaded; there is no fetch
-and no async compile. Both also export an async `init()`. On a browser main
-thread that refuses a synchronous compile (Chromium's limit is 8 MiB),
-`init()` compiles asynchronously and then instantiates with `initSync`.
-Otherwise it resolves at once.
+All three loaders instantiate **synchronously** when loaded. Node reads the
+raw `.wasm` (P5-44, accordproject/concerto-rust#365), so its loaders carry
+no base64. The browser loader keeps the inlined bytes until BC-32's
+explicit `await init()` loads the raw `.wasm` there (P5-45, #366). All
+three export an async `init()`. On a browser main thread that refuses a
+synchronous compile (Chromium's limit is 8 MiB), `init()` compiles
+asynchronously and then instantiates with `initSync`. Otherwise it resolves
+at once.
 
 Lint with `cargo fmt -- --check` and
 `cargo clippy --target wasm32-unknown-unknown --all-targets -- -D warnings`.
@@ -73,7 +78,7 @@ anyway).
 |---|---|
 | Loading | `addModel`, `addModelWithDefinitions`, `updateModelFile`, `deleteModelFile`, `updateExternalModels`, `validateModelFiles`, `validateAstValue`, `throwAlreadyExists`, `setDecoratorValidation`, `setDangerouslyAllowReservedSystemTypeNamesInUserModels` |
 | Staging | `stageModelFileBytes` (a model file loaded once, from UTF-8 JSON text or the compact binary layout, with the AST shape check folded in), `commitStagedModelFile(s)`, `validateAndCommitStagedModelFile`, `updateStagedModelFile`, `updateExternalModelsStaged`, `validateAstStaged`, `modelFileValidateStaged`, `dropStagedModelFile`, `stagedModelFileViewSnapshot`, `modelFileViewSnapshotOf` |
-| Lookups | `modelFileId`, `declarationId`, `modelFileSnapshot`, `getNamespaces`, `getTypeName`, `resolveType`, `derivesFrom`, `isAssignableTo`, `modelManagerGetModelFileByFileName`, and the `modelFile*` members by file handle (`GetImports`, `IsLocalType`, `GetTypeName`, `GetFullyQualifiedTypeName`, `ResolveType`, `Validate`, `ValidateDetached`, `FilterStaged`, `FilterAst`) |
+| Lookups | `modelFileId`, `declarationId`, `getNamespaces`, `getTypeName`, `resolveType`, `derivesFrom`, `isAssignableTo`, `modelManagerGetModelFileByFileName`, and the `modelFile*` members by file handle (`GetImports`, `IsLocalType`, `GetTypeName`, `GetFullyQualifiedTypeName`, `ResolveType`, `Validate`, `ValidateDetached`, `FilterStaged`, `FilterAst`) |
 | Arena answers (BC-52) | `modelUtilIsAssignableTo`, `modelUtilIsEnum`, `modelUtilIsMap`, `modelUtilIsScalar`, `modelUtilIsValidMapKeyScalar`, `scalarDeclarationValidate`, `decoratorValidate`, `classDeclarationGetAssignableClassDeclarations`, `classDeclarationGetDirectSubclasses` |
 | Serializer | `serializerFromJsonCompact(Bytes)`, `serializerToJson(Bytes)`: `Serializer.fromJSON`/`toJSON` in one call, over the wire encoding as JSON text or the compact layout |
 | Instances | `validateInstance` and `validateInstanceBytes` (the collect-all diagnostics, over the wire text or the compact layout), `validateResourceBinary`, `validatePropertyBinary`, `validationPropertySlot`, `validatePropertyById` (`ValidatedResource` validation in one call) |
@@ -111,7 +116,7 @@ Malformed JSON text is a JS `SyntaxError`.
 ## Smokes
 
 ```sh
-npm run smoke:node       # node scripts/node-smoke.cjs && node scripts/node-smoke.mjs && npm run smoke:hashdos
+npm run smoke:node       # node-smoke.cjs, node-smoke.mjs for each ESM loader, then smoke:hashdos
 npm run smoke:hashdos    # node --expose-gc scripts/hashdos.mjs
 npm run smoke:chromium   # node scripts/chromium-smoke.mjs (Playwright's chromium)
 ```
@@ -176,7 +181,7 @@ after `require`/`import`. In Chromium, importing the ESM loader took
 Chromium main thread, headless shell / full Chromium), measured on a
 handle API that also had `generation()` and declaration and property
 handles (`chromium-smoke.mjs` times `epoch()`, `modelFileId`, `getTypeName` and
-`modelFileSnapshot` instead):
+`modelFileViewSnapshotOf` instead):
 
 | Call | ns |
 |---|---|

@@ -133,8 +133,8 @@ async function timeCalls() {
     'epoch()': time(() => mm.epoch()),
     'modelFileId(namespace)': time(() => mm.modelFileId('concerto@1.0.0')),
     'getTypeName(fqn)': time(() => mm.getTypeName('concerto@1.0.0.Concept')),
-    'modelFileSnapshot(file)': time(() => mm.modelFileSnapshot(file)),
-    'JSON.parse(modelFileSnapshot(file))': time(() => JSON.parse(mm.modelFileSnapshot(file))),
+    'modelFileViewSnapshotOf(file)': time(() => mm.modelFileViewSnapshotOf(file, 'concerto@1.0.0')),
+    'JSON.parse(modelFileViewSnapshotOf(file))': time(() => JSON.parse(mm.modelFileViewSnapshotOf(file, 'concerto@1.0.0'))),
   };
   mm.free();
   return rows;
