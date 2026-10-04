@@ -1,20 +1,20 @@
 //! The `ModelFile` header bindings and the staged-header snapshot.
 //!
-//! Split out of `lib.rs` (P5-104, review M7); the crate root glob-imports it.
+//! Split out of `lib.rs`; the crate root glob-imports it.
 
 use super::*;
 
 /// The metamodel namespace, TS `MetaModelNamespace` (concerto-metamodel).
 pub(crate) const METAMODEL_NAMESPACE: &str = "concerto.metamodel@1.0.0";
 
-/// TS: `ModelFile.enforceImportVersioning(imp)` (P5-11,
-/// accordproject/concerto-rust#287): `ModelUtil.parseNamespace(imp.namespace)`
-/// must give a version, or the plain `Error` TS throws is raised; a
-/// namespace `parseNamespace` rejects raises its own error first.
+/// TS: `ModelFile.enforceImportVersioning(imp)`:
+/// `ModelUtil.parseNamespace(imp.namespace)` must give a version, or the plain
+/// `Error` TS throws is raised; a namespace `parseNamespace` rejects raises
+/// its own error first.
 pub(crate) fn enforce_import_versioning(imp: &JsValue) -> Result<()> {
     let namespace = get(imp, "namespace")?;
-    // BC-02 (R1, P5-50): `parseNamespace` rejects an unversioned namespace
-    // itself now; an unversioned import keeps this function's own error.
+    // BC-02: `parseNamespace` rejects an unversioned namespace itself;
+    // an unversioned import keeps this function's own error.
     let versioned = !is_unversioned_namespace(&namespace)
         && matches!(
             parse_namespace_js(&namespace, false)?,
@@ -34,21 +34,19 @@ pub(crate) fn enforce_import_versioning(imp: &JsValue) -> Result<()> {
     .into())
 }
 
-/// TS: `ModelFile.enforceImportVersioning(imp)` (P5-11,
-/// accordproject/concerto-rust#287), [`enforce_import_versioning`]. Additive.
+/// TS: `ModelFile.enforceImportVersioning(imp)`,
+/// [`enforce_import_versioning`].
 #[wasm_bindgen(js_name = modelFileEnforceImportVersioning)]
 pub fn model_file_enforce_import_versioning(imp: JsValue) -> JsResult<()> {
     run(|| enforce_import_versioning(&imp))
 }
 
-/// TS: `ModelFile.isCompatibleVersion()` (P5-11,
-/// accordproject/concerto-rust#287), on the JS `ModelFile` `view`: when
-/// `view.ast.concertoVersion` is truthy it must be a range this runtime
-/// supports ([`concerto_core::introspect::model_file::compatible_concerto_version`]),
-/// which is then stored as `view.concertoVersion`; otherwise the plain
-/// `Error` TS throws is raised. A truthy non-string is never a range
-/// node-semver can parse (`satisfies` and `minSatisfying` both give up on
-/// it), so it is always that `Error`. Additive.
+/// TS: `ModelFile.isCompatibleVersion()`, on the JS `ModelFile` `view`: when
+/// `view.ast.concertoVersion` is truthy it must be a range this runtime supports
+/// ([`concerto_core::introspect::model_file::compatible_concerto_version`]), which is
+/// then stored as `view.concertoVersion`; otherwise the plain `Error` TS throws is
+/// raised. A truthy non-string is never a range node-semver can parse (`satisfies`
+/// and `minSatisfying` both give up on it), so it is always that `Error`.
 #[wasm_bindgen(js_name = modelFileIsCompatibleVersion)]
 pub fn model_file_is_compatible_version(view: JsValue) -> JsResult<()> {
     use concerto_core::introspect::model_file::{
@@ -67,27 +65,23 @@ pub fn model_file_is_compatible_version(view: JsValue) -> JsResult<()> {
     })
 }
 
-/// TS: `ModelFile._fromAstHeader(ast)`, the part of `ModelFile.fromAst`
-/// before the declarations (P5-11, accordproject/concerto-rust#287), on the
-/// JS `ModelFile` `view`: parses and checks `ast.namespace` (every part a
-/// valid identifier, and a version: since BC-02, R1, P5-50, for a system
-/// file too, where TS 5.0.0 exempted `view.isSystemModelFile()`),
-/// then sets `view.namespace`, `view.version` and `view.imports` (a copy
-/// of `ast.imports`, plus the implicit import of the system types for a
-/// non-system file), and fills `view.importShortNames` (local name, alias
-/// included, to fully-qualified name) and `view.importUriMap` from the
-/// imports, rejecting an unversioned import, a wildcard import and an
-/// alias to a primitive type (the first through `view.enforceImportVersioning`,
-/// as TS calls it). Each error has TS's class, and the JS errors
-/// TS's own property reads and calls raise on a malformed AST keep theirs,
-/// since this runs over the same JS values in the same order. Additive.
+/// TS: `ModelFile._fromAstHeader(ast)`, the part of `ModelFile.fromAst` before
+/// the declarations, on the JS `ModelFile` `view`: checks `ast.namespace`
+/// (every part a valid identifier, and a version, for a system file too:
+/// BC-02, where TS 5.0.0 exempted `view.isSystemModelFile()`), then sets
+/// `view.namespace`, `view.version`, `view.imports` (with the implicit
+/// system import for a non-system file), `view.importShortNames` and
+/// `view.importUriMap`, rejecting an unversioned import, a wildcard import
+/// and an alias to a primitive type. Each error has TS's class, and a
+/// malformed AST raises TS's own JS errors, since this runs over the same JS
+/// values in the same order.
 #[wasm_bindgen(js_name = modelFileFromAstHeader)]
 pub fn model_file_from_ast_header(view: JsValue, ast: JsValue) -> JsResult<()> {
     let body = || -> Result<()> {
         let namespace = get(&ast, "namespace")?;
-        // BC-02 (R1, P5-50): an unversioned namespace keeps this header's
-        // own checks and errors (the identifier check, then the plain
-        // `Error` below), rather than `parseNamespace`'s.
+        // BC-02: an unversioned namespace keeps this header's own checks
+        // and errors (the identifier check, then the plain `Error`
+        // below), rather than `parseNamespace`'s.
         let (name, version) = if is_unversioned_namespace(&namespace) {
             (namespace.as_string().unwrap_or_default(), JsValue::NULL)
         } else {
@@ -112,9 +106,9 @@ pub fn model_file_from_ast_header(view: JsValue, ast: JsValue) -> JsResult<()> {
         let is_system = || -> Result<bool> {
             Ok(call(&view, "isSystemModelFile", &[], "this.isSystemModelFile")?.is_truthy())
         };
-        // BC-02 (R1, P5-50; DV-003 closed): every model file needs a
-        // version; TS 5.0.0 exempted a system one (`isSystemModelFile()`, a
-        // bare `concerto` namespace).
+        // BC-02: every model file needs a version; TS 5.0.0
+        // exempted a system one (`isSystemModelFile()`, a bare `concerto`
+        // namespace).
         if !version.is_truthy() {
             return Err(ContractError::pre_port(
                 ErrorKind::InvalidArgument,
@@ -229,12 +223,10 @@ pub fn model_file_from_ast_header(view: JsValue, ast: JsValue) -> JsResult<()> {
     run_naming(|| view.clone(), body)
 }
 
-/// P5-101 (D-7, accordproject/concerto-rust#455): the strict AST shape check
-/// ([`ModelManagerHandle::check_ast_shape`]) as a free function: it reads no
-/// handle, so the TS views call it without one. Throws an
-/// `IllegalModelException` for an AST that does not have the metamodel's
-/// shape; malformed JSON throws a JS `SyntaxError`. Additive: the handle
-/// method stays, and calls this.
+/// The strict AST shape check ([`ModelManagerHandle::check_ast_shape`]) as a
+/// free function: it reads no handle, so the TS views call it without one.
+/// Throws an `IllegalModelException` for an AST that does not have the
+/// metamodel's shape; malformed JSON throws a JS `SyntaxError`.
 #[wasm_bindgen(js_name = checkAstShape)]
 pub fn check_ast_shape(ast: &str) -> JsResult<()> {
     run(|| {
@@ -243,10 +235,8 @@ pub fn check_ast_shape(ast: &str) -> JsResult<()> {
     })
 }
 
-/// P5-101 (D-7, accordproject/concerto-rust#455): the precomputed system
-/// model header ([`ModelManagerHandle::system_model_file_header`]) as a
-/// free function: it reads no handle, so the TS views call it without one.
-/// P5-103 removed the handle method.
+/// The precomputed system model header as a free function: it reads no
+/// handle, so the TS views call it without one.
 #[wasm_bindgen(js_name = systemModelFileHeader)]
 pub fn system_model_file_header(ast: &str) -> Option<String> {
     system_model_header(ast)
@@ -267,8 +257,8 @@ pub(crate) fn system_model_header(ast: &str) -> Option<String> {
                         None,
                         Some(file_name.to_string()),
                     ) {
-                        // P5-101 (D-4): in the flat layout, its stage id 0
-                        // (nothing is staged).
+                        // In the flat layout, its stage id 0 (nothing is
+                        // staged).
                         Ok(Ok((file, imports))) => flat_staged_text(
                             0,
                             staged_header_from_parts(file.namespace(), imports.as_ref()).as_ref(),
@@ -286,18 +276,18 @@ pub(crate) fn system_model_header(ast: &str) -> Option<String> {
     })
 }
 
-/// P5-28 (accordproject/concerto-rust#333): what [`model_file_from_ast_header`]
-/// sets on a JS `ModelFile` being constructed, read from a staged file's
-/// namespace and its AST's `imports` node instead of from the JS values, so
-/// [`ModelManagerHandle::stage_model_file_bytes`] can return it with the
-/// stage. `{namespace, version, system, shortNames, uriMap}`: `version`
-/// is the namespace's version or `null` (TS `this.version`), `system`
-/// whether `isSystemModelFile()` holds during construction (TS: the
-/// namespace is `concerto` or starts with `concerto@`, since the file is not
-/// registered yet), `shortNames` the `importShortNames.set(key, fqn)` calls
-/// in order, and `uriMap` the `importUriMap[key] = uri` assignments in
-/// order. `this.imports` itself (a copy of `ast.imports` plus the implicit
-/// import) is left to the caller, which keeps the AST's own import objects.
+/// What [`model_file_from_ast_header`] sets on a JS `ModelFile` being
+/// constructed, read from a staged file's namespace and its AST's `imports`
+/// node instead of from the JS values, so
+/// [`ModelManagerHandle::stage_model_file_bytes`] can return it with the stage.
+/// `{namespace, version, system, shortNames, uriMap}`: `version` is the
+/// namespace's version or `null` (TS `this.version`), `system` whether
+/// `isSystemModelFile()` holds during construction (TS: the namespace is
+/// `concerto` or starts with `concerto@`, since the file is not registered
+/// yet), `shortNames` the `importShortNames.set(key, fqn)` calls in order, and
+/// `uriMap` the `importUriMap[key] = uri` assignments in order. `this.imports`
+/// itself (a copy of `ast.imports` plus the implicit import) is left to the
+/// caller, which keeps the AST's own import objects.
 ///
 /// `None` whenever that binding would not simply set these values: any
 /// error it would raise, and any AST shape outside the canonical one (a
@@ -397,8 +387,8 @@ pub(crate) fn staged_header_from_parts<'a>(
     }
     // The implicit import of the system types every non-system file gets
     // (`ModelFile.fromAst`), last: always versioned, with no aliases and no
-    // URI, so it adds exactly these short names (P5-76: without building
-    // its node and running the loop above over it).
+    // URI, so it adds exactly these short names (without building its node
+    // and running the loop above over it).
     if !system {
         short_names.extend(
             IMPLICIT_IMPORT_SHORT_NAMES
@@ -426,14 +416,12 @@ pub(crate) const IMPLICIT_IMPORT_SHORT_NAMES: [(&str, &str); 5] = [
     ("Event", "concerto@1.0.0.Event"),
 ];
 
-/// [`staged_header_from_parts`]'s header: what `modelFileFromAstHeader`
-/// would set on a JS `ModelFile`. P5-101 (D-4, accordproject/concerto-rust#455):
-/// the one staged-header format, which every staging path returns in the
-/// flat layout ([`FlatStaged`]): a model file staged from its AST
+/// [`staged_header_from_parts`]'s header: what `modelFileFromAstHeader` would
+/// set on a JS `ModelFile`. Every staging path returns it in the flat layout
+/// ([`FlatStaged`]): a model file staged from its AST
 /// ([`ModelManagerHandle::stage_model_file_bytes`]), a fixed system model's
 /// verdict ([`system_model_file_header`]) and a DecoratorManager result
-/// ([`stage_shared`]). P5-103 removed the legacy staging bindings, which
-/// serialized it as `{namespace, version, system, shortNames, uriMap}`.
+/// ([`stage_shared`]).
 #[derive(Debug, Serialize)]
 pub(crate) struct StagedHeader<'a> {
     namespace: Cow<'a, str>,
@@ -462,8 +450,8 @@ impl StagedHeader<'_> {
     }
 }
 
-/// P5-94 (accordproject/concerto-rust#444), P5-101 (D-4): a staging result
-/// in the flat layout: `[id]` when there is no header, otherwise
+/// A staging result in the flat layout: `[id]` when there
+/// is no header, otherwise
 ///
 /// ```text
 /// [id, namespace, version, system, n, key_1, name_1, ..., key_n, name_n,

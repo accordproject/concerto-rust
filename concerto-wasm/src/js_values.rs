@@ -1,6 +1,6 @@
 //! Reading JS values and calling JS collaborators (PORTING.md 1.4).
 //!
-//! Split out of `lib.rs` (P5-104, review M7); the crate root glob-imports it.
+//! Split out of `lib.rs`; the crate root glob-imports it.
 
 use super::*;
 
@@ -44,7 +44,7 @@ pub(crate) fn get(value: &JsValue, name: &str) -> Result<JsValue> {
         ));
     }
     if !value.is_object() && !value.is_function() {
-        // A primitive receiver: none of the trial's collaborator calls reads
+        // A primitive receiver: none of the collaborator calls this backs reads
         // a property of one, so it reads as `undefined`.
         return Ok(JsValue::UNDEFINED);
     }
@@ -75,8 +75,8 @@ pub(crate) fn call(
 
 /// `value.name?.()`: `None` when the method is nullish. `value` itself is
 /// read unguarded, matching every TS call site this backs (including
-/// `MapValueType.validate`'s deliberately-unguarded `decl.isMapDeclaration?.()`,
-/// P4-08e/#189 DV note): a nullish `value` throws the same
+/// `MapValueType.validate`'s deliberately unguarded
+/// `decl.isMapDeclaration?.()`): a nullish `value` throws the same
 /// "Cannot read properties of null/undefined" `TypeError` TS's property
 /// read would.
 pub(crate) fn call_optional(value: &JsValue, name: &str) -> Result<Option<JsValue>> {
@@ -90,19 +90,11 @@ pub(crate) fn call_optional(value: &JsValue, name: &str) -> Result<Option<JsValu
 /// A JS value as JSON, `None` for `undefined`. Values JSON cannot hold
 /// (`NaN`, `Infinity`, functions) are not modelled: no model AST holds one.
 ///
-/// A JS string may hold an unpaired UTF-16 surrogate (no valid Unicode
-/// scalar exists for one alone); `JSON.stringify` still emits it as a
-/// `\uD800`-range escape, which `serde_json` — building a real (UTF-8) Rust
-/// `String` — rejects. This used to be swallowed by `.ok()`, turning the
-/// *entire* value into `None` and silently discarding every other field
-/// alongside it (accordproject/concerto-rust#73, P5-02 review: a property
-/// AST's `name` field disappearing this way surfaced as a generic
-/// `Error('No name for type null')` instead of `property::process`'s own,
-/// correctly-classed `IllegalModelException` for an invalid name). Each
-/// unpaired escape is replaced with U+FFFD instead, so parsing still
-/// succeeds and every other field survives; the sanitized string content
-/// then fails whatever check reads it on its own, correctly-classed terms
-/// (e.g. `is_valid_identifier`), same as any other invalid string would.
+/// A JS string may hold an unpaired UTF-16 surrogate, which
+/// `JSON.stringify` emits as a `\uD800`-range escape and `serde_json`
+/// rejects. Each unpaired escape is replaced with U+FFFD, so the rest of the
+/// value survives and the string fails whatever check reads it with that
+/// check's own, correctly classed error (e.g. `is_valid_identifier`).
 pub(crate) fn to_json(value: &JsValue) -> Result<Option<Value>> {
     if value.is_undefined() {
         return Ok(None);
@@ -236,13 +228,10 @@ pub(crate) fn receiver(value: &JsValue, expression: &str, method: &str) -> Resul
 // JS collaborator calls (PORTING.md 1.4)
 // ---------------------------------------------------------------------------
 //
-// P5-106 (BC-52, accordproject/concerto-rust#460) retired the JS-callback
-// `ResolutionContext` (`JsContext`): the ModelUtil predicates, scalar and
-// decorator validation and the subclass queries now answer from the
-// manager's arena (the handle methods in "Arena answers", below). These two
-// helpers are what is left of it, for `MapKeyType.validate` and
-// `MapValueType.validate`, which still read the declaration
-// `this.modelFile.getType(...)` returns.
+// The ModelUtil predicates, scalar and decorator validation and the subclass
+// queries answer from the manager's arena (BC-52; "Arena answers", below).
+// These two helpers serve `MapKeyType.validate` and `MapValueType.validate`,
+// which read the declaration `this.modelFile.getType(...)` returns.
 
 /// TS `decl?.isScalarDeclaration?.()` and `decl?.isMapDeclaration?.()`:
 /// `None` when the method is missing.

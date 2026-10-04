@@ -1,8 +1,7 @@
-//! P5-110 (accordproject/concerto-rust#477): seeds the hasher of the maps
-//! keyed by untrusted input, `JsObject` (concerto-core-js, the keys of
-//! user-supplied instances) and concerto-core's tables keyed by model names
-//! and regex patterns ([`concerto_core::hash::SeededState`]), from the
-//! host's entropy.
+//! Seeds the hasher of the maps keyed by untrusted input, `JsObject`
+//! (concerto-core-js, the keys of user-supplied instances) and
+//! concerto-core's tables keyed by model names and regex patterns
+//! ([`concerto_core::hash::SeededState`]), from the host's entropy.
 //!
 //! On `wasm32-unknown-unknown` the standard library has no entropy source:
 //! `RandomState`'s keys are the same fixed values in every instantiation,

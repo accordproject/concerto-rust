@@ -1,14 +1,12 @@
 # concerto-wasm
 
-The WASM binding of `concerto-core`, built with wasm-bindgen (decision D2 of
-accordproject/concerto-rust#29). Its output, `pkg/`, is the npm package
-`@accordproject/concerto-engine`, which the concerto-core TS views load when
-`CONCERTO_ENGINE=rust` (PORTING.md 1.5 and 4). Task P4-01 (#60) built it, and
-it closes #28's WASM half.
+The WASM binding of `concerto-core`, built with wasm-bindgen. Its output,
+`pkg/`, is the npm package `@accordproject/concerto-engine`, which
+concerto-core's engine (`src/engine/`) loads (PORTING.md 1.5 and 4).
 
 The crate is not a member of the root workspace (it has its own empty
 `[workspace]`), so the host build of concerto-core never compiles
-wasm-bindgen (spike REPORT §5).
+wasm-bindgen.
 
 ## Build
 
@@ -22,10 +20,8 @@ npm run build        # sh build.sh
 `build.sh` runs cargo, then wasm-bindgen for both the `web` and the `nodejs`
 targets, then `wasm-opt -O3`, then `scripts/inline.mjs`. It fails when the
 optimised module is over the 4 MiB budget. The release profile and
-`wasm-opt` both optimise for speed rather than size since task P5-06
-(accordproject/concerto-rust#220): the module grows by about 1 MB (to about
-2.6 MB, still inside the budget) and the P5-04 workloads run 10-35% faster
-through the TS views. It writes:
+`wasm-opt` both optimise for speed rather than size (about 1 MB larger,
+inside the budget, and 10-35% faster through the TS views). It writes:
 
 | File | For | Loads by |
 |---|---|---|
@@ -44,7 +40,7 @@ Lint with `cargo fmt -- --check` and
 `Cargo.toml` denies `unwrap_used`, `expect_used`, `indexing_slicing` and
 `panic`.
 
-## Linking from concerto (decision D9: not published)
+## Linking from concerto (not published)
 
 The concerto checkout has a workspace package, `packages/concerto-engine`,
 named `@accordproject/concerto-engine`. It re-exports
@@ -53,75 +49,57 @@ concerto-rust checkout **next to** the concerto checkout. `npm install` in
 concerto links it into `node_modules`, where the shim finds it.
 `CONCERTO_ENGINE_MODULE=<path to concerto-engine.cjs>` still overrides it.
 
-## The handle API
+## The exported surface
 
-There is one exported object per `ModelManager`, `ModelManagerHandle`
-(spike "Input to P1-04"). Model files are named by the P1-04 arena's dense
-`u32` handles (`ModelFileId`), which are plain JS numbers. A handle keeps
-naming the same file for the life of the manager. The bindings below are
-the ones concerto-core calls (and `epoch()`, which the smoke checks read):
-P5-103 (accordproject/concerto-rust#457) removed every export with no
-caller there, the arena's declaration and property handles among them.
+The exports are the ones concerto-core's engine calls; their TS signatures
+are in concerto's `packages/concerto-core/src/engine/bindings.d.ts`.
 
-| Member | Returns |
+**`ModelManagerHandle`**, one per `ModelManager`. Model files, declarations
+and properties are named by the arena's dense `u32` handles, plain JS
+numbers, which keep naming the same element until a model file is updated
+or deleted. `epoch()` is the mutation counter every cached answer is keyed
+on: it moves iff the manager may have changed (staging and the extract memo
+never move it). `fork()` gives an independent copy; `free()` releases the
+handle (a `FinalizationRegistry` does it anyway).
+
+| Group | Members |
 |---|---|
-| `new ModelManagerHandle()` | a manager with `concerto@1.0.0` loaded |
-| `addModel(astJson, fileName?)` | the new model file's handle; `astJson` is `JSON.stringify(ast)` |
-| `validateModelFiles(modelFiles)` | nothing; throws the first problem, naming the JS `ModelFile` of `modelFiles` it was found in |
-| `epoch()` | the mutation counter; a cached snapshot is current while it is unchanged. It moves iff the manager may have changed; staging and the extract memo never move it (P5-101, D-7) |
-| `modelFileId(namespace)` | a handle, or `undefined` |
-| `modelFileSnapshot(file)` | JSON text `{namespace, version, fileName, ast}` |
-| `stageModelFileBytes(ast, definitions, fileName, flags)` | loads a model file without registering it (the one staging binding, P5-101) |
-| `free()` | releases the manager; a `FinalizationRegistry` does it anyway |
+| Loading | `addModel`, `addModelWithDefinitions`, `updateModelFile`, `deleteModelFile`, `updateExternalModels`, `validateModelFiles`, `validateAstValue`, `throwAlreadyExists`, `setDecoratorValidation`, `setDangerouslyAllowReservedSystemTypeNamesInUserModels` |
+| Staging | `stageModelFileBytes` (a model file loaded once, from UTF-8 JSON text or the compact binary layout, with the AST shape check folded in), `commitStagedModelFile(s)`, `validateAndCommitStagedModelFile`, `updateStagedModelFile`, `updateExternalModelsStaged`, `validateAstStaged`, `modelFileValidateStaged`, `dropStagedModelFile`, `stagedModelFileViewSnapshot`, `modelFileViewSnapshotOf` |
+| Lookups | `modelFileId`, `declarationId`, `modelFileSnapshot`, `getNamespaces`, `getTypeName`, `resolveType`, `derivesFrom`, `isAssignableTo`, `modelManagerGetModelFileByFileName`, and the `modelFile*` members by file handle (`GetImports`, `IsLocalType`, `GetTypeName`, `GetFullyQualifiedTypeName`, `ResolveType`, `Validate`, `ValidateDetached`, `Filter`, `FilterStaged`) |
+| Arena answers (BC-52) | `modelUtilIsAssignableTo`, `modelUtilIsEnum`, `modelUtilIsMap`, `modelUtilIsScalar`, `modelUtilIsValidMapKeyScalar`, `scalarDeclarationValidate`, `decoratorValidate`, `classDeclarationGetAssignableClassDeclarations`, `classDeclarationGetDirectSubclasses` |
+| Serializer | `serializerFromJsonCompact(Bytes)`, `serializerToJson(Bytes)`: `Serializer.fromJSON`/`toJSON` in one call, over the wire encoding as JSON text or the compact layout |
+| Instances | `validateInstance` (the collect-all diagnostics), `validateResourceBinary`, `validatePropertyBinary`, `validationPropertySlot`, `validatePropertyById` (`ValidatedResource` validation in one call) |
+| DecoratorManager | `dcsValidate`, `dcsDecorateModels`, `dcsExtract` |
 
-- The `ast` in a snapshot is the node as it was loaded (OD-3).
-- Snapshots are JSON text, which the view parses once and caches, because
-  per-field getters cost 100–350× more (spike REPORT §3).
+**`DcsManagerHandle`**: the input manager of a `DecoratorManager` call whose
+source manager's handle cannot stand for it (its `getAst`, `getModelFiles`
+or `resolveMetaModel` is not its own). Its `decorateModels` and `extract`
+give what the source handle's `dcsDecorateModels` and `dcsExtract` give:
+the result's model files staged into `target`, the new manager's handle,
+with `staged` (a flat `[stageId, ...header]` entry, or `null`, per result
+model) and `validated`. The engine builds one per call and frees it.
 
-**Errors.** Every core error is thrown through the error factory that the
-shim registers with `setHost(factory)`, as the payload
-`{kind, code, params, message, location, …}` (PORTING.md 2).
-- Loader errors that no unit has ported yet (a duplicate namespace, a
-  handle that names nothing) have `code: "pre-port"` and their message
-  verbatim.
-- Malformed JSON text is a JS `SyntaxError`.
+**Extract memo.** `dcsExtract` keeps a per-epoch memo on the handle, keyed
+by the epoch, whether the system models are walked, and the stripping
+action when `removeDecoratorsFromModel` is set: the second call at the same
+key keeps the result manager, its encoded AST and the source models, and
+every later call rebuilds only the command sets and vocabularies. Errors
+are never memoised, every call returns new JS objects, the staged files are
+shared with the kept result manager, and the memo never moves the epoch.
 
-**DCS operations on the source handle** (P5-55, F-A1).
-`ModelManagerHandle.dcsDecorateModels(target, commandSets, options)` and
-`dcsExtract(target, options, action)` (P5-101, D-10: `action` 0
-`extractDecorators`, 1 `extractVocabularies`, 2
-`extractNonVocabDecorators`) run a `DecoratorManager` operation on the
-source `ModelManager`'s own handle, which already mirrors its models. Each
-stages the result's model files into `target`, the new manager's
-`ModelManagerHandle` (another handle), and adds `staged` (a flat
-`[stageId, ...header]` entry, or `null`, for each result model) and
-`validated`. `dcsDecorateModels` validates its result with `target`'s
-`decoratorValidation`; none of them changes the handle or its epoch.
-`ModelManagerHandle.dcsValidate(commandSet)` is `DecoratorManager.validate`'s
-structural check against the handle's own manager: the shim calls it on the
-validation manager it has just built.
+**Free functions**: the per-element construction views (`modelFileViewSnapshot`,
+`scalarDeclarationProcess`, `classDeclarationProcess`, `propertyProcess`,
+`fieldProcess`, `decoratorProcess`, the `map*Process`/`Validate` members,
+the validator constructors and checks), `ModelUtil`'s string members,
+`resourceId*`, `checkAstShape`, `systemModelFileHeader`,
+`validateMetaModelInstance`, the `decoratorManager*` helpers, and `setHost`.
 
-**The DCS input manager** (P5-27, F6). `new DcsManagerHandle(models)` loads
-the source models of a `DecoratorManager` call, for a source manager whose
-`getAst`, `getModelFiles` or `resolveMetaModel` is not its own (so its
-handle cannot stand for it). Its `decorateModels(target, commandSets,
-options)` and `extract(target, options, action)` give what the source
-handle's operations give. The shim builds one per call and frees it
-(P5-103 removed the copy it kept per source manager). P5-103 also removed
-the per-call `decoratorManager*` bindings and the per-action extract
-bindings, which no caller used any more.
-
-**Extract result memo** (P5-56, F-A2). With `removeDecoratorsFromModel`
-false, `dcsExtract` keeps a per-epoch memo on the handle: the second call on
-unchanged models keeps the result manager, its encoded AST and the resolved
-source models, and every later call rebuilds only the command sets and
-vocabularies from them. Any change that moves the epoch drops the memo.
-Errors are never memoised, every call returns new JS objects and new staged
-clones, and the memo never moves the epoch.
-
-The P0-04b trial bindings (`modelUtil*`, `numberValidator*`,
-`scalarDeclaration*`) are unchanged. Their views still hand their JS objects
-back, until the graph they meet is Rust-backed (P4-06 … P4-08).
+**Errors.** Every core error is thrown through the error factory the engine
+registers with `setHost(factory)`, as the payload
+`{kind, code, params, message, location, …}` (PORTING.md 2). A message with
+no catalogue entry has `code: "pre-port"` and its message verbatim.
+Malformed JSON text is a JS `SyntaxError`.
 
 ## Smokes
 
@@ -132,8 +110,8 @@ npm run smoke:chromium   # node scripts/chromium-smoke.mjs (Playwright's chromiu
 
 - Both run the checks in `scripts/checks.mjs` against the loaded module:
   handles, snapshots, `epoch()`, stable handles across a load,
-  `validateModelFiles`, errors through the factory, `free()`, the staging,
-  serializer and DCS bindings, and a trial binding.
+  `validateModelFiles`, errors through the factory, `free()`, and the
+  staging, serializer and DCS bindings.
 - `node-smoke.cjs [module]` also takes a module to `require`. For example,
   from the concerto checkout:
   `node ../concerto-rust/concerto-wasm/scripts/node-smoke.cjs @accordproject/concerto-engine`
@@ -150,13 +128,13 @@ npm run smoke:chromium   # node scripts/chromium-smoke.mjs (Playwright's chromiu
 
 ## The spike, on the final crate
 
-The spike (P4-01a, #86) is written up in
+The WASM spike is written up in
 [`spikes/wasm/REPORT.md`](../spikes/wasm/REPORT.md). The smokes repeat its
 browser and boundary measurements on this crate. Conditions: macOS 13 on an
 i7-7820HQ, shared with other jobs, so timings are noisy.
 
 **Size.** 1,789,836 bytes after `wasm-opt -Oz` (the size-optimised build this
-section measured; the speed-optimised build P5-06 switched to is about 2.6 MB), against the spike's 1,115,534;
+section measured; the current speed-optimised build is about 2.6 MB), against the spike's 1,115,534;
 concerto-core has grown since the spike, which bound only `add_model` and
 `validate_models` (the size was not broken down further). That is 43% of the
 4 MiB budget and 21% of Chromium's 8 MiB sync-compile limit.
@@ -174,9 +152,9 @@ after `require`/`import`. In Chromium, importing the ESM loader took
 59–105 ms.
 
 **Boundary cost of the handle API**, in ns per call (best of 3 × 20,000,
-Chromium main thread, headless shell / full Chromium), measured before
-P5-103 removed `generation()` and the declaration and property handles
-(`chromium-smoke.mjs` now times `epoch()`, `modelFileId`, `getTypeName` and
+Chromium main thread, headless shell / full Chromium), measured on a
+handle API that also had `generation()` and declaration and property
+handles (`chromium-smoke.mjs` times `epoch()`, `modelFileId`, `getTypeName` and
 `modelFileSnapshot` instead):
 
 | Call | ns |
@@ -191,10 +169,10 @@ These agree with the spike:
 - Handle calls cost a few hundred ns.
 - A snapshot costs about as much as 5–8 string getters, but it carries the
   element's whole state. A view that caches it and checks `epoch()` (the
-  views' key since P5-06; `generation()` was measured, at the same cost)
+  views' key; `generation()` was measured, at the same cost)
   pays that cost once per element per mutation.
 
-For P4-12, nothing here changes the spike's finding that the load cost is
+Nothing here changes the spike's finding that the load cost is
 concerto-core's own rather than the boundary's; these numbers give no
 reason for a NAPI addon.
 

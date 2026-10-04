@@ -1,9 +1,8 @@
-//! The binding's process-global state (P5-101, D-7,
-//! accordproject/concerto-rust#455), in one place: every `thread_local` the
-//! crate keeps outside a [`ModelManagerHandle`](crate::ModelManagerHandle),
-//! with what it is keyed on and what invalidates it. WASM is
-//! single-threaded, so "thread-local" means "for the module instance": all
-//! of it is shared by every handle.
+//! The binding's process-global state, in one place: every `thread_local`
+//! the crate keeps outside a
+//! [`ModelManagerHandle`](crate::ModelManagerHandle), with what it is keyed
+//! on and what invalidates it. WASM is single-threaded, so "thread-local"
+//! means "for the module instance": all of it is shared by every handle.
 //!
 //! | State | Key | Invalidated by |
 //! |---|---|---|
@@ -28,14 +27,14 @@ thread_local! {
     pub(crate) static HOST: RefCell<Option<Host>> = const { RefCell::new(None) };
 
     /// The options of the last serializer call (`serializerFromJsonCompact`,
-    /// `serializerToJson`, `validateInstance`) as read from its options
-    /// text ([`SerializerOptionsEntry`], P5-16, P5-101 D-3). Keyed by that
-    /// text; any call with other text replaces it. Taken out for the
-    /// length of a call ([`crate::with_serializer_options`]).
+    /// `serializerToJson`, `validateInstance`) as read from its options text
+    /// ([`SerializerOptionsEntry`]). Keyed by that text; any
+    /// call with other text replaces it. Taken out for the length of a call
+    /// ([`crate::with_serializer_options`]).
     pub(crate) static SERIALIZER_OPTIONS: RefCell<Option<SerializerOptionsEntry>> =
         const { RefCell::new(None) };
 
-    /// P5-73: for each fixed system model text
+    /// For each fixed system model text
     /// ([`concerto_core::rootmodel::system_model_json_texts`]), the header
     /// text `ModelManagerHandle::system_model_file_header` returns, or
     /// `None` when its checked load failed (never expected; that text is

@@ -1,6 +1,6 @@
 //! The host functions the shim registers, and the error mapping (PORTING.md 2.3).
 //!
-//! Split out of `lib.rs` (P5-104, review M7); the crate root glob-imports it.
+//! Split out of `lib.rs`; the crate root glob-imports it.
 
 use super::*;
 
@@ -26,23 +26,23 @@ pub fn set_host(error_factory: Function) {
 /// What a binding can fail with: a JS exception raised by a callback (passed
 /// through unchanged), or a core error to map.
 ///
-/// The rule for errors raised here rather than by the error factory
-/// (P5-104, D-8): malformed JSON text is the JS `SyntaxError` `JSON.parse`
-/// throws ([`json_syntax`]); bytes not in the encoding a binding reads,
-/// which the TS side never writes, are a bare JS `TypeError` ([`utf8_text`],
-/// [`compact_layout_error`]); and a failure no input can cause is a plain
-/// JS `Error` ([`internal`]). Everything else goes through [`throw`].
+/// The rule for errors raised here rather than by the error factory:
+/// malformed JSON text is the JS `SyntaxError` `JSON.parse` throws
+/// ([`json_syntax`]); bytes not in the encoding a binding reads, which the
+/// TS side never writes, are a bare JS `TypeError` ([`utf8_text`],
+/// [`compact_layout_error`]); and a failure no input can cause is a plain JS
+/// `Error` ([`internal`]). Everything else goes through [`throw`].
 pub(crate) enum Error {
     Js(JsValue),
     Contract(Box<ContractError>),
-    /// A core error about an instance (P5-89, accordproject/concerto#1325),
-    /// with its diagnostics as the JSON array the payload carries as
-    /// `details` ([`diagnostics_json`]).
+    /// A core error about an instance (accordproject/concerto#1325), with
+    /// its diagnostics as the JSON array the payload carries as `details`
+    /// ([`diagnostics_json`]).
     Instance(Box<ContractError>, Value),
-    /// P5-101 (E-11, accordproject/concerto-rust#455): a value the
-    /// serializer fast path's wire codec cannot carry ([`wire_error`]): the
-    /// payload says so (`fastPathUnsupported`), so the TS side falls back
-    /// to its visitor path on that flag rather than on the message text.
+    /// A value the serializer fast path's wire codec cannot carry
+    /// ([`wire_error`]): the payload says so (`fastPathUnsupported`), so
+    /// the TS side falls back to its visitor path on that flag rather than
+    /// on the message text.
     Unsupported(Box<ContractError>),
 }
 
@@ -54,9 +54,8 @@ impl From<ContractError> for Error {
 
 impl From<CoreError> for Error {
     fn from(err: CoreError) -> Self {
-        // A check that no unit has ported yet (the manager's duplicate
-        // namespace, its circular-inheritance and handle checks) carries the
-        // `pre-port` code and its message verbatim (error/mod.rs,
+        // A check with no catalogue entry carries the `pre-port` code and
+        // its message verbatim (error/mod.rs,
         // `ContractError::pre_port`), so the shim still picks the TS class
         // from `kind`, like every other core error.
         Self::Contract(Box::new(err.into_contract()))
@@ -65,24 +64,24 @@ impl From<CoreError> for Error {
 
 pub(crate) type Result<T> = std::result::Result<T, Error>;
 
-/// What a binding returns to JS: its value, or the exception to throw
-/// (P5-104, D-8).
+/// What a binding returns to JS: its value, or the exception to
+/// throw.
 pub(crate) type JsResult<T> = std::result::Result<T, JsValue>;
 
-/// The JS `SyntaxError` that `JSON.parse` throws for malformed JSON text
-/// (P5-104, D-8).
+/// The JS `SyntaxError` that `JSON.parse` throws for malformed JSON
+/// text.
 pub(crate) fn json_syntax(e: serde_json::Error) -> Error {
     Error::Js(js_sys::SyntaxError::new(&e.to_string()).into())
 }
 
 /// JSON text a binding was given, parsed; malformed text is the
-/// [`json_syntax`] error (P5-104, D-8).
+/// [`json_syntax`] error.
 pub(crate) fn parse_json(text: &str) -> Result<Value> {
     serde_json::from_str(text).map_err(json_syntax)
 }
 
 /// A plain JS `Error` for a failure no input can cause, such as serializing
-/// a value serde built (P5-104, D-8).
+/// a value serde built.
 pub(crate) fn internal(e: impl std::fmt::Display) -> Error {
     Error::Js(js_sys::Error::new(&e.to_string()).into())
 }
@@ -96,10 +95,9 @@ pub(crate) fn kind_name(kind: ErrorKind) -> &'static str {
         ErrorKind::MalformedInput => "JsTypeError",
         ErrorKind::Metamodel => "Metamodel",
         // `ErrorKind` is `#[non_exhaustive]`; a new kind is a plain `Error`
-        // until the shim learns it. So are `Validator`, which no check has
-        // raised since BC-39, and `RecursionLimit`, raised by none since
-        // BC-11 reports a circular super type chain as an IllegalModel
-        // error (P5-103 removed their shim entries).
+        // until the shim learns it. So are `Validator`, which no check raises
+        // (BC-39), and `RecursionLimit`, which none raises either (BC-11: a
+        // circular super type chain is an IllegalModel error).
         _ => "Error",
     }
 }
@@ -185,9 +183,9 @@ pub(crate) fn throw(err: Error, model_file: Option<&JsValue>) -> JsValue {
     {
         set(&payload, "modelFile", model_file);
     }
-    // P5-104 (D-11): the factory is cloned out, and the borrow of `HOST`
-    // released, before it is called, so a re-entrant engine call from the
-    // factory (`setHost` included) cannot find `HOST` still borrowed.
+    // The factory is cloned out, and the borrow of `HOST` released,
+    // before it is called, so a re-entrant engine call from the factory
+    // (`setHost` included) cannot find `HOST` still borrowed.
     let factory = caches::HOST.with(|h| h.borrow().as_ref().map(|host| host.error_factory.clone()));
     match factory {
         Some(factory) => factory
@@ -198,12 +196,11 @@ pub(crate) fn throw(err: Error, model_file: Option<&JsValue>) -> JsValue {
 }
 
 /// [`throw`] for an error found in the model file registered under
-/// `namespace`, whose JS `ModelFile` is `model_files[namespace]` (P5-11,
-/// accordproject/concerto-rust#287): that file is attached exactly when
-/// concerto-core names a file for the error (`needsModelFile`), as
-/// `ModelFile.validate()` re-wraps the error of its own Rust call with
-/// `this` (modelfile.ts). With no `namespace`, it is [`throw`] naming no
-/// file.
+/// `namespace`, whose JS `ModelFile` is `model_files[namespace]`: that
+/// file is attached exactly when concerto-core names a file for the
+/// error (`needsModelFile`), as `ModelFile.validate()` re-wraps the
+/// error of its own Rust call with `this` (modelfile.ts). With no
+/// `namespace`, it is [`throw`] naming no file.
 pub(crate) fn throw_naming_file(
     err: Error,
     model_files: &JsValue,
@@ -219,7 +216,7 @@ pub(crate) fn throw_naming_file(
     throw(err, model_file.as_ref().filter(|mf| !nullish(mf)))
 }
 
-/// P5-76: text a binding was given as UTF-8 bytes (a JS `TextEncoder`'s
+/// Text a binding was given as UTF-8 bytes (a JS `TextEncoder`'s
 /// output); a `TypeError` for bytes that are not UTF-8, which a
 /// `TextEncoder` never writes.
 pub(crate) fn utf8_text(bytes: &[u8]) -> JsResult<&str> {
@@ -227,16 +224,15 @@ pub(crate) fn utf8_text(bytes: &[u8]) -> JsResult<&str> {
         .map_err(|e| js_sys::TypeError::new(&format!("the text is not UTF-8: {e}")).into())
 }
 
-/// P5-92: the error for an AST in the compact binary layout whose bytes are
-/// not in that layout (`stageModelFileBytes` with [`STAGE_COMPACT`]), which the TS side
-/// never writes: a `TypeError`, as for bytes that are not UTF-8
-/// ([`utf8_text`]).
+/// The error for an AST in the compact binary layout whose bytes are not in that layout
+/// (`stageModelFileBytes` with [`STAGE_COMPACT`]), which the TS side never writes: a
+/// `TypeError`, as for bytes that are not UTF-8 ([`utf8_text`]).
 pub(crate) fn compact_layout_error(e: serde_json::Error) -> Error {
     Error::Js(js_sys::TypeError::new(&e.to_string()).into())
 }
 
 /// Runs a binding body and maps its error: the one way a binding turns a
-/// [`Result`] into a [`JsResult`] (P5-104, D-8), with [`run_naming`].
+/// [`Result`] into a [`JsResult`], with [`run_naming`].
 pub(crate) fn run<T>(body: impl FnOnce() -> Result<T>) -> JsResult<T> {
     body().map_err(|e| throw(e, None))
 }

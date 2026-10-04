@@ -1,25 +1,21 @@
-//! Arena answers for the retired JsContext bindings (P5-106, BC-52).
+//! Arena answers to the model queries the TS views make (BC-52).
 //!
-//! Split out of `lib.rs` (P5-104, review M7); the crate root glob-imports it.
+//! Split out of `lib.rs`; the crate root glob-imports it.
 
 use super::*;
 
 // ---------------------------------------------------------------------------
-// Arena answers for the retired JsContext bindings (P5-106, BC-52)
+// Arena answers (BC-52)
 // ---------------------------------------------------------------------------
 //
-// accordproject/concerto-rust#460 (maintainer decision 2026-10-03, BC-52):
 // `ModelUtil.isAssignableTo`, `isEnum`, `isMap`, `isScalar` and
 // `isValidMapKeyScalar`, `ScalarDeclaration.validate`, `Decorator.validate`
 // and `ClassDeclaration.getAssignableClassDeclarations`/`getDirectSubclasses`
-// were free bindings over the JS objects, reading the model back through
-// JS callbacks (`JsContext`: `modelFile.getType`, which itself calls back
-// into this module, `getSuperType`, `getModelFiles`, ...). They are now
-// methods of the manager's handle, taking the model file, declaration or
+// are methods of the manager's handle, taking the model file, declaration or
 // property handle the view looked up, and answered by the arena and its
-// caches ([`ResolutionContext`] for [`ModelManager`]). A replaced view
-// method is not called; `isAssignableTo` still reads the property's own
-// type (`getFullyQualifiedTypeName`) in TS, since the serializer hands it
+// caches ([`ResolutionContext`] for [`ModelManager`]) rather than by JS
+// callbacks. `isAssignableTo` still reads the property's own type
+// (`getFullyQualifiedTypeName`) in TS, since the serializer hands it
 // stand-ins for relationship map values.
 
 impl ModelManagerHandle {
@@ -197,12 +193,12 @@ impl ModelManagerHandle {
     /// construction, its "File '...': " decoration and the log call are
     /// never reimplemented here, so they cannot drift from TS's.
     /// `handleError` rethrows a caught `IllegalModelException` as it is
-    /// (BC-14, R1; TS 5.0.0 wrapped it again, DV-016). TS's outer `catch`
+    /// (BC-14; TS 5.0.0 wrapped it again; DV-016). TS's outer `catch`
     /// re-reports *every* thrown value — including V8's `TypeError` for a
     /// type with no `getProperties` (a decorator named after a primitive or
     /// a scalar) — through `missingDecorator`, so both of this method's
-    /// [`Error`] variants are routed the same way: a [`Error::Contract`] is
-    /// first turned into the JS exception it would coerce to ([`throw`]), so
+    /// `Error` variants are routed the same way: a `Error::Contract` is
+    /// first turned into the JS exception it would coerce to (`throw`), so
     /// `handleError` sees the same kind of value TS's `catch (err)` would
     /// have caught.
     #[wasm_bindgen(js_name = decoratorValidate)]

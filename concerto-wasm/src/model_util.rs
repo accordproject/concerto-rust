@@ -1,6 +1,6 @@
 //! The `ModelUtil` and `ResourceId` bindings.
 //!
-//! Split out of `lib.rs` (P5-104, review M7); the crate root glob-imports it.
+//! Split out of `lib.rs`; the crate root glob-imports it.
 
 use super::*;
 
@@ -38,21 +38,21 @@ pub(crate) fn parse_namespace_js(ns: &JsValue, disable: bool) -> Result<mu::Pars
 }
 
 /// Whether `ns` is a non-empty string with no `@`: a namespace with no
-/// version, which `parseNamespace` rejects since BC-02 (R1, P5-50), and
-/// which the model file header and `enforceImportVersioning` reject with
-/// their own errors, as TS 5.0.0 did.
+/// version, which `parseNamespace` rejects since BC-02, and which the
+/// model file header and `enforceImportVersioning` reject with their own
+/// errors, as TS 5.0.0 did.
 pub(crate) fn is_unversioned_namespace(ns: &JsValue) -> bool {
     ns.as_string()
         .is_some_and(|ns| !ns.is_empty() && !ns.contains('@'))
 }
 
-/// TS: ModelUtil.parseNamespace, with the version checked in Rust only
-/// (P5-20, F4): no `semver.parse` callback, and the result comes back as
-/// one string rather than an object built property by property across the
-/// boundary. It throws what `ModelUtil.parseNamespace` throws. Otherwise the
-/// first character says which result it is, and the rest holds its parts
-/// separated by `@` (no part can contain one: the namespace has at most
-/// one, and `name` and `version` are the text either side of it):
+/// TS: ModelUtil.parseNamespace, with the version checked in Rust only: no
+/// `semver.parse` callback, and the result comes back as one string rather
+/// than an object built property by property across the boundary. It throws
+/// what `ModelUtil.parseNamespace` throws. Otherwise the first character
+/// says which result it is, and the rest holds its parts separated by `@`
+/// (no part can contain one: the namespace has at most one, and `name` and
+/// `version` are the text either side of it):
 /// - `N<name>`: `{ name }` (`disableVersionParsing`);
 /// - `U<name>@<escapedNamespace>`: no version, so `version` and
 ///   `versionParsed` are `null`;
@@ -116,7 +116,7 @@ pub fn model_util_capitalize_first_letter(string: JsValue) -> JsResult<String> {
 }
 
 /// TS: ModelUtil.isValidIdentifier. A non-string (`undefined`, `null`, a
-/// number, ...) is not a valid identifier (BC-01, R1). TS 5.0.0 passed it to
+/// number, ...) is not a valid identifier (BC-01). TS 5.0.0 passed it to
 /// `RegExp.prototype.test`, which converts it with `String()`, so
 /// `undefined` and `null` answered `true` (DV-002).
 #[wasm_bindgen(js_name = modelUtilIsValidIdentifier)]
@@ -222,7 +222,7 @@ pub fn resource_id_from_uri(
         // `TypeError` for a non-string `uri`; `fromURI` catches that and
         // reports it as the same "Invalid URI" error a malformed string
         // produces, keyed on `String(uri)`. A non-string `uri` must not be
-        // silently coerced into a valid id (PORTING.md 1.4 / P4-03 review).
+        // silently coerced into a valid id (PORTING.md 1.4).
         let uri = uri.as_string().ok_or_else(|| {
             js_string(&uri)
                 .map(|rendered| {
@@ -265,13 +265,13 @@ pub fn resource_id_to_uri(namespace: JsValue, type_name: JsValue, id: JsValue) -
 }
 
 /// TS: `ResourceId.fromURI` over many URIs at once, for the visitor path of
-/// a relationship-typed map (P5-113, accordproject/concerto-rust#480): one
-/// crossing per map rather than one per value. `uris` is an array of URI
-/// strings, all read with the same legacy namespace and type. The result is
-/// flat, three slots per URI: its `namespace`, `type` and `id`, or
-/// `undefined` in all three when that URI is not a string or does not parse.
-/// The caller then reads that one URI with `resourceIdFromURI`, which throws
-/// its error at the same point of the walk as before.
+/// a relationship-typed map: one crossing per map rather than one per value.
+/// `uris` is an array of URI strings, all read with the same legacy
+/// namespace and type. The result is flat, three slots per URI: its
+/// `namespace`, `type` and `id`, or `undefined` in all three when that URI
+/// is not a string or does not parse. The caller then reads that one URI
+/// with `resourceIdFromURI`, which throws its error at the same point of the
+/// walk as before.
 #[wasm_bindgen(js_name = resourceIdsFromURIs)]
 pub fn resource_ids_from_uris(
     uris: Array,
@@ -309,8 +309,8 @@ pub fn resource_ids_from_uris(
 }
 
 /// TS: `ResourceId.prototype.toURI` over many identifiers at once, for the
-/// visitor path of a relationship-typed map (P5-113): one crossing per map
-/// rather than one per value. `fields` is flat, three slots per identifier
+/// visitor path of a relationship-typed map: one crossing per map rather
+/// than one per value. `fields` is flat, three slots per identifier
 /// (`namespace`, `type`, `id`). The result holds one URI per identifier, or
 /// `undefined` where a slot is not a string or the identifier is invalid;
 /// the caller then writes that one with `resourceIdToURI`.
