@@ -550,7 +550,7 @@ fn bench(c: &mut Criterion) {
         g.bench_function(format!("is_assignable_to/{set}"), |b| {
             b.iter(|| {
                 for (a, s) in &d.pairs {
-                    black_box(mm.is_type_assignable_to(a, s));
+                    black_box(mm.is_type_assignable_to(a, s).unwrap());
                 }
             })
         });

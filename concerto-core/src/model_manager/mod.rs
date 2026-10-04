@@ -173,6 +173,11 @@ struct ManagerOptions {
     /// ([`ModelManager::validate_ast`]) before its semantic validation.
     /// `false` by default.
     metamodel_validation: bool,
+    /// TS `ModelManagerOptions.addMetamodel`: set by
+    /// [`ModelManager::add_metamodel`], so that [`ModelManager::filter`]'s
+    /// new manager holds the metamodel from the start, as TS's constructor
+    /// does, and keeps it whole (BC-53).
+    add_metamodel: bool,
 }
 
 /// Owns a set of model files and resolves types across them.
@@ -936,7 +941,9 @@ impl ModelManager {
             }
             self.validate_detached_model_file(&model_file)?;
         }
-        self.add_shared_model_file(model_file)
+        self.add_shared_model_file(model_file)?;
+        self.options.add_metamodel = true;
+        Ok(())
     }
 
     /// The version of the manager's state, increased by every mutation: a
@@ -967,7 +974,10 @@ impl ModelManager {
 
     /// A new manager with only the declarations `keep` accepts (by fqn and
     /// declaration), dropping emptied files and filtering imports alike. The
-    /// decorator and root models are kept whole (BC-53). Same options; the
+    /// decorator and root models are kept whole (BC-53), and so is the
+    /// metamodel of a manager given [`ModelManager::add_metamodel`], which
+    /// the new manager adds first, as TS's `new BaseModelManager({
+    /// ...this.options })` does with `addMetamodel`. Same options; the
     /// files are validated together.
     ///
     /// TS: `BaseModelManager.filter(predicate)`.
@@ -990,9 +1000,12 @@ impl ModelManager {
         // recognised.
         //
         // BC-53: a declaration of a file `result` already holds from
-        // `Self::new()` is kept without asking `keep`, so the file it names
-        // stays whole in `result`.
+        // `Self::new()` (or `add_metamodel`) is kept without asking `keep`,
+        // so the file it names stays whole in `result`.
         let mut result = self.empty_like()?;
+        if self.options.add_metamodel {
+            result.add_metamodel()?;
+        }
         let keep = &keep;
         let result_ref = &result;
         let mut kept = vec![false; self.declarations.len()];

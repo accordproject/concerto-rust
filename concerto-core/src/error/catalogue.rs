@@ -187,6 +187,14 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
         sources: &["V8 (call of a non-function)"],
     },
     CatalogueEntry {
+        code: "engine-validateinstanceas-notassignable",
+        template: "'{type}' is not assignable to '{declared}'",
+        renderer: Renderer::Inline,
+        // `validate_instance_as`'s check that the value's own `$class` is
+        // assignable to the type asked for; TS has no such entry point.
+        sources: &["concerto-core validate_instance_as (no TS throw site)"],
+    },
+    CatalogueEntry {
         code: "engine-typeerror-inoperator",
         template: "Cannot use 'in' operator to search for '{key}' in {value}",
         renderer: Renderer::Inline,

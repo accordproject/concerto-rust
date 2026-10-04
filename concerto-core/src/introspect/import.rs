@@ -54,9 +54,11 @@ impl Import {
         }
     }
 
-    /// The names this import makes visible in the importing file. An aliased
-    /// type is visible under its alias rather than its declared name, so these
-    /// are the names a local declaration could collide with.
+    /// The names this import makes visible in the importing file, one per
+    /// [`Import::imported_names`] entry. An aliased type is visible under its
+    /// alias rather than its declared name, so these are the names a local
+    /// declaration could collide with. When `aliasedTypes` aliases a name
+    /// twice, the last alias wins, as TS `fromAst`'s `Map.set` has it.
     pub fn local_names(&self) -> Vec<&str> {
         match self {
             Self::Type(t) => vec![t.name.as_str()],
@@ -66,33 +68,24 @@ impl Import {
                 .map(|name| {
                     aliases(t)
                         .iter()
-                        .find(|aliased| &aliased.name == name)
+                        .rfind(|aliased| &aliased.name == name)
                         .map_or(name.as_str(), |aliased| aliased.aliased_name.as_str())
                 })
                 .collect(),
         }
     }
 
-    /// Resolves a short name this import names explicitly. As TS
-    /// `importShortNames`, an aliased type is registered only under its alias,
-    /// never under its declared name.
-    ///
-    /// TS: `ModelFile.fromAst` (modelfile.ts)
+    /// Deprecated: resolves a short name this import names explicitly, as
+    /// the fully-qualified name of the type it imports. An aliased type is
+    /// matched only under its alias. Model files resolve names through
+    /// [`ModelFile::fully_qualified_type_name`](crate::introspect::model_file::ModelFile::fully_qualified_type_name).
+    #[deprecated(since = "0.1.0", note = "use `ModelFile::fully_qualified_type_name`")]
     pub fn resolve(&self, short: &str) -> Option<String> {
-        match self {
-            Self::Type(t) if t.name == short => Some(qualify(&t.namespace, &t.name)),
-            Self::Type(_) => None,
-            Self::Types(t) => {
-                let aliased = aliases(t);
-                t.types.iter().find_map(|name| {
-                    let local_name = aliased
-                        .iter()
-                        .find(|a| &a.name == name)
-                        .map_or(name.as_str(), |a| a.aliased_name.as_str());
-                    (local_name == short).then(|| qualify(&t.namespace, name))
-                })
-            }
-        }
+        self.local_names()
+            .into_iter()
+            .zip(self.imported_names())
+            .find(|(local, _)| *local == short)
+            .map(|(_, name)| qualify(self.namespace(), name))
     }
 }
 

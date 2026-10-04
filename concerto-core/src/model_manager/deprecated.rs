@@ -1,7 +1,7 @@
 //! The deprecated wrappers kept for the pre-D11 names
 //! (docs/public-api.md section 5.2).
 
-use super::*;
+use super::{ModelFileId, ModelManager, Property, Result, Value};
 
 impl ModelManager {
     /// Loads a model from its JSON AST. Loading two models with the same

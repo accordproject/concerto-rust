@@ -119,19 +119,17 @@ impl Error {
     }
 
     js_compat_pub! {
-        /// A type that could not be resolved, with no catalogue entry:
-        /// `"pre-port"`, `typeName` set, and the message
-        /// `type not found: {type_name}`.
+        /// A type that could not be resolved: `TypeNotFoundException`'s
+        /// default message (`typenotfounderror-defaultmessage`), with
+        /// `typeName` set (table 2.3).
         pub fn type_not_found(type_name: impl Into<String>) -> Self {
-            let type_name = type_name.into();
-            let mut err = ContractError::pre_port(
-                ErrorKind::TypeNotFound,
-                format!("type not found: {type_name}"),
+            ContractError::type_not_found(
+                "typenotfounderror-defaultmessage",
+                Vec::new(),
+                type_name.into(),
                 None,
-            );
-            // `TypeNotFound` payloads carry `typeName` (table 2.3).
-            err.params.push(("typeName", type_name));
-            err.into()
+            )
+            .into()
         }
     }
 
@@ -149,11 +147,6 @@ impl Error {
             contract.model_file = file_name.map(Some);
             contract.into()
         }
-    }
-
-    /// Whether the error was made by [`Error::type_not_found`].
-    pub(crate) fn is_pre_port_type_not_found(&self) -> bool {
-        self.0.kind == ErrorKind::TypeNotFound && self.0.code == "pre-port"
     }
 }
 
@@ -2476,6 +2469,21 @@ mod tests {
 
     // TS: `ClassDeclaration._resolveSuperType` and `getSuperTypeDeclaration`
     // (src/introspect/classdeclaration.ts,190,553).
+    #[test]
+    fn golden_engine_validateinstanceas_notassignable() {
+        assert_eq!(
+            contract(
+                "engine-validateinstanceas-notassignable",
+                &[
+                    ("type", "org.acme@1.0.0.Cat"),
+                    ("declared", "org.acme@1.0.0.Dog")
+                ]
+            )
+            .message(),
+            "'org.acme@1.0.0.Cat' is not assignable to 'org.acme@1.0.0.Dog'"
+        );
+    }
+
     #[test]
     fn golden_classdeclaration_resolvesupertype_notfound() {
         assert_eq!(

@@ -462,20 +462,9 @@ impl ModelManagerHandle {
             self.bump_epoch();
             if let Err(err) = self.manager.validate_ast_value(file.ast()) {
                 self.staged.files.insert(stage, file);
-                // Marked (`metamodelCheck`, not enumerable), so the caller
-                // throws it as `validateAst` does, not re-wrapped.
-                let thrown = throw(err.into(), None);
-                if let Some(target) = thrown.dyn_ref::<Object>() {
-                    let descriptor = Object::new();
-                    set(&descriptor, "value", &JsValue::TRUE);
-                    set(&descriptor, "configurable", &JsValue::TRUE);
-                    let _ = Reflect::define_property(
-                        target,
-                        &JsValue::from_str("metamodelCheck"),
-                        &descriptor,
-                    );
-                }
-                return Err(thrown);
+                // Marked (`metamodelCheck`), so the caller throws it as
+                // `validateAst` does, not re-wrapped.
+                return Err(throw_with(err.into(), None, true));
             }
         }
         // Validated and registered in one step, shared
@@ -533,10 +522,11 @@ impl ModelManagerHandle {
         run(|| Ok(self.manager.derives_from(fqt1, fqt2)?))
     }
 
-    /// TS `BaseModelManager.isAssignableTo(fqn, baseFqn)`.
+    /// TS `BaseModelManager.isAssignableTo(fqn, baseFqn)`: `false` when
+    /// `fqn` is not found, and `derivesFrom`'s errors thrown.
     #[wasm_bindgen(js_name = isAssignableTo)]
-    pub fn is_assignable_to(&self, fqn: &str, base_fqn: &str) -> bool {
-        self.manager.is_type_assignable_to(fqn, base_fqn)
+    pub fn is_assignable_to(&self, fqn: &str, base_fqn: &str) -> JsResult<bool> {
+        run(|| Ok(self.manager.is_type_assignable_to(fqn, base_fqn)?))
     }
 
     /// TS `BaseModelManager.getNamespaces()`: every registered model file's
