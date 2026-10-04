@@ -1358,8 +1358,8 @@ fn check_relationship<V: ValidatorInput>(
 
 /// TS: `ResourceValidator.visitMapDeclaration` (resourcevalidator.ts), with
 /// the map's key and value kinds resolved once by the plan ([`MapPlan`]), or
-/// the error `ModelUtil.isScalar(mapDeclaration.getKey())` raises when the
-/// key's type does not resolve.
+/// the error building the plan raised, which is raised at the first entry
+/// that is not a system property, where TS's `obj.forEach` meets it.
 fn visit_map_declaration<V: ValidatorInput>(
     p: &mut Params,
     map_id: DeclId,
@@ -1370,7 +1370,6 @@ fn visit_map_declaration<V: ValidatorInput>(
     let Some(entries) = value.map_entries() else {
         return Err(not_a_map(&value.to_value()));
     };
-    let map_plan = map_plan.as_ref().map_err(Clone::clone)?;
     let map_fqn = p.mm.decl_fqn(map_id)?;
     let decl = p
         .mm
@@ -1382,6 +1381,9 @@ fn visit_map_declaration<V: ValidatorInput>(
         if key.as_str().is_some_and(model_util::is_system_property) {
             continue;
         }
+        // TS meets a plan error inside `obj.forEach`, so an empty map, or
+        // one of system keys only, never raises it.
+        let map_plan = map_plan.as_ref().map_err(Clone::clone)?;
         let mark = p.enter_map_key(key);
         let outcome = check_map_entry(p, map_fqn, decl, map_plan, key, value);
         let outcome = p.absorb(outcome);
@@ -1459,7 +1461,9 @@ fn check_map_slot<V: ValidatorInput>(
 }
 
 /// `ModelUtil.isScalar(mapDeclaration.getKey())`: `checkMapType` asks about
-/// the key's type for both the key and the value slot, and so does this.
+/// the key's type for both the key and the value slot, and so does this. A
+/// key type that does not resolve is not a scalar (`false`), as TS's
+/// `getType(...)?.isScalarDeclaration?.()` gives `undefined`.
 pub(super) fn map_key_is_scalar(
     mm: &ModelManager,
     map_fqn: &str,
@@ -1471,9 +1475,13 @@ pub(super) fn map_key_is_scalar(
     let Some(ti) = map.key_type() else {
         return Ok(false);
     };
+    // `modelFile.getType(...)?.isScalarDeclaration?.()`: a type that does
+    // not resolve is `undefined` there, never an error.
     let namespace = model_util::get_namespace(Some(map_fqn))?;
-    let fqn = mm.resolve_type_name_at(namespace, &ti.name, None)?;
-    Ok(mm.get_declaration(&fqn)?.is_scalar_declaration())
+    Ok(mm
+        .resolve_type_name_at(namespace, &ti.name, None)
+        .and_then(|fqn| mm.get_declaration(&fqn).map(Declaration::is_scalar_declaration))
+        .unwrap_or(false))
 }
 
 /// Whether a map key/value `$class` short kind names a declared type.
@@ -1910,8 +1918,13 @@ fn invalid_field_assignment_shape(
 /// `declared_fqn`: [`visit_class_declaration`] walks by the value's own
 /// `$class`, which suits `Resource.validate` but not
 /// [`ModelManager::validate_instance_as`], which validates against the type
-/// it names. `Ok(())` when `value` has no `$class` (the walk reports that)
-/// or its `$class` is `declared_fqn`.
+/// it names. `Ok(())` when `value` has no `$class` or a falsy one (the
+/// document is then read as `declared_fqn`, as `populate` and
+/// `collect_violations` read it), a non-string one (the read reports that),
+/// or when its `$class` is `declared_fqn`. An unknown `declared_fqn` is a
+/// `TypeNotFound` error for it, whether or not the document has a `$class`;
+/// an unknown own type is one for the own type; any other error resolving
+/// the two types is raised unchanged.
 pub(crate) fn check_assignable_to_declaration(
     mm: &ModelManager,
     declared_fqn: &str,
@@ -1920,12 +1933,16 @@ pub(crate) fn check_assignable_to_declaration(
     let Some(own_fqn) = value
         .as_object()
         .and_then(|o| o.get("$class"))
+        .filter(|c| crate::ecma::is_truthy(c))
         .and_then(Value::as_str)
     else {
         return Ok(());
     };
     if own_fqn == declared_fqn {
         return Ok(());
+    }
+    if mm.get_declaration(declared_fqn).is_err() {
+        return Err(Error::type_not_found(declared_fqn));
     }
     match mm.is_assignable_to(own_fqn, declared_fqn) {
         Ok(true) => Ok(()),
@@ -1938,7 +1955,8 @@ pub(crate) fn check_assignable_to_declaration(
             ],
         )
         .into()),
-        Err(_) => Err(Error::type_not_found(own_fqn)),
+        Err(err) if err.kind() == ErrorKind::TypeNotFound => Err(Error::type_not_found(own_fqn)),
+        Err(err) => Err(err),
     }
 }
 

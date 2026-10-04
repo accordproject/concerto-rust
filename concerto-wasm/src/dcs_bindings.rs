@@ -67,6 +67,7 @@ pub(crate) fn decorate_options_from_js(options: &Value) -> dcs::DecorateOptions 
             .unwrap_or(false),
         disable_metamodel_resolution: opt_bool(options, "disableMetamodelResolution"),
         disable_metamodel_validation: opt_bool(options, "disableMetamodelValidation"),
+        decorator_validation: None,
     }
 }
 
@@ -230,8 +231,6 @@ impl DcsManagerHandle {
         decorator_command_sets: JsValue,
         options: JsValue,
     ) -> JsResult<JsValue> {
-        self.manager
-            .set_decorator_validation(target.manager.decorator_validation().clone());
         run(|| staged_decorate_models(&self.manager, target, &decorator_command_sets, &options))
     }
 
@@ -312,6 +311,12 @@ pub(crate) fn staged_decorate_models(
 
     let options_json = to_json(options)?.unwrap_or_else(|| json!({}));
     let mut opts = decorate_options_from_js(&options_json);
+    // The result is validated with `target`'s `decoratorValidation`, as TS's
+    // `new ModelManager({decoratorValidation: ...}).fromAst(...)` does;
+    // otherwise the view, which trusts `validated`, would skip those checks.
+    // It is passed in, not set on `manager`, which would forget `manager`'s
+    // validated marks.
+    opts.decorator_validation = Some(target.manager.decorator_validation().clone());
 
     // `dcs::decorate_models` validates the result unless the command sets
     // are empty or `disable_metamodel_validation` (as the options stand
@@ -396,9 +401,9 @@ impl ModelManagerHandle {
     /// [`DcsManagerHandle::decorate_models`] on this handle's own manager.
     /// `target` is the new ModelManager's handle, never this one. The result
     /// is validated with `target`'s `decoratorValidation`, as
-    /// [`DcsManagerHandle::decorate_models`] validates it: this manager's
-    /// own option is set to it for the call and restored after, so the call
-    /// never changes this manager (nor its epoch).
+    /// [`DcsManagerHandle::decorate_models`] validates it, passed to
+    /// [`staged_decorate_models`] rather than set on this manager: the call
+    /// never changes this manager, its validated marks included.
     #[wasm_bindgen(js_name = dcsDecorateModels)]
     pub fn dcs_decorate_models(
         &mut self,
@@ -406,14 +411,7 @@ impl ModelManagerHandle {
         decorator_command_sets: JsValue,
         options: JsValue,
     ) -> JsResult<JsValue> {
-        let own = self.manager.decorator_validation().clone();
-        self.manager
-            .set_decorator_validation(target.manager.decorator_validation().clone());
-        let result = run(|| {
-            staged_decorate_models(&self.manager, target, &decorator_command_sets, &options)
-        });
-        self.manager.set_decorator_validation(own);
-        result
+        run(|| staged_decorate_models(&self.manager, target, &decorator_command_sets, &options))
     }
 
     /// [`DcsManagerHandle::extract_with_action`] on this handle's own
