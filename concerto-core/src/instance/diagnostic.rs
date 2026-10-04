@@ -1307,6 +1307,42 @@ mod tests {
         );
     }
 
+    /// No readings is not a panic. The verdict and the
+    /// error are still the read's, and the error's diagnostics are located
+    /// at the root.
+    #[test]
+    fn diagnose_read_takes_no_readings() {
+        let mm = manager();
+        let d = diagnose_read(&mm, None, &[], &options(), true, || Ok(()));
+        assert!(d.error.is_none() && d.report.is_valid());
+        let error = diagnose(
+            &mm,
+            None,
+            &person(json!({ "colour": "BLUE" })),
+            &options(),
+            false,
+        )
+        .error
+        .unwrap();
+        let d = diagnose_read(&mm, None, &[], &options(), true, || Err(error.clone()));
+        assert_eq!(d.error.as_ref(), Some(&error));
+        assert_eq!(
+            d.report.into_diagnostics(),
+            diagnostics_of_error(&mm, None, &Value::Null, &options(), &error)
+        );
+        // With a named type, the class check reads the missing document as
+        // `null`, which has no `$class`, so the read gives the verdict.
+        let d = diagnose_read(
+            &mm,
+            Some("org.acme@1.0.0.Person"),
+            &[],
+            &options(),
+            true,
+            || Ok(()),
+        );
+        assert!(d.error.is_none() && d.report.is_valid());
+    }
+
     /// One walk, so every collect-all diagnostic carries the message of the
     /// error the first-error walk would raise for it (the catalogue's TS
     /// wording), at the pointer it was found at.
