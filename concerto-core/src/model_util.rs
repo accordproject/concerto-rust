@@ -184,7 +184,7 @@ pub struct SemVer {
 
 /// `Number.MAX_SAFE_INTEGER`, the largest prerelease identifier that
 /// becomes a [`PrereleaseIdentifier::Number`].
-const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
+pub(crate) const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
 
 /// `Number.MAX_SAFE_INTEGER`, node-semver's bound on major, minor and patch.
 const MAX_SAFE_INTEGER_U64: u64 = 9_007_199_254_740_991;

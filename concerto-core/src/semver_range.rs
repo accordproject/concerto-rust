@@ -38,7 +38,7 @@
 use std::cmp::Ordering;
 use std::sync::LazyLock;
 
-use crate::model_util::{PrereleaseIdentifier, SemVer, semver_parse};
+use crate::model_util::{MAX_SAFE_INTEGER, PrereleaseIdentifier, SemVer, semver_parse};
 
 /// A partial version's major/minor/patch component: a concrete number, or a
 /// wildcard (`x`, `X`, `*`, or simply omitted — node-semver's X-Ranges treat
@@ -81,6 +81,12 @@ static PARTIAL_VERSION_REGEX: LazyLock<regress::Regex> = LazyLock::new(|| {
     regress::Regex::new(PARTIAL_VERSION_PATTERN).expect("PARTIAL_VERSION_PATTERN is valid")
 });
 
+/// A partial version, or `None` when it does not parse. As node-semver's
+/// `SemVer` constructor, which throws "Invalid major version" (so
+/// `satisfies` answers `false`), a major, minor or patch above
+/// `Number.MAX_SAFE_INTEGER` fails the parse, as in
+/// [`semver_parse`]; a numeric prerelease identifier becomes a number only
+/// below it, and stays a string otherwise.
 fn parse_partial(s: &str) -> Option<Partial> {
     let s = s.trim();
     if s.is_empty() {
@@ -89,9 +95,13 @@ fn parse_partial(s: &str) -> Option<Partial> {
     let m = PARTIAL_VERSION_REGEX.find(s)?;
     let group = |i: usize| m.group(i).map(|range| &s[range]);
     let part = |i: usize| match group(i) {
-        None => Part::Wild,
-        Some("x" | "X" | "*") => Part::Wild,
-        Some(digits) => digits.parse::<f64>().map_or(Part::Wild, Part::Num),
+        None => Some(Part::Wild),
+        Some("x" | "X" | "*") => Some(Part::Wild),
+        Some(digits) => match digits.parse::<f64>() {
+            Ok(n) if n > MAX_SAFE_INTEGER => None,
+            Ok(n) => Some(Part::Num(n)),
+            Err(_) => Some(Part::Wild),
+        },
     };
     let prerelease = match group(4) {
         None | Some("") => Vec::new(),
@@ -101,6 +111,7 @@ fn parse_partial(s: &str) -> Option<Partial> {
                 if !id.is_empty()
                     && id.bytes().all(|b| b.is_ascii_digit())
                     && let Ok(n) = id.parse::<f64>()
+                    && (0.0..MAX_SAFE_INTEGER).contains(&n)
                 {
                     return PrereleaseIdentifier::Number(n);
                 }
@@ -110,9 +121,9 @@ fn parse_partial(s: &str) -> Option<Partial> {
         // group(5) (build metadata) plays no part in ordering or bounds.
     };
     Some(Partial {
-        major: part(1),
-        minor: part(2),
-        patch: part(3),
+        major: part(1)?,
+        minor: part(2)?,
+        patch: part(3)?,
         prerelease,
     })
 }

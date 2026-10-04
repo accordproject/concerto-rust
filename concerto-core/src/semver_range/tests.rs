@@ -49,3 +49,19 @@ fn x_ranges() {
 fn an_unparseable_range_is_not_satisfied() {
     assert!(!satisfies("5.0.0", "not a range", true));
 }
+
+/// A component above `Number.MAX_SAFE_INTEGER` makes node-semver's
+/// `SemVer` constructor throw, so the range does not parse and `satisfies`
+/// is false, as `semver.satisfies('5.0.0', '>=1.0.0 <99999999999999999999.0.0')`
+/// is.
+#[test]
+fn a_component_above_max_safe_integer_fails_the_range() {
+    assert!(!satisfies(
+        "5.0.0",
+        ">=1.0.0 <99999999999999999999.0.0",
+        true
+    ));
+    assert!(!satisfies("5.0.0", "^9007199254740992", true));
+    assert!(!satisfies("5.0.0", "5.0.0 - 9007199254740992.0.0", true));
+    assert!(satisfies("5.0.0", ">=1.0.0 <9007199254740991.0.0", true));
+}
