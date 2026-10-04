@@ -1,6 +1,5 @@
 //! `JSONGenerator` (src/serializer/jsongenerator.ts): converts an
-//! [`Instance`] to a plain JSON object, with its checks and messages (task
-//! P3-01b, accordproject/concerto-rust#124).
+//! [`Instance`] to a plain JSON object, with its checks and messages.
 //!
 //! As with [`super::populator`], the TS visitor shell stays (PORTING.md
 //! section 5 row 6) and every check it runs is here, one function per TS
@@ -47,9 +46,9 @@ fn plain_error(code: &'static str, params: Vec<(&'static str, String)>) -> Error
     ContractError::new(ErrorKind::InvalidArgument, code, params).into()
 }
 
-/// TS: `JSONGenerator.convertToJSON`'s body (task P4-10,
-/// accordproject/concerto-rust#69): no dependency on the model manager, so
-/// the TS visitor shell can call it per field directly.
+/// TS: `JSONGenerator.convertToJSON`'s body: no dependency
+/// on the model manager, so the TS visitor shell can call
+/// it per field directly.
 pub fn convert_primitive(
     type_name: &str,
     obj: &JsValue,
@@ -76,7 +75,7 @@ pub(crate) struct Generator<'a> {
     mm: &'a ModelManager,
     options: &'a GeneratorOptions,
     /// `parameters.seenResources`. Keyed by identifiers from the instance,
-    /// so seeded (P5-110, PORTING.md 3.7).
+    /// so seeded (PORTING.md 3.7).
     seen_resources: SeededHashSet<String>,
     /// `parameters.dedupeResources`, seeded like `seen_resources`.
     dedupe_resources: SeededHashSet<String>,
@@ -92,8 +91,8 @@ fn as_resource(value: &JsValue) -> Option<&Instance> {
 }
 
 /// `for (let index in obj)`: the values a `for...in` over `obj` visits, in
-/// order: an array's items and an object's values borrowed, not copied
-/// (P5-102, C-6), and a string's UTF-16 units each as a new string.
+/// order: an array's items and an object's values borrowed, not copied,
+/// and a string's UTF-16 units each as a new string.
 fn for_in_values(obj: &JsValue) -> Result<Vec<Cow<'_, JsValue>>> {
     Ok(match obj {
         JsValue::Array(items) => items.iter().map(Cow::Borrowed).collect(),
@@ -189,13 +188,13 @@ impl<'a> Generator<'a> {
             result.insert("$id".to_string(), JsValue::String(id));
         }
         // `classDeclaration.getProperties()`: the property table and field
-        // types from the validation plan (P5-88; the only route since
-        // P5-99), and the chain's error, as `getProperties()` raises it.
+        // types from the validation plan, and the chain's error, as
+        // `getProperties()` raises it.
         let class_plan = plan::class_plan(self.mm, class_declaration.id)?;
         for index in 0..class_plan.props.len() {
             let (_, property) = class_plan.property(self.mm, index);
             let name = concerto_core::Named::name(property);
-            // P5-102 (C-6): the field's value is read in place, not copied.
+            // The field's value is read in place, not copied.
             let value = resource.get(name);
             if value.is_nullish() {
                 continue;
@@ -223,9 +222,9 @@ impl<'a> Generator<'a> {
         let Declaration::Map(map) = map_declaration.decl else {
             unreachable!("visit_map_declaration is only reached for a map");
         };
-        // P5-58 (BC-05, R1; DV-007): a relationship-typed value is written
-        // as a relationship property is, not as an embedded concept. Its
-        // target type is resolved at the first value, as TS resolves it.
+        // BC-05, DV-007: a relationship-typed value is written as a
+        // relationship property is, not as an embedded concept. Its target
+        // type is resolved at the first value, as TS resolves it.
         let is_relationship = model::is_relationship_map(map_declaration);
         let mut relationship_target: Option<String> = None;
         let mut result = JsObject::default();
@@ -236,7 +235,7 @@ impl<'a> Generator<'a> {
             if model_util::is_system_property(&key) {
                 continue;
             }
-            // Read in place; only a converted value is a new one (P5-102).
+            // Read in place; only a converted value is a new one.
             let mut value = Cow::Borrowed(value);
             if is_relationship {
                 if relationship_target.is_none() {
@@ -271,7 +270,7 @@ impl<'a> Generator<'a> {
             // `map.set(key, value)`, then `Object.fromEntries(map)`: a key
             // set again keeps its place and takes the new value, which is
             // what an insert into the key-ordered map does, in one hashed
-            // lookup (P5-102; it was a linear search per entry, O(n^2)).
+            // lookup.
             result.insert(key, value.into_owned());
         }
         Ok(JsValue::Object(result))
@@ -327,7 +326,7 @@ impl<'a> Generator<'a> {
 
     /// TS: JSONGenerator.convertToJSON. No dependency on `self.mm`, so it is
     /// [`convert_primitive`], a free function the concerto-wasm binding
-    /// (P4-10, jsongenerator.ts) calls directly per field.
+    /// (jsongenerator.ts) calls directly per field.
     fn convert_to_json(&mut self, field: &Field, obj: &JsValue) -> Result<JsValue> {
         convert_primitive(field.type_name(), obj, self.options)
     }
@@ -354,7 +353,7 @@ impl<'a> Generator<'a> {
     /// One relationship value: a resource written in full when
     /// `permitResourcesForRelationships` allows it and it is not already
     /// being written, otherwise its relationship text. A relationship-typed
-    /// map value goes through here too (P5-58, BC-05).
+    /// map value goes through here too (BC-05).
     fn relationship_item(
         &mut self,
         relationship: &RelationshipSlot,
@@ -419,7 +418,7 @@ fn typed_stack_found(obj: &JsValue) -> Result<String> {
 }
 
 /// The generator's options from the serializer's merged options. `pub`
-/// (not `pub(crate)`) so the concerto-wasm binding (P4-10) can build a
+/// (not `pub(crate)`) so the concerto-wasm binding can build a
 /// `GeneratorOptions` for [`convert_primitive`].
 pub fn generator_options(options: &JsObject) -> GeneratorOptions {
     let is_true = |key: &str| options.get(key) == Some(&JsValue::Bool(true));

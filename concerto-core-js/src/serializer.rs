@@ -1,7 +1,7 @@
 //! `Serializer` (src/serializer.ts): the constructor's checks, and
 //! `fromJSON`/`toJSON` as one whole-document call each (PORTING.md section
 //! 5 row 6, option B), over [`crate::populator`], [`crate::generator`] and
-//! [`concerto_core::instance::validate`] (task P3-01b, accordproject/concerto-rust#124).
+//! [`concerto_core::instance::validate`].
 
 use std::borrow::Cow;
 
@@ -76,7 +76,7 @@ impl Serializer {
 
     /// `options ? Object.assign({}, this.defaultOptions, options) :
     /// this.defaultOptions`: borrowed in the second case, which is read
-    /// only (P5-16: the copy was a measurable part of a `fromJSON` call).
+    /// only (the copy was a measurable part of a `fromJSON` call).
     fn options(&self, options: Option<&SerializerOptions>) -> Cow<'_, SerializerOptions> {
         match options {
             Some(options) => Cow::Owned(assign(&self.default_options, options)),
@@ -97,8 +97,8 @@ impl Serializer {
     }
 
     /// [`Self::from_json`] with its merged options already read
-    /// ([`from_json_options`]): a caller that makes many calls with the same
-    /// options reads them once (P5-16, accordproject/concerto-rust#310).
+    /// ([`from_json_options`]): a caller that makes many calls
+    /// with the same options reads them once.
     pub fn from_json_prepared(
         &self,
         mm: &ModelManager,
@@ -113,7 +113,7 @@ impl Serializer {
         // DV-015: TS has no type check here and either crashes in
         // `ModelUtil.getShortName`/`getNamespace` or, for an array, resolves
         // it to a `TypeNotFoundException`; kept as an explicit rejection
-        // (maintainer-accepted, accordproject/concerto-rust#156).
+        // (maintainer-accepted).
         let Some(class_name) = class_name.as_str() else {
             return Err(ContractError::pre_port(
                 ErrorKind::InvalidArgument,
@@ -172,9 +172,9 @@ impl Serializer {
         };
         let class_declaration = model::get_type(mm, &instance.class_fqn)?;
         let options = self.options(options);
-        // P5-102 (C-6): the resource is read in place. It is copied only
-        // when validation's write-back (`sync_identifiers`) changes it,
-        // which it seldom does, and never when `validate` is off.
+        // The resource is read in place. It is copied only when
+        // validation's write-back (`sync_identifiers`) changes it, which
+        // it seldom does, and never when `validate` is off.
         let mut synced: Option<JsValue> = None;
         if options.get("validate").is_some_and(JsValue::is_truthy) {
             // `classDeclaration.accept(validator, parameters)`:
@@ -397,11 +397,11 @@ mod tests {
         );
     }
 
-    /// P5-24 (BC-45, R1): population applies a non-strict `DateTime`
-    /// default only when the document gives the field no value (absent or
-    /// `null`), and then throws a `ValidationException`; a value of its own
-    /// replaces the default, at the root, in a nested concept and in a
-    /// transaction alike.
+    /// BC-45: population applies a non-strict `DateTime` default only when
+    /// the document gives the field no value (absent or `null`), and then
+    /// throws a `ValidationException`; a value of its own replaces the
+    /// default, at the root, in a nested concept and in a transaction
+    /// alike.
     #[test]
     fn from_json_applies_a_non_strict_date_time_default_only_when_it_stays() {
         let at = |default: &str| {
@@ -505,7 +505,7 @@ mod tests {
             message(from(json!({ "$class": "org.acme@1.0.0.Color" }))),
             "Attempting to create an ENUM declaration is not supported."
         );
-        // BC-08 (R1; DV-010 was V8's circular-JSON TypeError): an object that
+        // BC-08 (DV-010 was V8's circular-JSON TypeError): an object that
         // names an enum type and one of its values is an `Error` naming the
         // enum value.
         let unrecognised = from(json!({
@@ -532,8 +532,8 @@ mod tests {
             message(serializer().from_json(&mm, &json, Some(&options), &mut Env)),
             "Expected value at path `$.built` to be of type `DateTime` with format YYYY-MM-DDTHH:mm:ss[Z]"
         );
-        // P5-24 (BC-07, R1): without the flag, the same format rule and
-        // the same `ValidationException`; a strict string is accepted.
+        // BC-07: without the flag, the same format rule and the same
+        // `ValidationException`; a strict string is accepted.
         assert_eq!(
             message(serializer().from_json(&mm, &json, None, &mut Env)),
             "Expected value at path `$.built` to be of type `DateTime` with format YYYY-MM-DDTHH:mm:ss[Z]"
@@ -550,8 +550,8 @@ mod tests {
         );
     }
 
-    /// P5-51 (BC-10, R1; DV-012): the populator rejects `±Infinity` for
-    /// an Integer or Long field, with validation off as well as on (before,
+    /// BC-10, DV-012: the populator rejects `±Infinity` for an Integer or
+    /// Long field, with validation off as well as on (before,
     /// `Math.trunc(Infinity) === Infinity` let it through, and only the
     /// validator caught it).
     #[test]
@@ -642,10 +642,10 @@ mod tests {
             .collect()
     }
 
-    /// P5-58 (BC-05, R1; DV-007): a relationship-typed map value is a
-    /// relationship, as a relationship property is: a URI (or a bare
-    /// identifier) populates a `Relationship`, validates, and is written
-    /// back as its URI.
+    /// BC-05, DV-007: a relationship-typed map value is a relationship,
+    /// as a relationship property is: a URI (or a bare identifier)
+    /// populates a `Relationship`, validates, and is written back as its
+    /// URI.
     #[test]
     fn a_relationship_map_value_is_a_relationship() {
         let mm = model();
@@ -684,9 +684,9 @@ mod tests {
         );
     }
 
-    /// P5-58 (BC-05, R1; DV-007): an embedded resource in a relationship
-    /// map is read only with `acceptResourcesForRelationships`, validated
-    /// only with `permitResourcesForRelationships` or
+    /// BC-05, DV-007: an embedded resource in a relationship map is read
+    /// only with `acceptResourcesForRelationships`, validated only with
+    /// `permitResourcesForRelationships` or
     /// `convertResourcesToRelationships`, and written in full only with
     /// `permitResourcesForRelationships`: the options a relationship
     /// property takes, with the same outcomes.
@@ -806,7 +806,7 @@ mod tests {
         );
     }
 
-    // ---- P3-02: accordproject/concerto#1273's scenario table ----
+    // ---- accordproject/concerto#1273's scenario table ----
 
     fn contract_error(result: Result<Instance>) -> concerto_core::error::ContractError {
         match result {
@@ -1021,10 +1021,8 @@ mod tests {
     /// `TypeNotFoundException: Namespace is not defined for type "…"`
     /// instead. Either way, the underlying bug is the same missing type
     /// check, and Rust raises the same explicit rejection for every shape;
-    /// the maintainer accepted keeping Rust's clearer, explicit rejection
-    /// over reproducing either TS outcome (accordproject/concerto-rust#156,
-    /// whose decision and #160's follow-up both confirm this covers the
-    /// array shape too, not only the `TypeError` crash).
+    /// the maintainer accepted keeping Rust's explicit rejection over
+    /// reproducing either TS outcome, for the array shape too.
     #[test]
     fn a_non_string_class_on_the_document_is_an_explicit_error() {
         // `null`, `false`, `0` and `""` are falsy in JS and take the earlier
@@ -1083,9 +1081,9 @@ mod tests {
         );
     }
 
-    /// P5-99 (B-4, B-5): a relationship map's values are populated in the
-    /// document's order, one entry per key, each as a relationship with the
-    /// map's target as its default type.
+    /// A relationship map's values are populated in the document's order,
+    /// one entry per key, each as a relationship with the map's target as
+    /// its default type.
     #[test]
     fn from_json_populates_every_entry_of_a_relationship_map() {
         let mm = model();
@@ -1112,7 +1110,7 @@ mod tests {
         }
     }
 
-    /// P5-99 (B-3): `rejectUnknownKeys` and `rejectRequiredNull` read the
+    /// `rejectUnknownKeys` and `rejectRequiredNull` read the
     /// declaration's properties from the validation plan.
     #[test]
     fn from_json_strict_options_reject_unknown_keys_and_required_nulls() {
@@ -1162,7 +1160,7 @@ mod tests {
             .expect("an optional null is allowed");
     }
 
-    // ---- P5-102 (accordproject/concerto-rust#456, C-6) ----
+    // ---- Array values and identifier sync ----
 
     /// An asset with array fields, for `addArrayValue`.
     fn bag_model() -> ModelManager {

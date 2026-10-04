@@ -1,8 +1,7 @@
 //! The members of `Typed`, `Identifiable`, `Resource` and
 //! `ValidatedResource` that change an instance or check it against the
 //! model (src/model/*.ts): `setPropertyValue`, `addArrayValue` and
-//! `validate`, over an [`Instance`] (task P3-01b,
-//! accordproject/concerto-rust#124).
+//! `validate`, over an [`Instance`].
 //!
 //! D7 keeps these objects in TS; the checks they run are the validator's
 //! ([`concerto_core::instance::validate`]), which is where their Rust behaviour lives. These
@@ -10,9 +9,8 @@
 //! an instance the way TS does.
 //!
 //! The validator reads the instance's own values in place
-//! ([`concerto_core::instance::validate::ValidatorInput`], P5-102,
-//! accordproject/concerto-rust#456, C-6): no call copies the value or the
-//! object graph it checks.
+//! ([`concerto_core::instance::validate::ValidatorInput`]): no call
+//! copies the value or the object graph it checks.
 
 use crate::value::{Instance, InstanceKind, JsValue};
 use concerto_core::error::{ContractError, ErrorKind, Result};
@@ -45,9 +43,9 @@ pub fn set_property_value(
 ) -> Result<()> {
     if instance.kind == InstanceKind::ValidatedResource {
         let class_declaration = model::get_type(mm, &instance.class_fqn)?;
-        // The validation plan (P5-88): its name index and field; its
-        // chain's error, when it does not resolve, is the one
-        // `getProperty` raises.
+        // The validation plan: its name index and field; its chain's
+        // error, when it does not resolve, is the one `getProperty`
+        // raises.
         let class_plan = plan::class_plan(mm, class_declaration.id)?;
         let Some(index) = class_plan.find(prop_name) else {
             return Err(undeclared(instance, prop_name));
@@ -65,9 +63,9 @@ pub fn set_property_value(
     Ok(())
 }
 
-/// TS `Typed.addArrayValue`: `this[propName].push(value)`, in place
-/// (P5-102, C-6: the array is not copied), or a new one-element array when
-/// the property is falsy.
+/// TS `Typed.addArrayValue`: `this[propName].push(value)`, in place (the
+/// array is not copied), or a new one-element array when the property is
+/// falsy.
 fn typed_add_array_value(instance: &mut Instance, prop_name: &str, value: JsValue) -> Result<()> {
     match instance.props.get_mut(prop_name) {
         Some(JsValue::Array(items)) => items.push(value),
@@ -89,7 +87,7 @@ pub fn add_array_value(
 ) -> Result<()> {
     if instance.kind == InstanceKind::ValidatedResource {
         let class_declaration = model::get_type(mm, &instance.class_fqn)?;
-        // The validation plan (P5-88): its name index and field.
+        // The validation plan: its name index and field.
         let class_plan = plan::class_plan(mm, class_declaration.id)?;
         let Some(index) = class_plan.find(prop_name) else {
             return Err(undeclared(instance, prop_name));
@@ -108,11 +106,9 @@ pub fn add_array_value(
         }
         // `this[propName] ? this[propName].slice(0) : []`, then push, then
         // validate that array; `Typed.addArrayValue` then pushes onto the
-        // property itself. P5-102 (C-6): the value is pushed onto the
-        // property's own array first and validated there (and popped
-        // again when it fails), so neither the array nor the value is
-        // copied: three O(n) copies a push (O(n^2) to build an array one
-        // element at a time) became none.
+        // property itself. Here the value is pushed onto the property's own
+        // array and validated there (popped again when it fails), so nothing
+        // is copied.
         let current = instance.get(prop_name);
         if current.is_truthy() && !matches!(current, JsValue::Array(_)) {
             return Err(model::not_a_function("this[propName].slice"));
@@ -155,8 +151,8 @@ pub fn add_array_value(
 /// declaration, then what `ResourceValidator.visitClassDeclaration` writes
 /// back ([`sync_identifiers`]).
 ///
-/// The instance is validated in place (P5-102, C-6): it is moved into a
-/// [`JsValue`] for the walk and back out, without being copied.
+/// The instance is validated in place: it is moved into a [`JsValue`]
+/// for the walk and back out, without being copied.
 pub fn validate(mm: &ModelManager, instance: &mut Instance) -> Result<()> {
     let options = instance.validator_options;
     let root_resource_identifier = instance.fully_qualified_identifier();
@@ -182,13 +178,13 @@ pub fn sync_identifiers(mm: &ModelManager, instance: &mut Instance) -> Result<()
     if instance.kind == InstanceKind::Relationship {
         return Ok(());
     }
-    // Validation plan (P5-88): the identifier field from the plan.
+    // Validation plan: the identifier field from the plan.
     let identifier = plan::class_plan_by_name(mm, &instance.class_fqn)?.identifier_field(mm);
     if let Some(field) = identifier
         && field != "$identifier"
     {
         // Already the same value (the usual case: the constructor set both):
-        // the assignment would change nothing (P5-16).
+        // the assignment would change nothing.
         if instance.props.get("$identifier") != Some(instance.get_identifier()) {
             let id = instance.get_identifier().clone();
             instance.set("$identifier", id);
@@ -201,9 +197,9 @@ pub fn sync_identifiers(mm: &ModelManager, instance: &mut Instance) -> Result<()
 }
 
 /// Whether [`sync_identifiers`] would change `instance`: the same walk, in
-/// the same order and with the same errors, read only. P5-102 (C-6):
-/// `Serializer.toJSON` copies the resource to sync it only when it would
-/// change, which it seldom does (the constructor sets both fields).
+/// the same order and with the same errors, read only. `Serializer.toJSON`
+/// copies the resource to sync it only when it would change, which it
+/// seldom does (the constructor sets both fields).
 pub(crate) fn sync_needed(mm: &ModelManager, instance: &Instance) -> Result<bool> {
     if instance.kind == InstanceKind::Relationship {
         return Ok(false);
@@ -256,10 +252,10 @@ fn sync_value(mm: &ModelManager, value: &mut JsValue) -> Result<()> {
 }
 
 /// TS: `Resource.toJSON`: `this.getModelManager().getSerializer().toJSON(this)`,
-/// with `serializer` the model manager's own; for a `Relationship`, which
-/// is not a `Resource`, `Typed.toJSON`, which throws. `resource` holds the
-/// instance (anything else is the serializer's own error), and is passed
-/// on as it is, not copied (P5-102, C-6).
+/// with `serializer` the model manager's own; for a `Relationship`, which is not
+/// a `Resource`, `Typed.toJSON`, which throws. `resource` holds the instance
+/// (anything else is the serializer's own error), and is passed on as it is, not
+/// copied.
 pub fn to_json(
     mm: &ModelManager,
     resource: &JsValue,
