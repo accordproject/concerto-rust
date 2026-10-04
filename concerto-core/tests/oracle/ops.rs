@@ -102,10 +102,11 @@ use concerto_core::introspect::property::Property;
 use concerto_core::introspect::scalar::ScalarValidator;
 use concerto_core::introspect::validators::Validator;
 use concerto_core::introspect::{Declaration, DeclarationKind, MapDeclaration, Validate};
+use concerto_core::json;
+use concerto_core::json::Value;
 use concerto_core::model_manager::{DeclId, ModelManager, Node, PropId, ResolutionContext};
 use concerto_core::model_util::{self, ParsedNamespace};
 use concerto_core::validation;
-use serde_json::{Value, json};
 
 use super::Harness;
 use super::decode::{self, Decoded, Unsupported};
@@ -1641,7 +1642,7 @@ fn build_property_validator(
             }
             Property::Integer(p) => {
                 let ast = p.validator.as_ref().map_or(Value::Null, |v| {
-                    serde_json::to_value(v).expect("domain validator serializes")
+                    concerto_core::json::to_value(v).expect("domain validator serializes")
                 });
                 let built =
                     concerto_core::introspect::validators::NumberValidator::new(&elem, &ast)
@@ -1652,7 +1653,7 @@ fn build_property_validator(
             }
             Property::Long(p) => {
                 let ast = p.validator.as_ref().map_or(Value::Null, |v| {
-                    serde_json::to_value(v).expect("domain validator serializes")
+                    concerto_core::json::to_value(v).expect("domain validator serializes")
                 });
                 let built =
                     concerto_core::introspect::validators::NumberValidator::new(&elem, &ast)
@@ -1663,7 +1664,7 @@ fn build_property_validator(
             }
             Property::Double(p) => {
                 let ast = p.validator.as_ref().map_or(Value::Null, |v| {
-                    serde_json::to_value(v).expect("domain validator serializes")
+                    concerto_core::json::to_value(v).expect("domain validator serializes")
                 });
                 let built =
                     concerto_core::introspect::validators::NumberValidator::new(&elem, &ast)
@@ -2706,7 +2707,7 @@ fn get_scalar_field(r: &Replayed, id: PropId, property: &Property) -> Dispatch {
             "state divergence: getScalarField's resolved type did not load as a scalar".into(),
         ));
     };
-    let scalar_ast = match serde_json::to_value(scalar.ast()) {
+    let scalar_ast = match concerto_core::json::to_value(scalar.ast()) {
         Ok(v) => v,
         Err(e) => {
             return Dispatch::Fault(Fault::Harness(format!(
@@ -2804,7 +2805,7 @@ fn ran_with_effects(
     after: &[Option<Value>],
     attributed: Option<Attribution>,
 ) -> Dispatch {
-    let mut effects = serde_json::Map::new();
+    let mut effects = concerto_core::json::Map::new();
     for (i, (b, a)) in before.iter().zip(after).enumerate() {
         if let (Some(b), Some(a)) = (b, a)
             && b != a
@@ -3295,7 +3296,7 @@ fn decorator_manager_op(h: &Harness, member: &str, inputs: &Inputs) -> Faulty<Di
                     let mut summary =
                         recipe::summary_of(recipe::Kind::ModelManager, &model_manager);
                     restore_undefined_decorators(&r.mm, &mut summary);
-                    let mut out = serde_json::Map::new();
+                    let mut out = concerto_core::json::Map::new();
                     out.insert("modelManager".into(), summary);
                     if member != "extractVocabularies" {
                         out.insert(

@@ -31,7 +31,7 @@ fn model_manager_to_ast(mm: &ModelManager) -> Value {
 /// serialized without one).
 fn header_value(namespace: &str, imports: Option<&Value>) -> Option<Value> {
     staged_header_from_parts(namespace, imports)
-        .map(|header| serde_json::to_value(header).expect("a header serializes"))
+        .map(|header| concerto_core::json::to_value(header).expect("a header serializes"))
 }
 
 /// The JSON text of a full extract result (`{modelManager,
@@ -722,7 +722,7 @@ fn dcs_entry(ast: &Value) -> Option<Value> {
     let namespace = ast.get("namespace")?.as_str()?;
     let header = staged_header_from_parts(namespace, ast.get("imports"))?;
     Some(
-        serde_json::to_value(FlatStaged {
+        concerto_core::json::to_value(FlatStaged {
             id: 0,
             header: Some(&header),
         })

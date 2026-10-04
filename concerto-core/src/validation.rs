@@ -29,18 +29,18 @@ use crate::model_util::{self, get_namespace, is_primitive_type, qualify, short_n
 
 /// A class's own AST `location`, re-serialised from its typed `mm::Range`,
 /// for an error's `location` ([`Error::at`]).
-fn class_location(class: &ClassDeclaration) -> Option<serde_json::Value> {
+fn class_location(class: &ClassDeclaration) -> Option<crate::json::Value> {
     class.location().and_then(crate::error::location_value)
 }
 
 /// A property's own AST `location` (TS: `this.ast.location` inside
 /// `Property.validate`/`Decorated.validate`, where `this` is the property).
-fn property_location(property: &Property) -> Option<serde_json::Value> {
+fn property_location(property: &Property) -> Option<crate::json::Value> {
     property.location().and_then(crate::error::location_value)
 }
 
 /// A typed AST `location`, re-serialised only when an error is raised.
-fn lazy_location(range: Option<&mm::Range>) -> Option<serde_json::Value> {
+fn lazy_location(range: Option<&mm::Range>) -> Option<crate::json::Value> {
     range.and_then(crate::error::location_value)
 }
 

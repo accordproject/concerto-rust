@@ -26,7 +26,7 @@ use concerto_core::instance::InstanceEnv;
 use concerto_core::{ModelFile, ModelManager};
 use concerto_core_js::value::Instance;
 use concerto_core_js::{JsValue, Serializer, factory, resource};
-use serde_json::Value;
+use concerto_core::json::Value;
 
 /// Counts live heap bytes, for the plan's memory (`mem`).
 struct Counting;

@@ -39,7 +39,8 @@ use concerto_core::instance::validate::{ValidateOptions, validate_instance};
 use concerto_core::instance::{InstanceEnv, ValidationOptions};
 use concerto_core_js::{JsValue, Serializer};
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use serde_json::{Value, json};
+use concerto_core::json;
+use concerto_core::json::Value;
 
 const NUM_INSTANCES: usize = 500;
 

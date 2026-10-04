@@ -194,7 +194,7 @@ pub(crate) fn stage_shared<'h, 'a: 'h>(
                 return Value::Null;
             }
             let id = target.staged.insert_shared(Arc::clone(mf));
-            serde_json::to_value(FlatStaged { id, header }).unwrap_or(Value::Null)
+            concerto_core::json::to_value(FlatStaged { id, header }).unwrap_or(Value::Null)
         })
         .collect()
 }

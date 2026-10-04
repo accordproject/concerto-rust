@@ -1,4 +1,4 @@
-use serde_json::Value;
+use crate::json::Value;
 
 use super::{ARRAY, F64, FALSE, I32, NULL, OBJECT, STR, TRUE, to_value};
 
@@ -554,19 +554,19 @@ fn mutate(ast: &mut Value, rng: &mut u64) {
         Value::Null,
         Value::Bool(true),
         Value::Bool(false),
-        serde_json::json!(0),
-        serde_json::json!(-1),
-        serde_json::json!(1.5),
-        serde_json::json!(2_147_483_648_i64),
-        serde_json::json!(1_152_921_504_606_847_000_f64),
-        serde_json::json!(1e21),
-        serde_json::json!(""),
-        serde_json::json!("x"),
-        serde_json::json!("concerto.metamodel@1.0.0.StringProperty"),
-        serde_json::json!("concerto.metamodel@1.0.0.ConceptDeclaration"),
-        serde_json::json!([]),
-        serde_json::json!({}),
-        serde_json::json!({"$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "C"}),
+        crate::json!(0),
+        crate::json!(-1),
+        crate::json!(1.5),
+        crate::json!(2_147_483_648_i64),
+        crate::json!(1_152_921_504_606_847_000_f64),
+        crate::json!(1e21),
+        crate::json!(""),
+        crate::json!("x"),
+        crate::json!("concerto.metamodel@1.0.0.StringProperty"),
+        crate::json!("concerto.metamodel@1.0.0.ConceptDeclaration"),
+        crate::json!([]),
+        crate::json!({}),
+        crate::json!({"$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "C"}),
     ];
     let node = ast.pointer_mut(&at).unwrap();
     match (next(rng) % 5, node) {

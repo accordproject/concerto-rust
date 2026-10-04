@@ -510,7 +510,7 @@ mod tests {
         }
     }
 
-    fn manager(cto_ast: serde_json::Value) -> ModelManager {
+    fn manager(cto_ast: concerto_core::json::Value) -> ModelManager {
         let mut mm = ModelManager::new().expect("a model manager");
         mm.add_model_with_definitions(&cto_ast, None, Some("test.cto".into()))
             .expect("the model loads");
@@ -518,7 +518,7 @@ mod tests {
     }
 
     fn model() -> ModelManager {
-        manager(serde_json::json!({
+        manager(concerto_core::json!({
             "$class": "concerto.metamodel@1.0.0.Model",
             "namespace": "org.acme@1.0.0",
             "imports": [],
@@ -587,7 +587,7 @@ mod tests {
     #[test]
     fn new_resource_rejects_a_non_strict_date_time_default() {
         let model_with = |default: &str| {
-            manager(serde_json::json!({
+            manager(concerto_core::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.dates@1.0.0",
                 "imports": [],

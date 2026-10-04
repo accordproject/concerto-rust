@@ -37,7 +37,7 @@ pub fn fixtures_dir() -> PathBuf {
 
 /// Loads every `*.json` AST fixture from a model-set directory (see
 /// `generate-fixtures.mjs`), sorted by file name for a deterministic order.
-pub fn load_model_set(set_name: &str) -> Vec<(String, serde_json::Value)> {
+pub fn load_model_set(set_name: &str) -> Vec<(String, concerto_core::json::Value)> {
     let dir = fixtures_dir().join("model-sets").join(set_name);
     let mut entries: Vec<_> = std::fs::read_dir(&dir)
         .unwrap_or_else(|e| panic!("reading fixture dir {}: {e}", dir.display()))
@@ -52,7 +52,7 @@ pub fn load_model_set(set_name: &str) -> Vec<(String, serde_json::Value)> {
             let path = e.path();
             let text = std::fs::read_to_string(&path)
                 .unwrap_or_else(|err| panic!("reading {}: {err}", path.display()));
-            let value: serde_json::Value = serde_json::from_str(&text)
+            let value: concerto_core::json::Value = serde_json::from_str(&text)
                 .unwrap_or_else(|err| panic!("parsing {}: {err}", path.display()));
             let name = path.file_name().unwrap().to_string_lossy().into_owned();
             (name, value)

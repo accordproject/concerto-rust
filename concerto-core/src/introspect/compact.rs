@@ -53,11 +53,11 @@
 //! count in them makes a visitor reserve more than the bytes left can hold:
 //! malformed bytes are an error, never a panic (a trap in WASM).
 
+use crate::json::Value;
 use serde::Deserialize;
 use serde::de::value::BorrowedStrDeserializer;
 use serde::de::{self, DeserializeSeed, Deserializer, MapAccess, SeqAccess};
 use serde::de::{Unexpected, Visitor};
-use serde_json::Value;
 
 type Error = serde_json::Error;
 

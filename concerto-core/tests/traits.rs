@@ -1,10 +1,11 @@
 //! The shared traits, implemented by the introspection types.
 
+use concerto_core::json;
+use concerto_core::json::Value;
 use concerto_core::{
     Declaration, DeclarationKind, Decorated, HasValidators, ModelManager, Named, Property, Typed,
     Validate,
 };
-use serde_json::{Value, json};
 
 const MM: &str = "concerto.metamodel@1.0.0";
 

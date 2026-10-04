@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn process_derives_type_array_and_optional() {
-    let processed = process::<Error>(&serde_json::json!({
+    let processed = process::<Error>(&crate::json!({
         "$class": "concerto.metamodel@1.0.0.StringProperty",
         "name": "email",
         "isArray": true,
@@ -18,7 +18,7 @@ fn process_derives_type_array_and_optional() {
 
 #[test]
 fn process_object_property_type_is_the_referenced_name() {
-    let processed = process::<Error>(&serde_json::json!({
+    let processed = process::<Error>(&crate::json!({
         "$class": "concerto.metamodel@1.0.0.ObjectProperty",
         "name": "address",
         "isArray": false,
@@ -31,7 +31,7 @@ fn process_object_property_type_is_the_referenced_name() {
 
 #[test]
 fn process_enum_property_leaves_type_unset() {
-    let processed = process::<Error>(&serde_json::json!({
+    let processed = process::<Error>(&crate::json!({
         "$class": "concerto.metamodel@1.0.0.EnumProperty",
         "name": "RED"
     }))
@@ -44,7 +44,7 @@ fn process_enum_property_leaves_type_unset() {
 
 #[test]
 fn process_rejects_an_invalid_identifier() {
-    let err = process::<Error>(&serde_json::json!({
+    let err = process::<Error>(&crate::json!({
         "$class": "concerto.metamodel@1.0.0.StringProperty",
         "name": "1bad",
         "isArray": false,
@@ -59,7 +59,7 @@ fn process_rejects_an_invalid_identifier() {
 // through JS `ToString`, not as an absent/empty name.
 #[test]
 fn process_rejects_a_non_string_name_with_its_js_stringified_form() {
-    let err = process::<Error>(&serde_json::json!({
+    let err = process::<Error>(&crate::json!({
         "$class": "concerto.metamodel@1.0.0.StringProperty",
         "name": 1e308,
         "isArray": false,
@@ -86,7 +86,7 @@ fn process_rejects_a_non_string_name_with_its_js_stringified_form() {
 // renders TS's suffix text — that is what this asserts.
 #[test]
 fn process_carries_the_ast_location_and_a_model_file_placeholder_for_an_invalid_name() {
-    let mut err = process::<ContractError>(&serde_json::json!({
+    let mut err = process::<ContractError>(&crate::json!({
         "$class": "concerto.metamodel@1.0.0.StringProperty",
         "name": 1e308,
         "isArray": false,
@@ -130,7 +130,7 @@ fn process_carries_the_ast_location_and_a_model_file_placeholder_for_an_invalid_
 // `IllegalModelException`.
 #[test]
 fn process_rejects_a_falsy_name_that_stringifies_to_a_valid_identifier() {
-    let ast = serde_json::json!({
+    let ast = crate::json!({
         "$class": "concerto.metamodel@1.0.0.StringProperty",
         "name": false,
         "isArray": false,
@@ -152,7 +152,7 @@ fn process_rejects_a_falsy_name_that_stringifies_to_a_valid_identifier() {
 // stage2/triage-clusters.json).
 #[test]
 fn process_accepts_a_boolean_name_like_ts_string_coercion() {
-    let processed = process::<Error>(&serde_json::json!({
+    let processed = process::<Error>(&crate::json!({
         "$class": "concerto.metamodel@1.0.0.StringProperty",
         "name": true,
         "isArray": false,
@@ -175,7 +175,7 @@ fn process_accepts_a_boolean_name_like_ts_string_coercion() {
 // "has a name".
 #[test]
 fn process_rejects_a_missing_name_that_stringifies_to_a_valid_identifier() {
-    let err = process::<Error>(&serde_json::json!({
+    let err = process::<Error>(&crate::json!({
         "$class": "concerto.metamodel@1.0.0.StringProperty",
         "isArray": false,
         "isOptional": false
@@ -189,7 +189,7 @@ fn process_rejects_a_missing_name_that_stringifies_to_a_valid_identifier() {
 
 #[test]
 fn process_rejects_a_null_name_that_stringifies_to_a_valid_identifier() {
-    let err = process::<Error>(&serde_json::json!({
+    let err = process::<Error>(&crate::json!({
         "$class": "concerto.metamodel@1.0.0.StringProperty",
         "name": null,
         "isArray": false,
@@ -205,7 +205,7 @@ fn process_rejects_a_null_name_that_stringifies_to_a_valid_identifier() {
 /// A `RelationshipProperty` node named `name` whose `type` is `ty`
 /// (`None`: no `type` key at all).
 fn relationship(name: &str, ty: Option<Value>) -> Value {
-    let mut node = serde_json::json!({
+    let mut node = crate::json!({
         "$class": "concerto.metamodel@1.0.0.RelationshipProperty",
         "name": name,
         "isArray": false,
@@ -258,16 +258,12 @@ fn process_rejects_a_relationship_with_a_missing_or_null_type() {
 /// it with no type, as before. `ObjectProperty` has TS's own guard.
 #[test]
 fn process_keeps_other_typeless_relationships_and_object_properties() {
-    for ty in [
-        serde_json::json!({}),
-        serde_json::json!("x"),
-        serde_json::json!(0),
-    ] {
+    for ty in [crate::json!({}), crate::json!("x"), crate::json!(0)] {
         let processed = process::<Error>(&relationship("home", Some(ty))).unwrap();
         assert_eq!(processed.property_type, None);
         assert!(processed.type_set);
     }
-    let processed = process::<Error>(&serde_json::json!({
+    let processed = process::<Error>(&crate::json!({
         "$class": "concerto.metamodel@1.0.0.ObjectProperty",
         "name": "address",
         "type": null
@@ -293,11 +289,11 @@ fn process_reports_an_invalid_name_before_a_missing_relationship_type() {
 #[test]
 fn a_malformed_property_node_is_an_unreadable_ast() {
     for ast in [
-        serde_json::json!({ "name": "x" }),
-        serde_json::json!({ "$class": "concerto.metamodel@1.0.0.MysteryProperty", "name": "x" }),
-        serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "s", "isArray": "yes" }),
-        serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringProperty", "isArray": false, "isOptional": false }),
-        serde_json::json!({ "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "s", "isArray": false,
+        crate::json!({ "name": "x" }),
+        crate::json!({ "$class": "concerto.metamodel@1.0.0.MysteryProperty", "name": "x" }),
+        crate::json!({ "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "s", "isArray": "yes" }),
+        crate::json!({ "$class": "concerto.metamodel@1.0.0.StringProperty", "isArray": false, "isOptional": false }),
+        crate::json!({ "$class": "concerto.metamodel@1.0.0.StringProperty", "name": "s", "isArray": false,
                 "isOptional": false, "decorators": [null] }),
         relationship("dept", None),
         relationship("dept", Some(Value::Null)),
@@ -308,13 +304,13 @@ fn a_malformed_property_node_is_an_unreadable_ast() {
     }
 }
 
-fn prop(json: serde_json::Value) -> Property {
+fn prop(json: crate::json::Value) -> Property {
     Property::try_from(&json).expect("valid property")
 }
 
 #[test]
 fn parses_string_property_with_validators() {
-    let p = prop(serde_json::json!({
+    let p = prop(crate::json!({
         "$class": "concerto.metamodel@1.0.0.StringProperty",
         "name": "email",
         "isArray": false,
@@ -338,7 +334,7 @@ fn parses_string_property_with_validators() {
 
 #[test]
 fn parses_object_and_relationship_type_refs() {
-    let o = prop(serde_json::json!({
+    let o = prop(crate::json!({
         "$class": "concerto.metamodel@1.0.0.ObjectProperty",
         "name": "address",
         "isArray": false,
@@ -352,7 +348,7 @@ fn parses_object_and_relationship_type_refs() {
         Some("Address")
     );
 
-    let r = prop(serde_json::json!({
+    let r = prop(crate::json!({
         "$class": "concerto.metamodel@1.0.0.RelationshipProperty",
         "name": "owner",
         "isArray": true,
@@ -366,7 +362,7 @@ fn parses_object_and_relationship_type_refs() {
 
 #[test]
 fn enum_member_has_no_type() {
-    let e = prop(serde_json::json!({
+    let e = prop(crate::json!({
         "$class": "concerto.metamodel@1.0.0.EnumProperty",
         "name": "RED"
     }));
@@ -378,7 +374,7 @@ fn enum_member_has_no_type() {
 
 #[test]
 fn unknown_property_kind_errors() {
-    let err = Property::try_from(&serde_json::json!({
+    let err = Property::try_from(&crate::json!({
         "$class": "concerto.metamodel@1.0.0.MysteryProperty",
         "name": "x"
     }));
@@ -387,13 +383,13 @@ fn unknown_property_kind_errors() {
 
 #[test]
 fn missing_class_is_rejected() {
-    let err = Property::try_from(&serde_json::json!({ "name": "x" }));
+    let err = Property::try_from(&crate::json!({ "name": "x" }));
     assert!(err.unwrap_err().to_string().contains("$class"));
 }
 
 /// A `Double` property carrying the given range validator.
-fn ranged(lower: Option<f64>, upper: Option<f64>) -> serde_json::Value {
-    let mut validator = serde_json::json!({
+fn ranged(lower: Option<f64>, upper: Option<f64>) -> crate::json::Value {
+    let mut validator = crate::json!({
         "$class": "concerto.metamodel@1.0.0.DoubleDomainValidator"
     });
     if let Some(lower) = lower {
@@ -402,7 +398,7 @@ fn ranged(lower: Option<f64>, upper: Option<f64>) -> serde_json::Value {
     if let Some(upper) = upper {
         validator["upper"] = upper.into();
     }
-    serde_json::json!({
+    crate::json!({
         "$class": "concerto.metamodel@1.0.0.DoubleProperty",
         "name": "value", "isArray": false, "isOptional": false,
         "validator": validator
@@ -410,8 +406,8 @@ fn ranged(lower: Option<f64>, upper: Option<f64>) -> serde_json::Value {
 }
 
 /// A `String` property carrying the given length validator.
-fn sized(min: Option<i32>, max: Option<i32>) -> serde_json::Value {
-    let mut validator = serde_json::json!({
+fn sized(min: Option<i32>, max: Option<i32>) -> crate::json::Value {
+    let mut validator = crate::json!({
         "$class": "concerto.metamodel@1.0.0.StringLengthValidator"
     });
     if let Some(min) = min {
@@ -420,7 +416,7 @@ fn sized(min: Option<i32>, max: Option<i32>) -> serde_json::Value {
     if let Some(max) = max {
         validator["maxLength"] = max.into();
     }
-    serde_json::json!({
+    crate::json!({
         "$class": "concerto.metamodel@1.0.0.StringProperty",
         "name": "text", "isArray": false, "isOptional": false,
         "lengthValidator": validator
@@ -429,7 +425,7 @@ fn sized(min: Option<i32>, max: Option<i32>) -> serde_json::Value {
 
 #[test]
 fn a_property_name_must_be_an_identifier() {
-    let err = Property::try_from(&serde_json::json!({
+    let err = Property::try_from(&crate::json!({
         "$class": "concerto.metamodel@1.0.0.StringProperty",
         "name": "1bad", "isArray": false, "isOptional": false
     }));
@@ -441,8 +437,8 @@ fn a_property_name_must_be_an_identifier() {
 }
 
 /// A `String` property carrying the given regex validator.
-fn matching(pattern: &str) -> serde_json::Value {
-    serde_json::json!({
+fn matching(pattern: &str) -> crate::json::Value {
+    crate::json!({
         "$class": "concerto.metamodel@1.0.0.StringProperty",
         "name": "text", "isArray": false, "isOptional": false,
         "validator": {
@@ -495,7 +491,7 @@ fn range_without_either_bound_is_rejected() {
 /// `upperBound` is `2147483648`, matching `upper` here.
 #[test]
 fn integer_domain_bound_above_i32_max_loads() {
-    let p = prop(serde_json::json!({
+    let p = prop(crate::json!({
         "$class": "concerto.metamodel@1.0.0.IntegerProperty",
         "name": "value", "isArray": false, "isOptional": false,
         "validator": {
@@ -524,7 +520,7 @@ fn integer_domain_bound_above_i32_max_loads() {
 /// `upperBound` is `10000000000000000000` (`1e19`), matching `upper` here.
 #[test]
 fn long_domain_bound_above_i64_max_loads() {
-    let p = prop(serde_json::json!({
+    let p = prop(crate::json!({
         "$class": "concerto.metamodel@1.0.0.LongProperty",
         "name": "value", "isArray": false, "isOptional": false,
         "validator": {
@@ -562,8 +558,8 @@ fn string_length_within_bounds_is_accepted() {
 }
 
 /// A `String[]` property with a collection size validator.
-fn collection_sized(is_array: bool, min: Option<i32>, max: Option<i32>) -> serde_json::Value {
-    let mut validator = serde_json::json!({
+fn collection_sized(is_array: bool, min: Option<i32>, max: Option<i32>) -> crate::json::Value {
+    let mut validator = crate::json!({
         "$class": "concerto.metamodel@1.0.0.CollectionSizeValidator"
     });
     if let Some(min) = min {
@@ -572,7 +568,7 @@ fn collection_sized(is_array: bool, min: Option<i32>, max: Option<i32>) -> serde
     if let Some(max) = max {
         validator["maxSize"] = max.into();
     }
-    serde_json::json!({
+    crate::json!({
         "$class": "concerto.metamodel@1.0.0.StringProperty",
         "name": "tags", "isArray": is_array, "isOptional": false,
         "sizeValidator": validator
@@ -618,7 +614,7 @@ fn size_validator_negative_bounds_rejected() {
 
 #[test]
 fn size_validator_on_object_property_without_array_is_allowed() {
-    let json = serde_json::json!({
+    let json = crate::json!({
         "$class": "concerto.metamodel@1.0.0.ObjectProperty",
         "name": "contacts",
         "isArray": false,
@@ -635,7 +631,7 @@ fn size_validator_on_object_property_without_array_is_allowed() {
 
 #[test]
 fn size_validator_on_relationship_array_is_accepted() {
-    let json = serde_json::json!({
+    let json = crate::json!({
         "$class": "concerto.metamodel@1.0.0.RelationshipProperty",
         "name": "advisors",
         "isArray": true,
@@ -657,7 +653,7 @@ fn size_validator_on_relationship_array_is_accepted() {
 /// rejects it (`crate::validation`'s tests).
 #[test]
 fn size_validator_on_non_array_relationship_is_accepted_at_construction() {
-    let json = serde_json::json!({
+    let json = crate::json!({
         "$class": "concerto.metamodel@1.0.0.RelationshipProperty",
         "name": "owner",
         "isArray": false,
@@ -690,7 +686,7 @@ fn only_the_full_metamodel_property_classes_are_recognised() {
         "concerto.metamodel@2.0.0.StringProperty",
         "concerto.metamodel@1.0.0.Foo.StringProperty",
     ] {
-        let err = Property::try_from(&serde_json::json!({
+        let err = Property::try_from(&crate::json!({
             "$class": class,
             "name": "email",
             "isArray": false,
@@ -721,7 +717,7 @@ fn process_matches_the_full_property_class() {
     // `this.type` is left unassigned, and a `RelationshipProperty`
     // short name with no `type` does not reach its unguarded arm.
     for class in ["StringProperty", "foo.StringProperty"] {
-        let processed = process::<ContractError>(&serde_json::json!({
+        let processed = process::<ContractError>(&crate::json!({
             "$class": class, "name": "s"
         }))
         .unwrap();
@@ -729,7 +725,7 @@ fn process_matches_the_full_property_class() {
         assert!(!processed.type_set, "{class}");
     }
     assert!(
-        process::<ContractError>(&serde_json::json!({
+        process::<ContractError>(&crate::json!({
             "$class": "RelationshipProperty", "name": "r"
         }))
         .is_ok()
@@ -753,7 +749,7 @@ fn process_matches_the_full_property_class() {
 /// matching this test verbatim.
 #[test]
 fn a_reserved_name_is_rejected_on_an_enum_value() {
-    let err = Property::try_from(&serde_json::json!({
+    let err = Property::try_from(&crate::json!({
         "$class": "concerto.metamodel@1.0.0.EnumProperty",
         "name": "$identifier"
     }));
@@ -767,7 +763,7 @@ fn a_reserved_name_is_rejected_on_an_enum_value() {
 /// return null when no size validator".
 #[test]
 fn size_validator_is_none_when_absent() {
-    let p = prop(serde_json::json!({
+    let p = prop(crate::json!({
         "$class": "concerto.metamodel@1.0.0.StringProperty",
         "name": "tags", "isArray": true, "isOptional": false
     }));
@@ -785,7 +781,7 @@ fn size_validator_is_none_when_absent() {
 /// or parent needed.
 #[test]
 fn a_default_value_is_read_from_the_ast_when_present() {
-    let p = prop(serde_json::json!({
+    let p = prop(crate::json!({
         "$class": "concerto.metamodel@1.0.0.StringProperty",
         "name": "field", "isArray": false, "isOptional": false,
         "defaultValue": "wowSuchDefault"
@@ -797,7 +793,7 @@ fn a_default_value_is_read_from_the_ast_when_present() {
         _ => panic!("expected String"),
     }
 
-    let without = prop(serde_json::json!({
+    let without = prop(crate::json!({
         "$class": "concerto.metamodel@1.0.0.StringProperty",
         "name": "field", "isArray": false, "isOptional": false
     }));
@@ -814,7 +810,7 @@ fn a_default_value_is_read_from_the_ast_when_present() {
 /// unlike a JSON `null`.
 #[test]
 fn a_falsy_boolean_default_value_is_not_treated_as_absent() {
-    let p = prop(serde_json::json!({
+    let p = prop(crate::json!({
         "$class": "concerto.metamodel@1.0.0.BooleanProperty",
         "name": "field", "isArray": false, "isOptional": false,
         "defaultValue": false
@@ -829,13 +825,13 @@ fn a_falsy_boolean_default_value_is_not_treated_as_absent() {
 /// optional by default" and "should detect if field is optional".
 #[test]
 fn optional_defaults_to_false_and_follows_the_ast() {
-    let not_optional = prop(serde_json::json!({
+    let not_optional = prop(crate::json!({
         "$class": "concerto.metamodel@1.0.0.StringProperty",
         "name": "field", "isArray": false
     }));
     assert!(!not_optional.is_optional());
 
-    let optional = prop(serde_json::json!({
+    let optional = prop(crate::json!({
         "$class": "concerto.metamodel@1.0.0.StringProperty",
         "name": "field", "isArray": false, "isOptional": true
     }));
@@ -849,8 +845,8 @@ fn optional_defaults_to_false_and_follows_the_ast() {
 /// they are the loader's error.
 #[test]
 fn a_malformed_validator_is_an_unreadable_ast() {
-    let string = |key: &str, value: serde_json::Value| {
-        let mut ast = serde_json::json!({
+    let string = |key: &str, value: crate::json::Value| {
+        let mut ast = crate::json!({
             "$class": "concerto.metamodel@1.0.0.StringProperty",
             "name": "s", "isArray": true, "isOptional": false
         });
@@ -860,39 +856,36 @@ fn a_malformed_validator_is_an_unreadable_ast() {
     for ast in [
         string(
             "sizeValidator",
-            serde_json::json!({
+            crate::json!({
                 "$class": "concerto.metamodel@1.0.0.CollectionSizeValidator", "minSize": "NaN", "maxSize": 5
             }),
         ),
         string(
             "sizeValidator",
-            serde_json::json!({
+            crate::json!({
                 "$class": ["concerto.metamodel@1.0.0.CollectionSizeValidator"], "minSize": 1, "maxSize": 5
             }),
         ),
-        string("sizeValidator", serde_json::json!({ "minSize": 1 })),
-        string("sizeValidator", serde_json::json!(true)),
+        string("sizeValidator", crate::json!({ "minSize": 1 })),
+        string("sizeValidator", crate::json!(true)),
         string(
             "lengthValidator",
-            serde_json::json!([{
+            crate::json!([{
                 "$class": "concerto.metamodel@1.0.0.StringLengthValidator", "minLength": null, "maxLength": 10
             }]),
         ),
-        string("lengthValidator", serde_json::json!({})),
+        string("lengthValidator", crate::json!({})),
         string(
             "validator",
-            serde_json::json!({
+            crate::json!({
                 "$class": "concerto.metamodel@1.0.0.StringRegexValidator", "pattern": 5, "flags": ""
             }),
         ),
+        string("validator", crate::json!({ "pattern": "a", "flags": "" })),
+        string("validator", crate::json!(0)),
         string(
             "validator",
-            serde_json::json!({ "pattern": "a", "flags": "" }),
-        ),
-        string("validator", serde_json::json!(0)),
-        string(
-            "validator",
-            serde_json::json!({
+            crate::json!({
                 "$class": "concerto.metamodel@1.0.0.StringRegexValidator", "pattern": "a", "flags": "", "extra": 1
             }),
         ),
@@ -901,7 +894,7 @@ fn a_malformed_validator_is_an_unreadable_ast() {
         assert_eq!(err.kind, ErrorKind::IllegalModel, "{ast}");
         assert_eq!(err.code, "modelfile-load-unreadable", "{ast}");
     }
-    let p = prop(string("validator", serde_json::Value::Null));
+    let p = prop(string("validator", crate::json::Value::Null));
     match &p {
         Property::String(s) => assert!(s.validator.is_none()),
         _ => panic!("expected String"),
@@ -913,7 +906,7 @@ fn a_malformed_validator_is_an_unreadable_ast() {
 /// engines.
 #[test]
 fn string_property_with_both_length_bounds_explicitly_null_is_rejected() {
-    let err = Property::try_from(&serde_json::json!({
+    let err = Property::try_from(&crate::json!({
         "$class": "concerto.metamodel@1.0.0.StringProperty",
         "name": "s", "isArray": false, "isOptional": false,
         "lengthValidator": {

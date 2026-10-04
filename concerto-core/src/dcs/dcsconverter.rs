@@ -3,7 +3,7 @@
 //! `DecoratorCommandSet` be hand-edited as a short, `failsafe`-schema YAML
 //! document instead of its full JSON `$class`-tagged form.
 //!
-//! Both directions stay on the untyped metamodel AST ([`serde_json::Value`]),
+//! Both directions stay on the untyped metamodel AST ([`crate::json::Value`]),
 //! matching [`super`]/[`super::extractor`].
 //!
 //! ## Scope
@@ -29,7 +29,8 @@
 //! rendering for an embedded newline or a document-marker-like value
 //! (`"---"`, `"..."`) — none of which the DCS data this converter round-trips
 //! is expected to contain; see `yaml_quote::needs_quoting_failsafe`.
-use serde_json::{Map, Number, Value};
+use crate::json::{Map, Value};
+use serde_json::Number;
 
 use crate::ecma::to_js_string;
 use crate::error::{ContractError, ErrorKind, Result};

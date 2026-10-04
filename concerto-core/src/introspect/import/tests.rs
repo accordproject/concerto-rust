@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn resolves_named_import() {
-    let imp = Import::try_from(&serde_json::json!({
+    let imp = Import::try_from(&crate::json!({
         "$class": "concerto.metamodel@1.0.0.ImportType",
         "namespace": "org.acme@1.0.0",
         "name": "Person"
@@ -18,7 +18,7 @@ fn resolves_named_import() {
 
 #[test]
 fn resolves_multi_import_with_alias() {
-    let imp = Import::try_from(&serde_json::json!({
+    let imp = Import::try_from(&crate::json!({
         "$class": "concerto.metamodel@1.0.0.ImportTypes",
         "namespace": "org.acme@1.0.0",
         "types": ["A", "B"],
@@ -34,7 +34,7 @@ fn resolves_multi_import_with_alias() {
 
 #[test]
 fn local_names_use_the_alias_where_one_is_given() {
-    let imp = Import::try_from(&serde_json::json!({
+    let imp = Import::try_from(&crate::json!({
         "$class": "concerto.metamodel@1.0.0.ImportTypes",
         "namespace": "org.acme@1.0.0",
         "types": ["A", "B"],
@@ -45,7 +45,7 @@ fn local_names_use_the_alias_where_one_is_given() {
     .unwrap();
     assert_eq!(imp.local_names(), ["A", "Bee"]);
 
-    let single = Import::try_from(&serde_json::json!({
+    let single = Import::try_from(&crate::json!({
         "$class": "concerto.metamodel@1.0.0.ImportType",
         "namespace": "org.acme@1.0.0",
         "name": "Person"
@@ -56,7 +56,7 @@ fn local_names_use_the_alias_where_one_is_given() {
 
 #[test]
 fn wildcard_import_is_rejected() {
-    let err = Import::try_from(&serde_json::json!({
+    let err = Import::try_from(&crate::json!({
         "$class": "concerto.metamodel@1.0.0.ImportAll",
         "namespace": "org.acme@1.0.0"
     }));
@@ -70,13 +70,13 @@ fn wildcard_import_is_rejected() {
 
 #[test]
 fn missing_class_is_rejected() {
-    let err = Import::try_from(&serde_json::json!({ "namespace": "org.acme@1.0.0" }));
+    let err = Import::try_from(&crate::json!({ "namespace": "org.acme@1.0.0" }));
     assert!(err.unwrap_err().to_string().contains("$class"));
 }
 
 #[test]
 fn missing_class_is_reported_verbatim() {
-    let err = Import::try_from(&serde_json::json!({ "namespace": "org.acme@1.0.0" }));
+    let err = Import::try_from(&crate::json!({ "namespace": "org.acme@1.0.0" }));
     assert_eq!(
         err.unwrap_err().to_string(),
         "import node is missing its $class"
@@ -85,7 +85,7 @@ fn missing_class_is_reported_verbatim() {
 
 #[test]
 fn unknown_import_kind_errors() {
-    let err = Import::try_from(&serde_json::json!({
+    let err = Import::try_from(&crate::json!({
         "$class": "concerto.metamodel@1.0.0.MysteryImport",
         "namespace": "org.acme@1.0.0"
     }));
@@ -97,7 +97,7 @@ fn unknown_import_kind_errors() {
 
 #[test]
 fn an_import_class_may_be_given_as_the_short_name() {
-    let imp = Import::try_from(&serde_json::json!({
+    let imp = Import::try_from(&crate::json!({
         "$class": "ImportType",
         "namespace": "org.acme@1.0.0",
         "name": "Person"
@@ -111,7 +111,7 @@ fn an_import_class_may_be_given_as_the_short_name() {
 
 #[test]
 fn import_types_with_no_types_array_is_empty() {
-    let imp = Import::try_from(&serde_json::json!({
+    let imp = Import::try_from(&crate::json!({
         "$class": "concerto.metamodel@1.0.0.ImportTypes",
         "namespace": "org.acme@1.0.0"
     }))
@@ -122,7 +122,7 @@ fn import_types_with_no_types_array_is_empty() {
 
 #[test]
 fn an_alias_with_no_class_is_still_an_alias() {
-    let imp = Import::try_from(&serde_json::json!({
+    let imp = Import::try_from(&crate::json!({
         "$class": "concerto.metamodel@1.0.0.ImportTypes",
         "namespace": "org.acme@1.0.0",
         "types": ["A", "B"],
@@ -135,7 +135,7 @@ fn an_alias_with_no_class_is_still_an_alias() {
 
 #[test]
 fn non_string_types_and_malformed_aliases_are_skipped() {
-    let imp = Import::try_from(&serde_json::json!({
+    let imp = Import::try_from(&crate::json!({
         "$class": "concerto.metamodel@1.0.0.ImportTypes",
         "namespace": "org.acme@1.0.0",
         "types": ["A", 3, { "name": "C" }],
@@ -148,7 +148,7 @@ fn non_string_types_and_malformed_aliases_are_skipped() {
 
 #[test]
 fn types_or_aliases_that_are_not_arrays_are_empty() {
-    let imp = Import::try_from(&serde_json::json!({
+    let imp = Import::try_from(&crate::json!({
         "$class": "concerto.metamodel@1.0.0.ImportTypes",
         "namespace": "org.acme@1.0.0",
         "types": "A",
@@ -161,7 +161,7 @@ fn types_or_aliases_that_are_not_arrays_are_empty() {
 
 #[test]
 fn an_aliased_type_no_longer_resolves_under_its_declared_name() {
-    let imp = Import::try_from(&serde_json::json!({
+    let imp = Import::try_from(&crate::json!({
         "$class": "concerto.metamodel@1.0.0.ImportTypes",
         "namespace": "org.acme@1.0.0",
         "types": ["A", "B"],
@@ -179,7 +179,7 @@ fn an_aliased_type_no_longer_resolves_under_its_declared_name() {
 
 #[test]
 fn a_non_string_uri_is_ignored() {
-    let imp = Import::try_from(&serde_json::json!({
+    let imp = Import::try_from(&crate::json!({
         "$class": "concerto.metamodel@1.0.0.ImportType",
         "namespace": "org.acme@1.0.0",
         "name": "Person",

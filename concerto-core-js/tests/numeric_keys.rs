@@ -10,8 +10,9 @@ use std::time::{Duration, Instant};
 
 use concerto_core::ModelManager;
 use concerto_core::instance::{InstanceEnv, ValidationOptions};
+use concerto_core::json;
+use concerto_core::json::{Map, Value};
 use concerto_core_js::{JsValue, Serializer};
-use serde_json::{Map, Value, json};
 
 /// How many map entries each instance has.
 const KEYS: usize = 100_000;

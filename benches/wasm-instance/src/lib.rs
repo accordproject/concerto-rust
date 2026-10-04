@@ -21,7 +21,8 @@ use concerto_core::ModelManager;
 use concerto_core::instance::validate::{ValidateOptions, validate_instance};
 use concerto_core::instance::{InstanceEnv, ValidationOptions};
 use concerto_core_js::{JsValue as CoreJsValue, Serializer};
-use serde_json::{Value, json};
+use concerto_core::json;
+use concerto_core::json::Value;
 use wasm_bindgen::prelude::*;
 
 const NUM_INSTANCES: usize = 500;

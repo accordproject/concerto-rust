@@ -13,7 +13,7 @@
 // (`field::process` and the view snapshots it feeds); without the
 // `js-compat` feature none of it is compiled.
 #[cfg(feature = "js-compat")]
-use serde_json::Value;
+use crate::json::Value;
 
 #[cfg(feature = "js-compat")]
 use crate::ecma;

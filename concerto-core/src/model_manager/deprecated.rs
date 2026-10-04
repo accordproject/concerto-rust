@@ -12,7 +12,7 @@ impl ModelManager {
     #[deprecated(since = "0.1.0", note = "use `add_model_ast`")]
     pub fn add_model(
         &mut self,
-        value: &serde_json::Value,
+        value: &crate::json::Value,
         file_name: Option<String>,
     ) -> Result<()> {
         self.load_model(value, file_name)
@@ -24,7 +24,7 @@ impl ModelManager {
     #[deprecated(since = "0.1.0", note = "use `add_model_asts`")]
     pub fn add_models<'a>(
         &mut self,
-        models: impl IntoIterator<Item = (&'a serde_json::Value, Option<String>)>,
+        models: impl IntoIterator<Item = (&'a crate::json::Value, Option<String>)>,
     ) -> Result<Vec<ModelFileId>> {
         self.load_models(models)
     }

@@ -656,7 +656,8 @@ mod tests {
     //! fresh build raises.
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use serde_json::{Value, json};
+    use crate::json;
+    use crate::json::Value;
 
     use super::class_plan;
     use crate::error::ErrorKind;

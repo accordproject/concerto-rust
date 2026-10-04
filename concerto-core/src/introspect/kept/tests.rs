@@ -1,6 +1,6 @@
+use crate::json::Value;
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 use serde::de::DeserializeSeed;
-use serde_json::Value;
 
 use super::{Kept, KeptSeed, Location, LocationSeed};
 use crate::introspect::typed_ast::strict_from_value;
@@ -218,7 +218,7 @@ fn kept_decorators_are_the_value_and_decode_as_it() {
         assert_eq!(decoded, from_value, "{text}");
         assert_eq!(
             parse_decorator_list(Some(&kept)),
-            parse_decorators(&serde_json::json!({ "decorators": value })),
+            parse_decorators(&crate::json!({ "decorators": value })),
             "{text}"
         );
         // Decoded by moving the strings out, the same result.
@@ -279,7 +279,7 @@ fn identified_is_read_field_by_field_and_decodes_as_its_value() {
                     match kept {
                         Some(kept) => assert_eq!(kept.to_value(), value, "{text}"),
                         None => {
-                            let ast = serde_json::json!({
+                            let ast = crate::json!({
                                 "$class": "concerto.metamodel@1.0.0.Model",
                                 "namespace": "org.acme@1.0.0",
                                 "declarations": [{

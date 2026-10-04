@@ -60,7 +60,7 @@ use concerto_core::error::ErrorKind;
 use concerto_core::instance::ValidateOptions;
 use concerto_core::instance::validate::{validate_instance_from, validate_property_value};
 use concerto_core::introspect::compact_validator_value;
-use serde_json::Value;
+use concerto_core::json::Value;
 use wasm_bindgen::prelude::*;
 
 use super::{Error, JsResult, ModelManagerHandle, Result, throw, wire_error};
@@ -327,7 +327,7 @@ mod tests {
         let v = decode(&b).ok().unwrap();
         assert_eq!(
             v,
-            serde_json::json!({"n": null, "f": false, "t": true, "d": 1.5, "i": -7, "s": "é", "a": [2, null]})
+            concerto_core::json!({"n": null, "f": false, "t": true, "d": 1.5, "i": -7, "s": "é", "a": [2, null]})
         );
         // An integral double reads as an integer, as `js_number` spells it.
         assert!(v["a"][0].is_i64());

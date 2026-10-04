@@ -68,7 +68,7 @@ pub(crate) use traits::{FullyQualified, HasValidators, Validate};
 
 /// Returns the `$class` discriminator of an AST node, or `""` if it is absent.
 /// The sum types in this module select their variant from this value.
-pub(crate) fn declared_class(value: &serde_json::Value) -> &str {
+pub(crate) fn declared_class(value: &crate::json::Value) -> &str {
     value.get("$class").and_then(|v| v.as_str()).unwrap_or("")
 }
 

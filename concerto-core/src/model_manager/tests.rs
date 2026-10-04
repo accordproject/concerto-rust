@@ -4,7 +4,7 @@ use super::*;
 fn manager() -> ModelManager {
     let mut mgr = ModelManager::new().unwrap();
     mgr.load_model(
-            &serde_json::json!({
+            &crate::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.example@1.0.0",
                 "declarations": [
@@ -96,7 +96,7 @@ fn shared_model_files_and_compact_model_asts() {
 fn property_default_value_reads_the_raw_ast_including_datetime() {
     let mut mgr = ModelManager::new().unwrap();
     mgr.load_model(
-            &serde_json::json!({
+            &crate::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.example@1.0.0",
                 "declarations": [
@@ -125,13 +125,13 @@ fn property_default_value_reads_the_raw_ast_including_datetime() {
 
     assert_eq!(
         mgr.property_default_value(prop("status")),
-        Some(&serde_json::json!("OPEN"))
+        Some(&crate::json!("OPEN"))
     );
     assert_eq!(mgr.property_default_value(prop("note")), None);
     assert_eq!(mgr.property_default_value(prop("nulled")), None);
     assert_eq!(
         mgr.property_default_value(prop("placedAt")),
-        Some(&serde_json::json!("2020-01-01T00:00:00.000Z"))
+        Some(&crate::json!("2020-01-01T00:00:00.000Z"))
     );
     assert!(
         mgr.property_default_value(PropId::from_index(u32::MAX))
@@ -216,7 +216,7 @@ fn assignable_class_declarations_are_the_receiver_and_user_declarations() {
 fn a_user_asset_is_the_only_direct_subclass_of_asset() {
     let mut mgr = ModelManager::new().unwrap();
     mgr.load_model(
-            &serde_json::json!({
+            &crate::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.acme@1.0.0",
                 "declarations": [
@@ -270,7 +270,7 @@ fn subclass_queries_by_handle_follow_an_appended_file() {
         ["org.example@1.0.0.Employee"]
     );
     mgr.load_model(
-            &serde_json::json!({
+            &crate::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.other@1.0.0",
                 "imports": [{ "$class": "concerto.metamodel@1.0.0.ImportType",
@@ -315,13 +315,13 @@ fn subclass_queries_by_handle_follow_an_appended_file() {
 #[test]
 fn assignable_ids_below_a_cyclic_chain_is_an_illegal_model_error() {
     let concept = |name: &str, sup: &str| {
-        serde_json::json!({ "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+        crate::json!({ "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
                 "name": name, "isAbstract": false, "properties": [],
                 "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": sup } })
     };
     let mut mgr = ModelManager::new().unwrap();
     mgr.load_model(
-        &serde_json::json!({
+        &crate::json!({
             "$class": "concerto.metamodel@1.0.0.Model",
             "namespace": "org.cycle@1.0.0",
             "declarations": [concept("A", "C"), concept("B", "A"), concept("C", "B")]
@@ -371,7 +371,7 @@ fn preloads_system_model() {
 fn an_asset_with_no_extends_implicitly_extends_asset_itself() {
     let mut mgr = ModelManager::new().unwrap();
     mgr.load_model(
-            &serde_json::json!({
+            &crate::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.acme.defaults@1.0.0",
                 "declarations": [
@@ -443,7 +443,7 @@ fn decorator_and_dot_net_namespace_resolve() {
 fn user_model_extending_decorator_loads_and_validates() {
     let mut mgr = ModelManager::new().unwrap();
     mgr.load_model(
-            &serde_json::json!({
+            &crate::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.acme@1.0.0",
                 "imports": [
@@ -478,7 +478,7 @@ fn user_model_extending_decorator_loads_and_validates() {
 #[test]
 fn duplicate_namespace_rejected() {
     let mut mgr = ModelManager::new().unwrap();
-    let model = serde_json::json!({
+    let model = crate::json!({
         "$class": "concerto.metamodel@1.0.0.Model",
         "namespace": "org.x@1.0.0", "declarations": []
     });
@@ -492,7 +492,7 @@ fn duplicate_namespace_rejected() {
 #[test]
 fn duplicate_namespace_names_both_files() {
     let mut mgr = ModelManager::new().unwrap();
-    let model = serde_json::json!({
+    let model = crate::json!({
         "$class": "concerto.metamodel@1.0.0.Model",
         "namespace": "org.x@1.0.0", "declarations": []
     });
@@ -508,7 +508,7 @@ fn duplicate_namespace_names_both_files() {
 #[test]
 fn duplicate_namespace_without_file_names() {
     let mut mgr = ModelManager::new().unwrap();
-    let model = serde_json::json!({
+    let model = crate::json!({
         "$class": "concerto.metamodel@1.0.0.Model",
         "namespace": "org.x@1.0.0", "declarations": []
     });
@@ -521,7 +521,7 @@ fn duplicate_namespace_without_file_names() {
 #[test]
 fn add_models_rejects_a_duplicate_namespace_with_the_ts_message() {
     let mut mgr = ModelManager::new().unwrap();
-    let model = serde_json::json!({
+    let model = crate::json!({
         "$class": "concerto.metamodel@1.0.0.Model",
         "namespace": "org.x@1.0.0", "declarations": []
     });
@@ -574,7 +574,7 @@ fn assignability_follows_inheritance() {
 fn unresolved_super_type_is_hard_error() {
     let mut mgr = ModelManager::new().unwrap();
     mgr.load_model(
-            &serde_json::json!({
+            &crate::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.broken@1.0.0",
                 "declarations": [
@@ -608,7 +608,7 @@ fn get_all_properties_on_enum_gives_its_values() {
 fn manager_with_imports() -> ModelManager {
     let mut mgr = manager();
     mgr.load_model(
-            &serde_json::json!({
+            &crate::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.other@1.0.0",
                 "imports": [
@@ -704,7 +704,7 @@ fn get_ast_resolved_resolves_a_scalar_declarations_own_name() {
 #[test]
 fn resolve_meta_model_resolves_an_imported_super_type() {
     let mgr = manager_with_imports();
-    let model = serde_json::json!({
+    let model = crate::json!({
         "$class": "concerto.metamodel@1.0.0.Model",
         "namespace": "org.super@1.0.0",
         "imports": [
@@ -730,7 +730,7 @@ fn resolve_meta_model_resolves_an_imported_super_type() {
 #[test]
 fn resolve_meta_model_rejects_an_unresolvable_name() {
     let mgr = manager_with_imports();
-    let model = serde_json::json!({
+    let model = crate::json!({
         "$class": "concerto.metamodel@1.0.0.Model",
         "namespace": "org.broken@1.0.0",
         "declarations": [
@@ -748,7 +748,7 @@ fn resolve_meta_model_rejects_an_unresolvable_name() {
 #[test]
 fn resolve_meta_model_rejects_an_import_of_an_undeclared_type() {
     let mgr = manager_with_imports();
-    let model = serde_json::json!({
+    let model = crate::json!({
         "$class": "concerto.metamodel@1.0.0.Model",
         "namespace": "org.broken@1.0.0",
         "imports": [
@@ -770,8 +770,8 @@ fn resolve_meta_model_rejects_an_import_of_an_undeclared_type() {
 #[test]
 fn resolve_meta_model_accepts_an_empty_import_types_from_an_unknown_namespace() {
     let mgr = manager();
-    let model = |types: serde_json::Value| {
-        serde_json::json!({
+    let model = |types: crate::json::Value| {
+        crate::json!({
             "$class": "concerto.metamodel@1.0.0.Model",
             "namespace": "org.lonely@1.0.0",
             "imports": [
@@ -782,12 +782,11 @@ fn resolve_meta_model_accepts_an_empty_import_types_from_an_unknown_namespace() 
         })
     };
     assert_eq!(
-        mgr.resolve_meta_model(&model(serde_json::json!([])))
-            .unwrap(),
-        model(serde_json::json!([]))
+        mgr.resolve_meta_model(&model(crate::json!([]))).unwrap(),
+        model(crate::json!([]))
     );
     let err = mgr
-        .resolve_meta_model(&model(serde_json::json!(["Thing"])))
+        .resolve_meta_model(&model(crate::json!(["Thing"])))
         .unwrap_err();
     assert!(matches!(
         Some(err.contract()),
@@ -803,7 +802,7 @@ fn resolve_meta_model_accepts_an_empty_import_types_from_an_unknown_namespace() 
 fn manager_with_clean_import() -> ModelManager {
     let mut mgr = manager();
     mgr.load_model(
-            &serde_json::json!({
+            &crate::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.clean@1.0.0",
                 "imports": [
@@ -851,7 +850,7 @@ fn handles_survive_later_loads() {
     let state_version = mgr.state_version();
 
     mgr.load_model(
-            &serde_json::json!({
+            &crate::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.later@1.0.0",
                 "declarations": [
@@ -875,7 +874,7 @@ fn handles_survive_later_loads() {
 fn a_failed_load_changes_nothing() {
     let mut mgr = manager();
     let state_version = mgr.state_version();
-    let model = serde_json::json!({
+    let model = crate::json!({
         "$class": "concerto.metamodel@1.0.0.Model",
         "namespace": "org.example@1.0.0", "declarations": []
     });
@@ -951,7 +950,7 @@ fn class_declarations_span_every_loaded_model_file_and_include_enums() {
 fn class_declarations_exclude_maps_and_scalars() {
     let mut mgr = ModelManager::new().unwrap();
     mgr.load_model(
-        &serde_json::json!({
+        &crate::json!({
             "$class": "concerto.metamodel@1.0.0.Model",
             "namespace": "org.mapscalar@1.0.0",
             "declarations": [
@@ -987,7 +986,7 @@ fn class_declarations_exclude_maps_and_scalars() {
 fn aliasing_manager() -> ModelManager {
     let mut mgr = ModelManager::new().unwrap();
     mgr.load_model(
-            &serde_json::json!({
+            &crate::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "child@1.0.0",
                 "declarations": [
@@ -1001,7 +1000,7 @@ fn aliasing_manager() -> ModelManager {
         )
         .unwrap();
     mgr.load_model(
-            &serde_json::json!({
+            &crate::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "parent@1.0.0",
                 "imports": [
@@ -1249,7 +1248,7 @@ fn ported_members_run_on_the_arena() {
 #[test]
 fn resolve_type_name_carries_the_given_location_verbatim() {
     let mgr = ModelManager::new().unwrap();
-    let location = serde_json::json!({
+    let location = crate::json!({
         "start": {"line": 3, "column": 1, "offset": 20},
         "end": {"line": 3, "column": 9, "offset": 28}
     });
@@ -1280,8 +1279,8 @@ fn resolve_type_name_with_no_location_carries_none() {
 /// pair only succeeds once both are loaded, whatever order they loaded in;
 /// [`ModelManager::add_models`] is what does both steps as one
 /// all-or-nothing unit.
-fn base_model() -> serde_json::Value {
-    serde_json::json!({
+fn base_model() -> crate::json::Value {
+    crate::json!({
         "$class": "concerto.metamodel@1.0.0.Model",
         "namespace": "org.base@1.0.0",
         "declarations": [
@@ -1290,8 +1289,8 @@ fn base_model() -> serde_json::Value {
     })
 }
 
-fn dependent_model() -> serde_json::Value {
-    serde_json::json!({
+fn dependent_model() -> crate::json::Value {
+    crate::json!({
         "$class": "concerto.metamodel@1.0.0.Model",
         "namespace": "org.dependent@1.0.0",
         "imports": [
@@ -1379,7 +1378,7 @@ fn add_models_rolls_back_on_duplicate_against_an_existing_model() {
     let state_version = mgr.state_version();
     let count_before = mgr.model_files().count();
 
-    let clash = serde_json::json!({
+    let clash = crate::json!({
         "$class": "concerto.metamodel@1.0.0.Model",
         "namespace": "org.example@1.0.0", "declarations": []
     });
@@ -1503,7 +1502,7 @@ fn derives_from_propagates_gettype_s_error() {
 fn an_enum_derives_from_its_implicit_concept_super_type() {
     let mut mgr = manager();
     mgr.load_model(
-        &serde_json::json!({
+        &crate::json!({
             "$class": "concerto.metamodel@1.0.0.Model",
             "namespace": "org.scalar@1.0.0",
             "declarations": [
@@ -1538,7 +1537,7 @@ fn an_enum_derives_from_its_implicit_concept_super_type() {
 fn a_map_derives_only_from_itself_and_a_scalar_is_never_assignable() {
     let mut mgr = manager();
     mgr.load_model(
-        &serde_json::json!({
+        &crate::json!({
             "$class": "concerto.metamodel@1.0.0.Model",
             "namespace": "org.dv022@1.0.0",
             "declarations": [
@@ -1575,12 +1574,12 @@ fn a_map_derives_only_from_itself_and_a_scalar_is_never_assignable() {
 }
 
 fn concept_with(name: &str, super_type: Option<&str>, properties: Value) -> Value {
-    let mut decl = serde_json::json!({
+    let mut decl = crate::json!({
         "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
         "name": name, "isAbstract": false, "properties": properties
     });
     if let Some(super_type) = super_type {
-        decl["superType"] = serde_json::json!({
+        decl["superType"] = crate::json!({
             "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": super_type
         });
     }
@@ -1588,7 +1587,7 @@ fn concept_with(name: &str, super_type: Option<&str>, properties: Value) -> Valu
 }
 
 fn model(namespace: &str, imports: Value, declarations: Value) -> Value {
-    serde_json::json!({
+    crate::json!({
         "$class": "concerto.metamodel@1.0.0.Model",
         "namespace": namespace,
         "imports": imports,
@@ -1597,14 +1596,14 @@ fn model(namespace: &str, imports: Value, declarations: Value) -> Value {
 }
 
 fn string_property(name: &str) -> Value {
-    serde_json::json!({
+    crate::json!({
         "$class": "concerto.metamodel@1.0.0.StringProperty",
         "name": name, "isArray": false, "isOptional": false
     })
 }
 
 fn object_property(name: &str, type_name: &str) -> Value {
-    serde_json::json!({
+    crate::json!({
         "$class": "concerto.metamodel@1.0.0.ObjectProperty",
         "name": name, "isArray": false, "isOptional": false,
         "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": type_name }
@@ -1612,7 +1611,7 @@ fn object_property(name: &str, type_name: &str) -> Value {
 }
 
 fn import_type(namespace: &str, name: &str) -> Value {
-    serde_json::json!({
+    crate::json!({
         "$class": "concerto.metamodel@1.0.0.ImportType", "namespace": namespace, "name": name
     })
 }
@@ -1646,29 +1645,29 @@ fn the_last_of_two_imports_of_one_name_wins_for_extends_and_field_types() {
     for m in [
         model(
             "a@1.0.0",
-            serde_json::json!([]),
-            serde_json::json!([concept_with(
+            crate::json!([]),
+            crate::json!([concept_with(
                 "Foo",
                 None,
-                serde_json::json!([string_property("a")])
+                crate::json!([string_property("a")])
             )]),
         ),
         model(
             "b@1.0.0",
-            serde_json::json!([]),
-            serde_json::json!([concept_with(
+            crate::json!([]),
+            crate::json!([concept_with(
                 "Foo",
                 None,
-                serde_json::json!([string_property("b")])
+                crate::json!([string_property("b")])
             )]),
         ),
         model(
             "c@1.0.0",
-            serde_json::json!([import_type("a@1.0.0", "Foo"), import_type("b@1.0.0", "Foo")]),
-            serde_json::json!([concept_with(
+            crate::json!([import_type("a@1.0.0", "Foo"), import_type("b@1.0.0", "Foo")]),
+            crate::json!([concept_with(
                 "Bar",
                 Some("Foo"),
-                serde_json::json!([object_property("f", "Foo")])
+                crate::json!([object_property("f", "Foo")])
             )]),
         ),
     ] {
@@ -1696,20 +1695,20 @@ fn the_built_in_import_wins_over_a_user_import_of_a_system_name() {
     for m in [
         model(
             "x@1.0.0",
-            serde_json::json!([]),
-            serde_json::json!([concept_with(
+            crate::json!([]),
+            crate::json!([concept_with(
                 "Concept",
                 None,
-                serde_json::json!([string_property("x")])
+                crate::json!([string_property("x")])
             )]),
         ),
         model(
             "c@1.0.0",
-            serde_json::json!([import_type("x@1.0.0", "Concept")]),
-            serde_json::json!([concept_with(
+            crate::json!([import_type("x@1.0.0", "Concept")]),
+            crate::json!([concept_with(
                 "Bar",
                 Some("Concept"),
-                serde_json::json!([object_property("f", "Concept")])
+                crate::json!([object_property("f", "Concept")])
             )]),
         ),
     ] {
@@ -1729,7 +1728,7 @@ fn base_manager_is_assignable_to_matches_ts_including_the_abstract_check() {
     // exercise the "false even against itself" branch TS's own test
     // covers (`isAssignableTo should return false when fqn is abstract`).
     mgr.load_model(
-            &serde_json::json!({
+            &crate::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.abs@1.0.0",
                 "declarations": [
@@ -1751,7 +1750,7 @@ fn base_manager_is_assignable_to_matches_ts_including_the_abstract_check() {
 fn get_assignable_concrete_types_leaves_out_the_abstract_base_and_absent_types() {
     let mut mgr = manager();
     mgr.load_model(
-            &serde_json::json!({
+            &crate::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.abs2@1.0.0",
                 "declarations": [
@@ -1788,7 +1787,7 @@ fn get_models_excludes_system_and_decorator_models() {
 fn get_models_names_a_file_from_its_file_name() {
     let mut mgr = ModelManager::new().unwrap();
     mgr.load_model(
-        &serde_json::json!({
+        &crate::json!({
             "$class": "concerto.metamodel@1.0.0.Model",
             "namespace": "org.named@1.0.0", "declarations": []
         }),
@@ -1803,7 +1802,7 @@ fn get_models_names_a_file_from_its_file_name() {
 fn model_file_by_file_name_finds_the_matching_file() {
     let mut mgr = ModelManager::new().unwrap();
     mgr.add_model_with_definitions(
-        &serde_json::json!({
+        &crate::json!({
             "$class": "concerto.metamodel@1.0.0.Model",
             "namespace": "org.named@1.0.0", "declarations": []
         }),
@@ -1852,7 +1851,7 @@ fn model_file_by_optional_file_name_none_finds_the_unnamed_file() {
         ("org.unnamed2@1.0.0", None),
     ] {
         mgr.add_model_with_definitions(
-            &serde_json::json!({
+            &crate::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": ns, "declarations": []
             }),
@@ -1916,7 +1915,7 @@ fn filter_drops_a_file_left_with_no_declarations() {
 fn manager_with_decorator_subtype() -> ModelManager {
     let mut mgr = manager();
     mgr.load_model(
-            &serde_json::json!({
+            &crate::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.acme@1.0.0",
                 "imports": [
@@ -2052,7 +2051,7 @@ fn filter_dropping_everything_keeps_only_the_built_in_models() {
 fn update_model_file_replaces_the_registered_file() {
     let mgr = manager();
     let replacement = ModelFile::from_json(
-            &serde_json::json!({
+            &crate::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.example@1.0.0",
                 "declarations": [
@@ -2081,7 +2080,7 @@ fn with_model_file_registered_appends_exactly_as_a_rebuild_would() {
     // Warm the source's caches: the copy must not inherit them.
     assert!(mgr.properties("org.example@1.0.0.Person").is_ok());
     let fresh = ModelFile::from_json(
-            &serde_json::json!({
+            &crate::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.new@1.0.0",
                 "declarations": [
@@ -2161,7 +2160,7 @@ fn with_model_file_registered_appends_exactly_as_a_rebuild_would() {
 fn with_model_file_registered_replaces_in_place() {
     let mgr = manager();
     let replacement = ModelFile::from_json(
-        &serde_json::json!({
+        &crate::json!({
             "$class": "concerto.metamodel@1.0.0.Model",
             "namespace": "org.example@1.0.0",
             "declarations": []
@@ -2194,7 +2193,7 @@ fn with_model_file_registered_replaces_in_place() {
 fn update_model_file_rejects_an_unregistered_namespace() {
     let mgr = manager();
     let fresh = ModelFile::from_json(
-        &serde_json::json!({
+        &crate::json!({
             "$class": "concerto.metamodel@1.0.0.Model",
             "namespace": "org.new@1.0.0", "declarations": []
         }),
@@ -2225,9 +2224,9 @@ fn delete_model_file_rejects_an_absent_namespace() {
 
 /// A downloaded `org.ext@1.0.0` declaring `E` (and `extra` when given),
 /// as `updateExternalModels`' downloader returns it.
-fn external(declarations: serde_json::Value) -> ModelFileSource {
+fn external(declarations: crate::json::Value) -> ModelFileSource {
     ModelFileSource {
-        ast: serde_json::json!({
+        ast: crate::json!({
             "$class": "concerto.metamodel@1.0.0.Model",
             "namespace": "org.ext@1.0.0",
             "declarations": declarations
@@ -2237,8 +2236,8 @@ fn external(declarations: serde_json::Value) -> ModelFileSource {
     }
 }
 
-fn concept(name: &str) -> serde_json::Value {
-    serde_json::json!({ "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+fn concept(name: &str) -> crate::json::Value {
+    crate::json!({ "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
             "name": name, "isAbstract": false, "properties": [] })
 }
 
@@ -2246,7 +2245,7 @@ fn concept(name: &str) -> serde_json::Value {
 fn update_external_models_adds_then_updates_a_namespace() {
     let mut mgr = manager();
     let added = mgr
-        .update_external_models([external(serde_json::json!([concept("E")]))])
+        .update_external_models([external(crate::json!([concept("E")]))])
         .unwrap();
     assert_eq!(added.len(), 1);
     assert_eq!(added[0].file_name(), Some("@example.com.ext.cto"));
@@ -2254,7 +2253,7 @@ fn update_external_models_adds_then_updates_a_namespace() {
     assert!(mgr.model_file("org.ext@1.0.0").unwrap().is_external());
 
     // The same namespace again replaces it, in place.
-    mgr.update_external_models([external(serde_json::json!([concept("F")]))])
+    mgr.update_external_models([external(crate::json!([concept("F")]))])
         .unwrap();
     assert!(mgr.get_declaration("org.ext@1.0.0.F").is_ok());
     assert!(mgr.get_declaration("org.ext@1.0.0.E").is_err());
@@ -2266,7 +2265,7 @@ fn update_external_models_with_nothing_downloaded_still_validates() {
     let mut mgr = manager();
     assert!(mgr.update_external_models([]).unwrap().is_empty());
     mgr.load_model(
-            &serde_json::json!({
+            &crate::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.bad@1.0.0",
                 "declarations": [{ "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
@@ -2283,16 +2282,13 @@ fn update_external_models_with_nothing_downloaded_still_validates() {
 #[test]
 fn update_external_models_rolls_back_when_validation_fails() {
     let mut mgr = manager();
-    let broken = serde_json::json!([{ "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+    let broken = crate::json!([{ "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
             "name": "E", "isAbstract": false,
             "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Missing" },
             "properties": [] }]);
     assert!(
-        mgr.update_external_models([
-            external(serde_json::json!([concept("E")])),
-            external(broken)
-        ])
-        .is_err()
+        mgr.update_external_models([external(crate::json!([concept("E")])), external(broken)])
+            .is_err()
     );
     assert!(mgr.model_file("org.ext@1.0.0").is_none());
     assert!(mgr.get_declaration("org.example@1.0.0.Person").is_ok());
@@ -2304,13 +2300,13 @@ fn update_external_models_rolls_back_when_validation_fails() {
 #[test]
 fn circular_inheritance_is_an_illegal_model_error() {
     let concept = |name: &str, sup: &str| {
-        serde_json::json!({ "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
+        crate::json!({ "$class": "concerto.metamodel@1.0.0.ConceptDeclaration",
                 "name": name, "isAbstract": false, "properties": [],
                 "superType": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": sup } })
     };
     let mut mgr = ModelManager::new().unwrap();
     mgr.load_model(
-        &serde_json::json!({
+        &crate::json!({
             "$class": "concerto.metamodel@1.0.0.Model",
             "namespace": "org.cycle@1.0.0",
             "declarations": [concept("A", "C"), concept("B", "A"), concept("C", "B")]
@@ -2364,7 +2360,7 @@ fn a_super_type_imported_from_an_unregistered_namespace_is_not_defined() {
     // `unit/ClassDeclaration.getIdentifierFieldName/557a5087518a8343fade9b97`).
     let mut mgr = ModelManager::new().unwrap();
     mgr.load_model(
-            &serde_json::json!({
+            &crate::json!({
                 "$class": "concerto.metamodel@1.0.0.Model",
                 "namespace": "org.acme.l2@1.0.0",
                 "imports": [
@@ -2400,7 +2396,7 @@ fn a_super_type_imported_from_an_unregistered_namespace_is_not_defined() {
 fn aliased_manager() -> ModelManager {
     let mut mgr = ModelManager::new().unwrap();
     mgr.load_model(
-        &serde_json::json!({
+        &crate::json!({
             "$class": "concerto.metamodel@1.0.0.Model",
             "namespace": "org.other@1.0.0",
             "declarations": [
@@ -2412,7 +2408,7 @@ fn aliased_manager() -> ModelManager {
     )
     .unwrap();
     mgr.load_model(
-        &serde_json::json!({
+        &crate::json!({
             "$class": "concerto.metamodel@1.0.0.Model",
             "namespace": "org.main@1.0.0",
             "imports": [
@@ -2482,7 +2478,7 @@ fn model_file_resolve_type_rejects_an_undeclared_type() {
     for ok in ["Integer", "Local", "Figure"] {
         mgr.model_file_resolve_type(main, "ctx", ok, None).unwrap();
     }
-    let location = serde_json::json!({ "start": { "line": 1 } });
+    let location = crate::json!({ "start": { "line": 1 } });
     let err = mgr
         .model_file_resolve_type(main, "ctx", "Missing", Some(location.clone()))
         .unwrap_err();
@@ -2520,7 +2516,7 @@ fn update_external_models_names_the_failing_file_and_rolls_back() {
         .map(|f| f.namespace().to_string())
         .collect();
     let broken = ModelFileSource {
-        ast: serde_json::json!({
+        ast: crate::json!({
             "$class": "concerto.metamodel@1.0.0.Model",
             "namespace": "org.broken@1.0.0",
             "declarations": [
@@ -2548,14 +2544,14 @@ fn update_external_models_names_the_failing_file_and_rolls_back() {
 /// A concept `name` extending `super_type` (if any), with one string
 /// property `field`.
 fn p597_concept(name: &str, super_type: Option<&str>, field: &str) -> Value {
-    let mut decl = serde_json::json!({
+    let mut decl = crate::json!({
         "$class": "concerto.metamodel@1.0.0.ConceptDeclaration", "name": name, "isAbstract": false,
         "properties": [
             { "$class": "concerto.metamodel@1.0.0.StringProperty", "name": field, "isArray": false, "isOptional": false }
         ]
     });
     if let Some(super_type) = super_type {
-        decl["superType"] = serde_json::json!({ "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": super_type });
+        decl["superType"] = crate::json!({ "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": super_type });
     }
     decl
 }
@@ -2565,9 +2561,9 @@ fn p597_concept(name: &str, super_type: Option<&str>, field: &str) -> Value {
 fn user_model(namespace: &str) -> Value {
     model(
         namespace,
-        serde_json::json!([{ "$class": "concerto.metamodel@1.0.0.ImportType",
+        crate::json!([{ "$class": "concerto.metamodel@1.0.0.ImportType",
                                  "namespace": "org.example@1.0.0", "name": "Person" }]),
-        serde_json::json!([p597_concept("User", Some("Person"), "login")]),
+        crate::json!([p597_concept("User", Some("Person"), "login")]),
     )
 }
 
@@ -2684,16 +2680,16 @@ fn fork_shares_files_inherits_caches_and_is_isolated() {
 fn an_append_rebuilds_an_unsettled_plan() {
     let mut mgr = ModelManager::new().unwrap();
     let mut holder = p597_concept("Holder", None, "name");
-    holder["properties"].as_array_mut().unwrap().push(serde_json::json!({
+    holder["properties"].as_array_mut().unwrap().push(crate::json!({
             "$class": "concerto.metamodel@1.0.0.ObjectProperty", "name": "later", "isArray": false, "isOptional": true,
             "type": { "$class": "concerto.metamodel@1.0.0.TypeIdentifier", "name": "Later" }
         }));
     mgr.add_model_ast(
         &model(
             "org.holder@1.0.0",
-            serde_json::json!([{ "$class": "concerto.metamodel@1.0.0.ImportType",
+            crate::json!([{ "$class": "concerto.metamodel@1.0.0.ImportType",
                                      "namespace": "org.later@1.0.0", "name": "Later" }]),
-            serde_json::json!([holder]),
+            crate::json!([holder]),
         ),
         None,
     )
@@ -2704,8 +2700,8 @@ fn an_append_rebuilds_an_unsettled_plan() {
     mgr.add_model_ast(
         &model(
             "org.later@1.0.0",
-            serde_json::json!([]),
-            serde_json::json!([p597_concept("Later", None, "x")]),
+            crate::json!([]),
+            crate::json!([p597_concept("Later", None, "x")]),
         ),
         None,
     )
@@ -2774,8 +2770,8 @@ fn filter_shares_unchanged_files_and_keeps_validation() {
         .add_model_ast(
             &model(
                 "org.bad@1.0.0",
-                serde_json::json!([]),
-                serde_json::json!([p597_concept("Bad", Some("Nowhere"), "x")]),
+                crate::json!([]),
+                crate::json!([p597_concept("Bad", Some("Nowhere"), "x")]),
             ),
             None,
         )
@@ -2825,8 +2821,8 @@ fn validated_marks_follow_options_and_rollbacks() {
     // A batch whose validation fails restores the marks.
     let bad = model(
         "org.bad@1.0.0",
-        serde_json::json!([]),
-        serde_json::json!([p597_concept("Bad", Some("Nowhere"), "x")]),
+        crate::json!([]),
+        crate::json!([p597_concept("Bad", Some("Nowhere"), "x")]),
     );
     let user = user_model("org.user@1.0.0");
     assert!(base.load_models([(&user, None), (&bad, None)]).is_err());
@@ -2917,8 +2913,8 @@ fn external_models_are_shared_with_the_list_returned() {
     let external = |ns: &str, name: &str| ModelFileSource {
         ast: model(
             ns,
-            serde_json::json!([]),
-            serde_json::json!([p597_concept(name, None, "x")]),
+            crate::json!([]),
+            crate::json!([p597_concept(name, None, "x")]),
         ),
         definitions: None,
         file_name: Some(format!("@{ns}.cto")),

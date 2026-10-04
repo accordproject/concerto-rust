@@ -15,7 +15,7 @@
 use std::sync::LazyLock;
 
 #[cfg(feature = "js-compat")]
-use serde_json::Value;
+use crate::json::Value;
 
 #[cfg(feature = "js-compat")]
 use crate::ecma;
@@ -973,11 +973,11 @@ mod tests {
                     .prerelease
                     .iter()
                     .map(|id| match id {
-                        PrereleaseIdentifier::Number(n) => serde_json::json!(n),
-                        PrereleaseIdentifier::String(s) => serde_json::json!(s),
+                        PrereleaseIdentifier::Number(n) => crate::json!(n),
+                        PrereleaseIdentifier::String(s) => crate::json!(s),
                     })
                     .collect();
-                serde_json::json!({
+                crate::json!({
                     "raw": v.raw,
                     "major": v.major,
                     "minor": v.minor,
@@ -999,12 +999,12 @@ mod tests {
                     // JSON has one number type: compare the numbers as f64.
                     let mut parsed = parsed.clone();
                     for key in ["major", "minor", "patch"] {
-                        parsed[key] = serde_json::json!(parsed[key].as_f64());
+                        parsed[key] = crate::json!(parsed[key].as_f64());
                     }
                     if let Some(ids) = parsed["prerelease"].as_array_mut() {
                         for id in ids.iter_mut() {
                             if let Some(n) = id.as_f64() {
-                                *id = serde_json::json!(n);
+                                *id = crate::json!(n);
                             }
                         }
                     }
@@ -1147,30 +1147,30 @@ mod tests {
             |imp: Value| import_fully_qualified_names(Some(&imp)).map_err(|e| e.to_string());
         assert_eq!(
             names(
-                serde_json::json!({"$class": "concerto.metamodel@1.0.0.ImportAll", "namespace": "a@1.0.0"})
+                crate::json!({"$class": "concerto.metamodel@1.0.0.ImportAll", "namespace": "a@1.0.0"})
             ),
             Ok(vec!["a@1.0.0.*".to_string()])
         );
         assert_eq!(
             names(
-                serde_json::json!({"$class": "concerto.metamodel@1.0.0.ImportType", "namespace": "a@1.0.0", "name": "B"})
+                crate::json!({"$class": "concerto.metamodel@1.0.0.ImportType", "namespace": "a@1.0.0", "name": "B"})
             ),
             Ok(vec!["a@1.0.0.B".to_string()])
         );
         assert_eq!(
             names(
-                serde_json::json!({"$class": "concerto.metamodel@1.0.0.ImportTypes", "namespace": "a@1.0.0", "types": ["B", "C"]})
+                crate::json!({"$class": "concerto.metamodel@1.0.0.ImportTypes", "namespace": "a@1.0.0", "types": ["B", "C"]})
             ),
             Ok(vec!["a@1.0.0.B".to_string(), "a@1.0.0.C".to_string()])
         );
         assert_eq!(
             names(
-                serde_json::json!({"$class": "concerto.metamodel@1.0.0.ImportTypes", "namespace": "a@1.0.0"})
+                crate::json!({"$class": "concerto.metamodel@1.0.0.ImportTypes", "namespace": "a@1.0.0"})
             ),
             Err("Cannot read properties of undefined (reading 'forEach')".to_string())
         );
         assert_eq!(
-            names(serde_json::json!({"$class": "ImportAll"})),
+            names(crate::json!({"$class": "ImportAll"})),
             Err("Unrecognized imports ImportAll".to_string())
         );
     }

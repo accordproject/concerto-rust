@@ -24,7 +24,8 @@
 //!   concerto-vocabulary's `VocabularyManager.generateDecoratorCommands`,
 //!   which has no Rust port, and compare the models as CTO text printed by
 //!   concerto-cto's `Printer.toCTO`, which stays in JS.
-use serde_json::{Value, json};
+use crate::json;
+use crate::json::Value;
 use yaml_rust2::{Yaml, YamlLoader};
 
 use super::*;

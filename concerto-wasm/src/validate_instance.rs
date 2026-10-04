@@ -40,7 +40,7 @@ pub(crate) fn diagnostics_json(diagnostics: &[Diagnostic]) -> Value {
         diagnostics
             .iter()
             .map(|d| {
-                let mut out = serde_json::Map::new();
+                let mut out = concerto_core::json::Map::new();
                 out.insert("code".into(), json!(d.code.as_str()));
                 out.insert("path".into(), json!(d.pointer));
                 if let Some(expected) = &d.expected {

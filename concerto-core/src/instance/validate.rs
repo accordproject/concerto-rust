@@ -59,7 +59,7 @@
 use std::borrow::Cow;
 
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
-use serde_json::Value;
+use crate::json::Value;
 
 use crate::ecma;
 use crate::error::{ContractError, Error, ErrorKind, Result};
@@ -943,12 +943,12 @@ pub const MAP_TAG: &str = "$$map";
 
 /// The value that stands for a non-finite JS number ([`NUMBER_TAG`]).
 pub fn js_special_number(text: &str) -> Value {
-    serde_json::json!({ NUMBER_TAG: text })
+    crate::json!({ NUMBER_TAG: text })
 }
 
 /// The value that stands for a JS `Map` ([`MAP_TAG`]).
 pub fn js_map(entries: Vec<(Value, Value)>) -> Value {
-    serde_json::json!({
+    crate::json!({
         MAP_TAG: entries.into_iter().map(|(k, v)| Value::Array(vec![k, v])).collect::<Vec<_>>()
     })
 }
@@ -956,7 +956,7 @@ pub fn js_map(entries: Vec<(Value, Value)>) -> Value {
 /// The value that stands for a JS `BigInt` ([`BIGINT_TAG`]).
 #[cfg_attr(not(feature = "js-compat"), expect(dead_code, reason = "js-compat seam only"))]
 pub fn js_bigint(text: &str) -> Value {
-    serde_json::json!({ BIGINT_TAG: text })
+    crate::json!({ BIGINT_TAG: text })
 }
 
 /// The JS spelling of a [`NUMBER_TAG`] value.
@@ -1013,7 +1013,7 @@ pub fn js_number(n: f64) -> Value {
 
 /// The value that stands for a JS `undefined` ([`UNDEFINED_TAG`]).
 pub fn js_undefined() -> Value {
-    serde_json::json!({ UNDEFINED_TAG: true })
+    crate::json!({ UNDEFINED_TAG: true })
 }
 
 /// Whether `value` stands for a JS `undefined` ([`UNDEFINED_TAG`]).
@@ -1026,7 +1026,7 @@ pub fn is_js_undefined(value: &Value) -> bool {
 /// What the instance validator reads of the value it walks, so
 /// `concerto-core-js` can validate its values in place instead of
 /// deep-copying them into the tagged plain-JSON shape. Each method answers
-/// as that shape would ([`serde_json::Value`] is the shape itself); only a
+/// as that shape would ([`crate::json::Value`] is the shape itself); only a
 /// message that prints a value builds it ([`Self::to_value`]).
 pub trait ValidatorInput: Sized {
     /// A JS object's view ([`ValidatorObject`]).
@@ -1073,7 +1073,7 @@ pub trait ValidatorObject<'a, V: 'a>: Copy {
 }
 
 impl ValidatorInput for Value {
-    type Object<'a> = &'a serde_json::Map<String, Value>;
+    type Object<'a> = &'a crate::json::Map<String, Value>;
 
     fn is_undefined(&self) -> bool {
         is_js_undefined(self)
@@ -1116,7 +1116,7 @@ impl ValidatorInput for Value {
     }
 }
 
-impl<'a> ValidatorObject<'a, Value> for &'a serde_json::Map<String, Value> {
+impl<'a> ValidatorObject<'a, Value> for &'a crate::json::Map<String, Value> {
     fn class(&self) -> Option<&'a str> {
         self.get("$class").and_then(Value::as_str)
     }
@@ -1126,11 +1126,11 @@ impl<'a> ValidatorObject<'a, Value> for &'a serde_json::Map<String, Value> {
     }
 
     fn get(&self, key: &str) -> Option<&'a Value> {
-        serde_json::Map::get(self, key)
+        crate::json::Map::get(self, key)
     }
 
     fn keys(&self) -> impl Iterator<Item = &'a str> {
-        serde_json::Map::keys(self).map(String::as_str)
+        crate::json::Map::keys(self).map(String::as_str)
     }
 }
 
@@ -1138,7 +1138,7 @@ impl<'a> ValidatorObject<'a, Value> for &'a serde_json::Map<String, Value> {
 ///
 /// The `||` cannot be weakened to `&&` observably: the two tags each need an
 /// object with exactly one key, a different one, so no value has both.
-fn as_js_object(value: &Value) -> Option<&serde_json::Map<String, Value>> {
+fn as_js_object(value: &Value) -> Option<&crate::json::Map<String, Value>> {
     if is_js_undefined(value) || special_number(value).is_some() {
         None
     } else {
@@ -1158,7 +1158,7 @@ fn js_json_stringify(value: &Value) -> Option<String> {
             return Value::Null;
         }
         if map_entries(value).is_some() {
-            return Value::Object(serde_json::Map::new());
+            return Value::Object(crate::json::Map::new());
         }
         match value {
             Value::Array(items) => Value::Array(

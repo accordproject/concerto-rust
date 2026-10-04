@@ -8,8 +8,8 @@
 //! and its result, `ProcessedScalar`, is what the getters read. The WASM
 //! binding returns the same result to the TS view as its snapshot.
 
+use crate::json::Value;
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
-use serde_json::Value;
 
 #[cfg(feature = "js-compat")]
 use crate::ecma;
@@ -321,7 +321,7 @@ impl ScalarDeclaration {
 
     /// Validates a scalar declaration's AST as TS `new
     /// ScalarDeclaration(modelFile, ast)` does, and returns its fully qualified
-    /// name. Unlike the loader, it reads any AST as `serde_json::Value`
+    /// name. Unlike the loader, it reads any AST as `crate::json::Value`
     /// (PORTING.md 1.2), for the oracle's `ScalarDeclaration.new` fixtures and
     /// hand-built test ASTs.
     #[cfg(feature = "js-compat")]

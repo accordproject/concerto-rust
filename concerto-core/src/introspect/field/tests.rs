@@ -22,7 +22,7 @@ mod to_string_tests {
 
 mod scalar_to_field_ast_tests {
     use super::super::*;
-    use serde_json::json;
+    use crate::json;
 
     #[derive(Debug)]
     struct TestError(ContractError);

@@ -18,10 +18,11 @@
 use std::time::{Duration, Instant};
 
 use concerto_core::instance::{InstanceEnv, ValidationOptions};
+use concerto_core::json;
+use concerto_core::json::Value;
 use concerto_core::{ModelFile, ModelManager};
 use concerto_core_js::resource;
 use concerto_core_js::{Instance, JsValue, Serializer};
-use serde_json::{Value, json};
 
 const INSTANCES: usize = 500;
 

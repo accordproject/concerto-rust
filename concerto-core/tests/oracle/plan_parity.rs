@@ -14,7 +14,7 @@
 use std::fmt::Write as _;
 
 use concerto_core::instance::plan::testing::uncached;
-use serde_json::Value;
+use concerto_core::json::Value;
 
 use crate::Harness;
 use crate::fixture::Fixture;

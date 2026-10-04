@@ -28,7 +28,7 @@ fn yaml_to_json_matches_the_golden_fixture() {
 }
 
 fn type_reference_dcs_json(namespace: Option<&str>, resolved_name: Option<&str>) -> Value {
-    let mut type_obj = serde_json::json!({
+    let mut type_obj = crate::json!({
         "$class": "concerto.metamodel@1.0.0.TypeIdentifier",
         "name": "Info",
     });
@@ -38,7 +38,7 @@ fn type_reference_dcs_json(namespace: Option<&str>, resolved_name: Option<&str>)
     if let Some(rn) = resolved_name {
         type_obj["resolvedName"] = Value::String(rn.to_string());
     }
-    serde_json::json!({
+    crate::json!({
         "$class": "org.accordproject.decoratorcommands@0.4.0.DecoratorCommandSet",
         "name": "exampleDCS",
         "version": "1.0.0",
@@ -184,7 +184,7 @@ fn yaml_to_json_handles_an_unresolved_and_unaliased_type_reference() {
 
 #[test]
 fn round_trips_a_command_with_string_number_and_boolean_arguments() {
-    let dcs_json = serde_json::json!({
+    let dcs_json = crate::json!({
         "$class": "org.accordproject.decoratorcommands@0.4.0.DecoratorCommandSet",
         "name": "argsDCS",
         "version": "1.0.0",
@@ -234,7 +234,7 @@ fn round_trips_a_command_with_string_number_and_boolean_arguments() {
 /// own `Display` gave `1e-6` and `1e21`.
 #[test]
 fn json_to_yaml_writes_a_number_argument_as_js_string_does() {
-    let dcs_json = serde_json::json!({
+    let dcs_json = crate::json!({
         "$class": "org.accordproject.decoratorcommands@0.4.0.DecoratorCommandSet",
         "name": "n",
         "version": "1.0.0",
@@ -273,7 +273,7 @@ fn json_to_yaml_writes_a_number_argument_as_js_string_does() {
 
 #[test]
 fn a_decorator_with_no_arguments_omits_the_arguments_key() {
-    let decorator = serde_json::json!({ "name": "NoArgs", "arguments": [] });
+    let decorator = crate::json!({ "name": "NoArgs", "arguments": [] });
     assert_eq!(
         handle_decorator(&decorator),
         Yaml::Map(vec![(
@@ -285,7 +285,7 @@ fn a_decorator_with_no_arguments_omits_the_arguments_key() {
 
 #[test]
 fn json_to_yaml_rejects_a_command_set_with_no_commands_array() {
-    let dcs_json = serde_json::json!({
+    let dcs_json = crate::json!({
         "$class": "org.accordproject.decoratorcommands@0.4.0.DecoratorCommandSet",
         "name": "x",
         "version": "1.0.0"
@@ -317,10 +317,10 @@ fn yaml_to_json_builds_the_class_from_an_absent_version_as_undefined() {
 #[test]
 fn json_to_yaml_rejects_every_reference_invalid_input() {
     for invalid in [
-        serde_json::json!({ "invalid": "dcsJson" }),
-        serde_json::json!({ "version": "1.0.0", "commands": [] }),
-        serde_json::json!({ "name": "test", "commands": [] }),
-        serde_json::json!({ "name": "test", "version": "1.0.0" }),
+        crate::json!({ "invalid": "dcsJson" }),
+        crate::json!({ "version": "1.0.0", "commands": [] }),
+        crate::json!({ "name": "test", "commands": [] }),
+        crate::json!({ "name": "test", "version": "1.0.0" }),
     ] {
         assert!(
             crate::dcs::validated_json_to_yaml(&invalid).is_err(),

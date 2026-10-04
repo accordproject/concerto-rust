@@ -23,7 +23,7 @@
 //! The `_as` forms check against a named type rather than the instance's
 //! own `$class`.
 
-use serde_json::Value;
+use crate::json::Value;
 
 use crate::error::{DetailCode, Error, Result};
 use crate::model_manager::ModelManager;
@@ -652,7 +652,7 @@ fn locate(err: &Error, instance: &Value) -> Option<Vec<String>> {
 }
 
 /// The `$class` of an object, when it is a string.
-fn class_of(map: &serde_json::Map<String, Value>) -> Option<&str> {
+fn class_of(map: &crate::json::Map<String, Value>) -> Option<&str> {
     map.get("$class").and_then(Value::as_str)
 }
 
@@ -661,7 +661,7 @@ fn class_of(map: &serde_json::Map<String, Value>) -> Option<&str> {
 fn find_object(
     value: &Value,
     pointer: &str,
-    wanted: &dyn Fn(&serde_json::Map<String, Value>) -> bool,
+    wanted: &dyn Fn(&crate::json::Map<String, Value>) -> bool,
 ) -> Option<String> {
     match value {
         Value::Object(map) => {
@@ -923,7 +923,7 @@ mod tests {
     // ---- `diagnose` ----
 
     use crate::ErrorKind;
-    use serde_json::json;
+    use crate::json;
 
     const MM: &str = "concerto.metamodel@1.0.0";
 

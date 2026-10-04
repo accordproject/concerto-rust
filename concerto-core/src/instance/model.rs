@@ -7,7 +7,7 @@
 //! `JSONGenerator` (`modelManager.getType(...)`, then `classDecl.isX()`),
 //! kept in one place so that each port reads the same way as its TS.
 
-use serde_json::Value;
+use crate::json::Value;
 
 use crate::Error;
 use crate::error::{ContractError, ErrorKind, Result};
@@ -198,7 +198,7 @@ pub enum FieldType<'a> {
         /// The primitive type the scalar aliases.
         primitive: Option<&'static str>,
         /// The scalar's default value.
-        default_value: Option<&'a serde_json::Value>,
+        default_value: Option<&'a crate::json::Value>,
         /// The scalar's validator.
         validator: Option<&'a ScalarValidator>,
     },

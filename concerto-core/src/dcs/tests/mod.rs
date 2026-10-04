@@ -1,5 +1,5 @@
 use super::*;
-use serde_json::json;
+use crate::json;
 
 /// `org.acme@1.0.0` with a single `Person { name: String }`.
 fn sample_manager() -> ModelManager {

@@ -1,7 +1,8 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use serde_json::{Value, json};
+use crate::json;
+use crate::json::Value;
 
 use super::{RANGE, ast_conforms, node_conforms, optional_location};
 use crate::error::Error;

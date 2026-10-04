@@ -1,10 +1,11 @@
 //! The stable surface of docs/public-api.md section 5, as a native caller
 //! uses it (task P6-01, accordproject/concerto-rust#83).
 
+use concerto_core::json;
+use concerto_core::json::Value;
 use concerto_core::model_manager::AstOptions;
 use concerto_core::model_util::{ParsedNamespace, parse_namespace, qualify, short_name};
 use concerto_core::{ClassKind, Declaration, ErrorKind, ModelManager};
-use serde_json::{Value, json};
 
 const MM: &str = "concerto.metamodel@1.0.0";
 

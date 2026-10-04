@@ -34,7 +34,7 @@ use std::sync::{Arc, Mutex};
 use crate::hash::{FastSeededHashMap, SeededHashSet};
 use rustc_hash::FxHashSet;
 
-use serde_json::Value;
+use crate::json::Value;
 
 use concerto_metamodel::concerto_metamodel_1_0_0 as mm;
 
@@ -365,7 +365,7 @@ impl ModelManager {
     /// [`ModelManager::add_model`]'s load, for the crate's own callers.
     pub(crate) fn load_model(
         &mut self,
-        value: &serde_json::Value,
+        value: &crate::json::Value,
         file_name: Option<String>,
     ) -> Result<()> {
         self.add_model_with_definitions(value, None, file_name)
@@ -377,7 +377,7 @@ impl ModelManager {
         /// from an AST has none, as in TS's `astProcessFile`.
         pub fn add_model_with_definitions(
             &mut self,
-            value: &serde_json::Value,
+            value: &crate::json::Value,
             definitions: Option<String>,
             file_name: Option<String>,
         ) -> Result<()> {
@@ -391,7 +391,7 @@ impl ModelManager {
     #[cfg(feature = "js-compat")]
     pub fn add_owned_model_with_definitions(
         &mut self,
-        value: serde_json::Value,
+        value: crate::json::Value,
         definitions: Option<String>,
         file_name: Option<String>,
     ) -> Result<()> {
@@ -576,7 +576,7 @@ impl ModelManager {
     /// TS: `BaseModelManager.addModelFiles`.
     pub(crate) fn load_models<'a>(
         &mut self,
-        models: impl IntoIterator<Item = (&'a serde_json::Value, Option<String>)>,
+        models: impl IntoIterator<Item = (&'a crate::json::Value, Option<String>)>,
     ) -> Result<Vec<ModelFileId>> {
         self.register_batch(
             models.into_iter().map(|(value, file_name)| {
@@ -694,7 +694,7 @@ impl ModelManager {
     /// TS: `ModelManager.addModel` with an AST, without its validation.
     pub fn add_model_ast(
         &mut self,
-        ast: &serde_json::Value,
+        ast: &crate::json::Value,
         file_name: Option<&str>,
     ) -> Result<ModelFileId> {
         let mf = ModelFile::from_json_with_definitions(ast, None, file_name.map(str::to_string))?;
@@ -702,7 +702,7 @@ impl ModelManager {
     }
 
     /// [`ModelManager::add_model_ast`] for an AST given as JSON text: the
-    /// same result, read without building a `serde_json::Value` first.
+    /// same result, read without building a `crate::json::Value` first.
     /// Text that is not JSON is an `IllegalModel` error.
     pub fn add_model_ast_text(
         &mut self,
@@ -730,7 +730,7 @@ impl ModelManager {
     /// TS: `BaseModelManager.addModelFiles`.
     pub fn add_model_asts<'a>(
         &mut self,
-        models: impl IntoIterator<Item = (&'a serde_json::Value, Option<&'a str>)>,
+        models: impl IntoIterator<Item = (&'a crate::json::Value, Option<&'a str>)>,
     ) -> Result<Vec<ModelFileId>> {
         self.load_models(
             models
@@ -746,7 +746,7 @@ impl ModelManager {
     /// TS: `BaseModelManager.updateModelFile`, without its validation.
     pub fn update_model_ast(
         &mut self,
-        ast: &serde_json::Value,
+        ast: &crate::json::Value,
         file_name: Option<&str>,
     ) -> Result<ModelFileId> {
         let mf = ModelFile::from_json(ast, file_name.map(str::to_string))?;

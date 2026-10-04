@@ -12,7 +12,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use serde_json::json;
+use concerto_core::json;
 
 use super::compare::{self, Verdict};
 use super::cto_cache::CtoCache;
@@ -31,7 +31,7 @@ fn bare() -> Harness {
 
 /// Writes one fixture JSON file, merging `body` (`inputs`, `outcome`, and
 /// any override) over a set of sensible defaults.
-fn write_fixture(dir: &std::path::Path, op: &str, id: &str, body: serde_json::Value) {
+fn write_fixture(dir: &std::path::Path, op: &str, id: &str, body: concerto_core::json::Value) {
     let mut full = json!({
         "id": id,
         "source": "self-test",
@@ -370,7 +370,7 @@ fn a_message_only_difference_passes_and_is_reported() {
     let (fixtures, _) = fixture::load_all(&dir);
     recorder.record(&fixtures[0], verdict, &Ledger::default());
     let report = recorder.finish(&[].into());
-    let json = serde_json::to_value(&report).expect("report serialises");
+    let json = concerto_core::json::to_value(&report).expect("report serialises");
     assert_eq!(json["pass"], 1);
     assert_eq!(json["fail"], 0);
     assert_eq!(json["message_only"], 1);
@@ -507,7 +507,7 @@ fn resolves_a_blob_referenced_argument() {
 /// to: an enum and a concept with a field of that enum type.
 const CTO: &str = "namespace test@1.0.0\nenum Colour { o RED }\nconcept Car { o Colour colour }\n";
 
-fn test_ast() -> serde_json::Value {
+fn test_ast() -> concerto_core::json::Value {
     json!({
         "$class": "concerto.metamodel@1.0.0.Model",
         "namespace": "test@1.0.0",
@@ -543,9 +543,9 @@ fn write_cache_entry(
     cache: &std::path::Path,
     cto: &str,
     file_name: Option<&str>,
-    entry: serde_json::Value,
+    entry: concerto_core::json::Value,
 ) {
-    let key = CtoCache::key(cto, file_name, &serde_json::Value::Null);
+    let key = CtoCache::key(cto, file_name, &concerto_core::json::Value::Null);
     let dir = cache.join(&key[..2]);
     fs::create_dir_all(&dir).unwrap();
     fs::write(dir.join(format!("{key}.json")), entry.to_string()).unwrap();
@@ -559,14 +559,18 @@ fn with_cache(dir: &std::path::Path) -> Harness {
 }
 
 /// A model manager recipe with one `addCTOModel` step.
-fn recipe_with_cto(file_name: &str, disable_validation: bool, status: &str) -> serde_json::Value {
+fn recipe_with_cto(
+    file_name: &str,
+    disable_validation: bool,
+    status: &str,
+) -> concerto_core::json::Value {
     json!({
         "@@oracle": "mm", "id": 0, "kind": "ModelManager",
         "steps": [{
             "method": "addCTOModel",
             "args": [CTO, file_name, disable_validation],
             "status": status,
-            "errorClass": if status == "ok" { serde_json::Value::Null } else { json!("IllegalModelException") }
+            "errorClass": if status == "ok" { concerto_core::json::Value::Null } else { json!("IllegalModelException") }
         }]
     })
 }
@@ -589,7 +593,7 @@ fn cto_cache_keys_match_build_cto_cache_js() {
         CtoCache::key(
             "namespace test@1.0.0\n\"quoted\" \u{1} é",
             Some("a.cto"),
-            &serde_json::Value::Null
+            &concerto_core::json::Value::Null
         ),
         "4e1a627892a106d26c4c2e971cb58245d7fa11e9d369934486a2836235ad15a7"
     );
@@ -905,7 +909,7 @@ fn a_run_passes_only_when_it_matches_the_baseline_exactly() {
     ]
     .into();
     let report = report_against(&dir, &fixed);
-    let json = serde_json::to_value(&report).unwrap();
+    let json = concerto_core::json::to_value(&report).unwrap();
     assert_eq!(json["fixed"], json!(["ModelUtil.getShortName\tpasses"]));
     assert!(
         regresses(&report),
@@ -916,7 +920,7 @@ fn a_run_passes_only_when_it_matches_the_baseline_exactly() {
     // A new pass: the baseline does not list it.
     let new_pass: report::Baseline = [entry("known", Fail(ValueMismatch))].into();
     let report = report_against(&dir, &new_pass);
-    let json = serde_json::to_value(&report).unwrap();
+    let json = concerto_core::json::to_value(&report).unwrap();
     assert_eq!(
         json["new_passes"],
         json!(["ModelUtil.getShortName\tpasses"])
@@ -931,7 +935,7 @@ fn a_run_passes_only_when_it_matches_the_baseline_exactly() {
     let mut stale = exact;
     stale.extend([entry("gone", Pass)]);
     let report = report_against(&dir, &stale);
-    let json = serde_json::to_value(&report).unwrap();
+    let json = concerto_core::json::to_value(&report).unwrap();
     assert_eq!(json["missing"], json!(["ModelUtil.getShortName\tgone"]));
     assert!(
         regresses(&report),
@@ -1236,7 +1240,7 @@ fn concerto_oracle_ledger_points_at_the_ledger_directly() {
 
 /// `test@1.0.0`, one concept with a string property: no type reference, so
 /// metamodel resolution would change nothing and `decorateModels` runs.
-fn dcs_model_manager_recipe() -> serde_json::Value {
+fn dcs_model_manager_recipe() -> concerto_core::json::Value {
     json!({
         "@@oracle": "mm", "id": 0, "kind": "ModelManager",
         "steps": [{
@@ -1266,7 +1270,7 @@ fn dcs_model_manager_recipe() -> serde_json::Value {
 /// A command set whose decorator takes a type reference to a namespace
 /// no model declares: the synthetic import `decorateModels` adds for it
 /// fails `fromAst`'s model validation, and only that.
-fn dcs_unknown_type_reference() -> serde_json::Value {
+fn dcs_unknown_type_reference() -> concerto_core::json::Value {
     json!({
         "$class": "org.accordproject.decoratorcommands@0.4.0.DecoratorCommandSet",
         "name": "web", "version": "1.0.0",
@@ -1294,16 +1298,16 @@ fn dcs_unknown_type_reference() -> serde_json::Value {
 
 /// A command set with no `commands`: the structural stand-in for
 /// `Serializer.fromJSON`'s resource validation rejects it.
-fn dcs_without_commands() -> serde_json::Value {
+fn dcs_without_commands() -> concerto_core::json::Value {
     json!({
         "$class": "org.accordproject.decoratorcommands@0.4.0.DecoratorCommandSet",
         "name": "web", "version": "1.0.0"
     })
 }
 
-fn ts_error(class: &str, message: &str) -> serde_json::Value {
+fn ts_error(class: &str, message: &str) -> concerto_core::json::Value {
     let component = match class {
-        "Error" => serde_json::Value::Null,
+        "Error" => concerto_core::json::Value::Null,
         // `ValidationException` extends concerto-util's `BaseException` and
         // passes no explicit component (`ContractError::component`,
         // `ErrorKind::Validation`), so `BaseException`'s own default
@@ -1317,7 +1321,12 @@ fn ts_error(class: &str, message: &str) -> serde_json::Value {
     } })
 }
 
-fn judge_dcs(name: &str, op: &str, args: serde_json::Value, outcome: serde_json::Value) -> Verdict {
+fn judge_dcs(
+    name: &str,
+    op: &str,
+    args: concerto_core::json::Value,
+    outcome: concerto_core::json::Value,
+) -> Verdict {
     let dir = scratch_dir(name);
     write_fixture(
         &dir,

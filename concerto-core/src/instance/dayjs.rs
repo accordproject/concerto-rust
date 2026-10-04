@@ -145,8 +145,8 @@ impl Dayjs {
     /// This date in the instance validator's value shape: a
     /// `DAYJS_TAG`-tagged object holding its ISO string (`null` when
     /// invalid).
-    pub fn validator_value(&self) -> serde_json::Value {
-        serde_json::json!({ super::validate::DAYJS_TAG: self.to_iso_string() })
+    pub fn validator_value(&self) -> crate::json::Value {
+        crate::json!({ super::validate::DAYJS_TAG: self.to_iso_string() })
     }
 
     /// `isValid()`.
@@ -704,7 +704,7 @@ mod golden {
         format_json: String,
         iso: Option<String>,
         js_string: String,
-        validator: serde_json::Value,
+        validator: crate::json::Value,
     }
 
     fn bits(n: f64) -> u64 {

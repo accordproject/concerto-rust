@@ -28,7 +28,7 @@ use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 #[path = "common/mod.rs"]
 mod common;
 
-fn load_only(set: &[(String, serde_json::Value)]) -> ModelManager {
+fn load_only(set: &[(String, concerto_core::json::Value)]) -> ModelManager {
     let mut mgr = ModelManager::new().expect("system model loads");
     for (name, ast) in set {
         mgr.add_model(ast, Some(name.clone()))
@@ -40,7 +40,7 @@ fn load_only(set: &[(String, serde_json::Value)]) -> ModelManager {
 fn load_text_value(texts: &[(String, String)]) -> ModelManager {
     let mut mgr = ModelManager::new().expect("system model loads");
     for (name, text) in texts {
-        let value: serde_json::Value = serde_json::from_str(text).expect("fixture is JSON");
+        let value: concerto_core::json::Value = serde_json::from_str(text).expect("fixture is JSON");
         mgr.add_owned_model_with_definitions(value, None, Some(name.clone()))
             .unwrap_or_else(|e| panic!("loading {name}: {e}"));
     }

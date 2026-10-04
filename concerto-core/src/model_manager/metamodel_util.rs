@@ -1,6 +1,6 @@
 use crate::hash::SeededHashMap;
 
-use serde_json::Value;
+use crate::json::Value;
 
 use crate::error::{ContractError, Error, ErrorKind, Result};
 

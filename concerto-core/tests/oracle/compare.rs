@@ -15,7 +15,7 @@
 //! message difference kept for the report. Throw/no-throw, class,
 //! component, location, values and effects are still compared exactly.
 
-use serde_json::Value;
+use concerto_core::json::Value;
 
 use super::fixture::Fixture;
 use super::ledger::UNOWNED;
@@ -173,7 +173,7 @@ fn without_messages(value: &Value, top: bool) -> Value {
             Value::Array(items.iter().map(|x| without_messages(x, false)).collect())
         }
         Value::Object(map) => {
-            let mut out: serde_json::Map<String, Value> = map
+            let mut out: concerto_core::json::Map<String, Value> = map
                 .iter()
                 .map(|(k, x)| (k.clone(), without_messages(x, false)))
                 .collect();

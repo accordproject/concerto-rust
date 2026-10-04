@@ -1,4 +1,4 @@
-    use serde_json::json;
+    use crate::json;
 
     use super::*;
 

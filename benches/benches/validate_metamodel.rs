@@ -66,7 +66,7 @@ fn bench_model_set(c: &mut Criterion, set_name: &str) {
 
     // The public free function (P5-21), over the models it accepts,
     // checked once outside the timed section.
-    let accepted_free: Vec<&serde_json::Value> = set
+    let accepted_free: Vec<&concerto_core::json::Value> = set
         .iter()
         .map(|(_, ast)| ast)
         .filter(|ast| metamodel::validate_ast(ast).is_ok())
