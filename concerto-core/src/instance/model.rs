@@ -298,13 +298,9 @@ impl Field<'_> {
     }
 }
 
-/// Where a relationship is held (BC-05): a relationship property (`--> T
-/// field`), or the value of a map declared with a relationship value type
-/// (`map M { o String --> T }`). The populator's and the generator's
-/// relationship code takes one of these, so a map value is read and written
-/// by the same code as a relationship property, under the same
-/// `acceptResourcesForRelationships`, `convertResourcesToRelationships` and
-/// `permitResourcesForRelationships` options.
+/// Where a relationship is held (BC-05): a relationship property, or the
+/// value of a map with a relationship value type. Both are read and written
+/// by the same code, under the same relationship options.
 #[derive(Debug, Clone, Copy)]
 pub struct RelationshipSlot<'a> {
     /// The fully-qualified name of the class that declares the property,

@@ -132,14 +132,9 @@ impl ClassNode {
     }
 }
 
-/// A class-like declaration's `identified`, as decoded strictly into the
-/// generated struct, with the one rule `ClassDeclaration.process` applies to
-/// a well-formed node: an `IdentifiedBy` gives `this.idField =
-/// this.ast.identified.name`, read only by truthiness afterwards
-/// (`if (this.idField)`), so an empty name is no identity.
-///
-/// The value is a node or `null`: BC-19's shape check, or with the check off
-/// the strict decode, rejects anything else.
+/// A class-like declaration's `identified`, decoded strictly (a node or
+/// `null`; BC-19). An `IdentifiedBy` gives TS's `this.idField`, read only by
+/// truthiness, so an empty name is no identity.
 pub(crate) fn identity(identified: Option<mm::Identified>) -> Option<mm::Identified> {
     match identified {
         Some(mm::Identified::IdentifiedBy(by)) if by.name.is_empty() => None,
@@ -148,26 +143,11 @@ pub(crate) fn identity(identified: Option<mm::Identified>) -> Option<mm::Identif
 }
 
 /// A concept-like declaration: concept, asset, participant, transaction or
-/// event, distinguished by [`ClassDeclaration::kind`].
-///
-/// It wraps the generated `mm::*Declaration` struct for its kind, except the
-/// property list: `properties` may hold an `EnumProperty`, which the
-/// generated `mm::Property` union does not cover, so each is kept as a
-/// [`Property`] and the generated `properties` is left empty.
-///
-/// Two things are folded in at load time:
-///
-/// - `implicit_super_type`: a class whose AST has no `superType` extends one
-///   implicitly (except the system `Concept`, the root): an asset,
-///   participant, transaction or event its own kind's system type, as TS's
-///   `ModelFile.fromAst` injects it, and a concept (or an enum) `Concept`.
-///   [`super_type`] returns it whenever the AST has none.
-/// - the `$identifier`/`$timestamp` system fields, appended to `properties`
-///   as `addIdentifierField`/`addTimestampField` do, so
-///   [`own_properties`] carries them.
-///
-/// [`super_type`]: ClassDeclaration::super_type
-/// [`own_properties`]: ClassDeclaration::own_properties
+/// event ([`ClassDeclaration::kind`]), wrapping the generated struct, with
+/// properties kept as [`Property`] (they may be `EnumProperty`s). Folded in
+/// at load: the implicit super type TS's `fromAst` injects (returned by
+/// `super_type` when the AST has none), and the `$identifier`/`$timestamp`
+/// system fields, appended as `addIdentifierField`/`addTimestampField` do.
 #[derive(Debug, Clone)]
 pub struct ClassDeclaration {
     node: ClassNode,
@@ -265,11 +245,9 @@ impl ClassDeclaration {
         self.identified().is_some()
     }
 
-    /// The name of the field that provides this class's own identity, for a
-    /// type that is identified by one of its own fields (`identified by
-    /// field`). A system-identified type (`identified`) or a type with no
-    /// own identity both return `None`; unlike
-    /// [`ClassDeclaration::is_identified`], never true from inheritance.
+    /// The name of the field that gives this class its own identity (`identified
+    /// by field`); `None` for a system-identified type or one with no own
+    /// identity, never from inheritance.
     ///
     /// TS: `ClassDeclaration.isExplicitlyIdentified` reduces to this
     /// (`!!this.idField && this.idField !== '$identifier'`).
@@ -406,17 +384,11 @@ impl ClassDeclaration {
     }
 
     /// The `superType`/`idField` decision `ClassDeclaration.process` makes
-    /// before its `ast.properties` loop: `if (this.ast.superType) {
-    /// this.superType = this.ast.superType.name; } else if
-    /// (!(isSystemModelFile && name === 'Concept')) { this.superType =
-    /// 'Concept'; }`, a truthiness test on the AST node, not its `name`.
-    ///
-    /// `explicit_super_type` says only which branch TS took (`Some`: the
-    /// node is truthy); its `name` may be any JSON value, so the binding
-    /// carries the raw value separately and ignores `super_type` on that
-    /// branch. `identified_class` and `identified_name` are
-    /// `this.ast.identified.$class` and `.name` as given; `fqn` is
-    /// `this.fqn`.
+    /// before its properties loop: an explicit super type when `ast.superType`
+    /// is truthy (`explicit_super_type`, whose `name` may be any JSON value, so
+    /// the binding carries it raw), else `Concept` except for the system
+    /// `Concept` itself. `identified_class`/`identified_name` are
+    /// `ast.identified.$class`/`.name` as given.
     #[cfg(feature = "js-compat")]
     pub fn process_decision(
         explicit_super_type: Option<&str>,
@@ -458,13 +430,10 @@ impl ClassDeclaration {
         is_system_model_file && name == "Concept"
     }
 
-    /// Builds the declaration from the node the typed read gave
-    /// ([`Declaration::from_typed`]): the implicit super type, the
-    /// `$identifier`/`$timestamp` system fields and the validator checks.
-    /// The system fields are appended after the AST's own properties, as TS's
-    /// `addIdentifierField`/`addTimestampField` do, bypassing the
-    /// `isSystemProperty` guard on AST names. `namespace` is the model file's,
-    /// for the implicit super type and the system `Transaction`/`Event`.
+    /// Builds the declaration from the typed read ([`Declaration::from_typed`]):
+    /// the implicit super type, the `$identifier`/`$timestamp` system fields
+    /// (appended after the AST's own, bypassing `isSystemProperty`, as TS does)
+    /// and the validator checks. `namespace` is the model file's.
     fn finish(
         kind: ClassKind,
         node: ClassNode,
@@ -652,14 +621,9 @@ pub enum Declaration {
 }
 
 /// An enumeration declaration: the generated [`mm::EnumDeclaration`], its
-/// processed decorators, and its values read as [`Property`] (which carries
-/// each value's processed decorators, for `Decorated.validate`'s checks).
-///
-/// TS's `EnumDeclaration extends ClassDeclaration` and overrides only
-/// `toString` and `declarationKind`, so the methods below give the answers
-/// [`ClassDeclaration`] gives, over the narrower AST shape (no
-/// `isAbstract`, `identified` or `superType`); `model_manager::ClassLike`
-/// reads either kind the same way.
+/// processed decorators, and its values as [`Property`]. TS's
+/// `EnumDeclaration` extends `ClassDeclaration`, so the methods below
+/// answer as [`ClassDeclaration`]'s do, over the narrower AST shape.
 #[derive(Debug, Clone, DeclarationKind)]
 #[concerto(kind = "EnumDeclaration")]
 pub struct EnumDeclaration {

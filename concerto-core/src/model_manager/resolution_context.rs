@@ -145,13 +145,10 @@ impl ModelManager {
     }
 }
 
-/// The manager answers collaborator calls from its own graph. A node of a
-/// kind whose TS object has no such method answers V8's "is not a function"
-/// `TypeError` (as TS raises for a primitive type name `ModelFile.getType`
-/// returned). A handle this manager never handed out is an error. Every
-/// class-like or enum declaration's chain has the implicit `Concept` super
-/// type, so [`ResolutionContext::get_all_super_type_declarations`] has it
-/// too.
+/// The manager answers collaborator calls from its own graph. A node kind
+/// whose TS object lacks the method answers V8's "is not a function"
+/// `TypeError`; a handle this manager never handed out is an error. Every
+/// chain has the implicit `Concept` super type.
 impl ResolutionContext for ModelManager {
     type Node = Node;
     type Error = Error;

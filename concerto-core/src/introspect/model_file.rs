@@ -143,13 +143,11 @@ impl ModelFile {
         Self::load_text_with_imports(text, definitions, file_name)
     }
 
-    /// [`ModelFile::from_json_text_with_imports`] with BC-19's AST shape
-    /// check first, as the TS `ModelFile` constructor runs it, from one parse
-    /// and one strict decode. A rejected AST is the check's error, before any
-    /// part of the load; any other error is the load's. The check is folded
-    /// into the typed read (`introspect::shape`): only an AST the read cannot
-    /// vouch for is checked again by the full check, so the verdict and the
-    /// error are always the full check's.
+    /// [`ModelFile::from_json_text_with_imports`] with BC-19's AST shape check
+    /// first, as the TS constructor runs it, from one parse and one strict
+    /// decode. A rejected AST is the check's error, before any part of the load.
+    /// The check is folded into the typed read; only an AST it cannot vouch for
+    /// gets the full check, so the verdict and error are always that check's.
     #[cfg(feature = "js-compat")]
     pub fn from_json_text_checked_with_imports(
         text: &str,
@@ -589,15 +587,11 @@ impl ModelFile {
         self.namespace.starts_with("concerto@")
     }
 
-    /// Resolves a short name from what this file declares or imports: the
-    /// primitives, its named imports, and its own declarations. Returns
-    /// `None` if the name is none of those.
-    ///
-    /// Imports are checked before local declarations, as TS
-    /// `ModelFile.getType`/`resolveType` do. A name is both only when
-    /// `dangerouslyAllowReservedSystemTypeNamesInUserModels` waives the
-    /// import-clash check: a local `Asset` must still resolve its implicit
-    /// `Asset` super type to the system declaration, not to itself.
+    /// Resolves a short name from the primitives, this file's named imports and
+    /// its own declarations, imports first, as TS `getType`/`resolveType` do.
+    /// A name is both only under
+    /// `dangerouslyAllowReservedSystemTypeNamesInUserModels`, where a local
+    /// `Asset` must still resolve its implicit super type to the system one.
     pub fn resolve_local_type(&self, short: &str) -> Option<String> {
         if is_primitive_type(short) {
             return Some(short.to_string());
@@ -1339,11 +1333,9 @@ impl ModelFile {
 }
 
 /// TS `ModelFile.isCompatibleVersion`: a declared `concertoVersion` range
-/// must admit this runtime's version (`semver.satisfies(…,
-/// {includePrerelease: true})`) or a v3 model (`semver.minSatisfying(['3.0.0'],
-/// range)`); anything else is a plain `Error`. `None` when the AST has no
-/// `concertoVersion`. The range check is node-semver's grammar
-/// ([`crate::semver_range::satisfies`]), not Cargo's: they disagree on
+/// must admit this runtime's version (with prereleases) or a v3 model;
+/// anything else is a plain `Error`. The range grammar is node-semver's
+/// ([`crate::semver_range::satisfies`]), not Cargo's, which disagrees on
 /// space-separated comparators, hyphen ranges and a bare version.
 fn check_compatible_version(value: Option<&serde_json::Value>) -> Result<Option<String>> {
     let Some(range) = value.and_then(|v| v.as_str()).filter(|s| !s.is_empty()) else {

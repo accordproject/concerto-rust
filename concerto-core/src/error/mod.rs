@@ -33,11 +33,9 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 /// The error type of `concerto-core`: a model that cannot be loaded, a type
 /// that cannot be resolved, a model or an instance that fails validation.
 ///
-/// It is opaque: read it through its accessors. [`kind`](Error::kind) is the
-/// class of failure (one TS exception class each), and
-/// [`code`](Error::code) the stable catalogue key, safe to match on. The
-/// message (`Display`) is the TS message today, but its wording carries no
-/// stability promise (docs/public-api.md section 2).
+/// Opaque: [`kind`](Error::kind) is the failure class (one TS exception
+/// class each) and [`code`](Error::code) the stable catalogue key. The
+/// message wording carries no stability promise (docs/public-api.md 2).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Error(Box<ContractError>);
 
@@ -249,13 +247,10 @@ pub enum ErrorKind {
     ///
     /// TS: `TypeNotFoundException(typeName, message)`.
     TypeNotFound,
-    /// A value fails a validator declared on a field or scalar.
-    ///
-    /// TS 5.0.0: concerto-util `BaseException(message, undefined,
-    /// errorType)`, thrown by `Validator.reportError`. Nothing raises this
-    /// kind (BC-39): a validator error at model load is
-    /// [`ErrorKind::IllegalModel`], and an instance value that fails a
-    /// validator is [`ErrorKind::Validation`], each keeping the `errorType` in
+    /// A value fails a validator declared on a field or scalar (TS 5.0.0
+    /// `Validator.reportError`). Nothing raises this kind (BC-39): a validator
+    /// error at model load is [`ErrorKind::IllegalModel`], and on an instance
+    /// [`ErrorKind::Validation`], each keeping the `errorType` in
     /// [`ContractError::validator`]. Kept for the enum's public shape.
     Validator,
     /// An instance does not conform to its model.

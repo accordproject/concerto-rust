@@ -627,15 +627,10 @@ pub fn assign_field_defaults(
     assign_field_defaults_of(&class_decl, assign)
 }
 
-/// [`assign_field_defaults`] for the declaration `class_fqn` names.
-///
-/// Every step but `assign` depends only on the model, so the converted
-/// defaults are cached per declaration
-/// (`ModelManager::cached_field_defaults`). TS resolves each field's
-/// type and assigns its default in one pass, so a field whose type does
-/// not resolve fails only after every earlier default was assigned: the
-/// list is cached only when every field resolves, and otherwise this
-/// runs that same pass field by field, so the first error is TS's.
+/// [`assign_field_defaults`] for the declaration `class_fqn` names. The
+/// converted defaults are cached per declaration, but only when every
+/// field's type resolves; otherwise this runs TS's single pass field by
+/// field, so the first error comes after the earlier defaults, as in TS.
 pub fn assign_field_defaults_of(
     class_decl: &TypeRef,
     assign: &mut dyn FnMut(&str, FieldDefault) -> Result<()>,

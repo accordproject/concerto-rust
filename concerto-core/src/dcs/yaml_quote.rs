@@ -177,14 +177,11 @@ pub(crate) fn json_quote(value: &str) -> String {
     serde_json::to_string(value).expect("a &str always serialises")
 }
 
-/// A value safe for embedding in a YAML scalar. String values containing
-/// YAML-special characters are wrapped in double quotes; non-string
-/// decorator argument types (Number, Boolean) are returned unchanged.
+/// A value safe for embedding in a YAML scalar: a string with YAML-special
+/// characters is double-quoted; other argument types are unchanged.
 ///
 /// TS: `DecoratorExtractor.quoteStringValue` (`src/decoratorextractor.ts`).
-/// `value` is `String(value)` already applied — see
-/// [`crate::dcs::extractor::DecoratorExtractor`]'s call sites, which apply
-/// the same JS `String()` coercion the reference does before reaching here.
+/// `value` already has JS `String()` applied by the caller.
 pub(crate) fn quote_string_value(value: &str, type_class: Option<&str>) -> String {
     if type_class != Some(DECORATOR_STRING_TYPE) {
         return value.to_string();

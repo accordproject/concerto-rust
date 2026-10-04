@@ -77,16 +77,12 @@ pub struct Decorator {
 }
 
 impl Decorator {
-    /// Builds a decorator from its raw `Decorator` AST node: a
-    /// [`serde_json::Value`], or the node as the typed read keeps it
-    /// ([`AstNode`]). One decoder for both.
+    /// Builds a decorator from its `Decorator` AST node, a
+    /// [`serde_json::Value`] or the typed read's node ([`AstNode`]).
     ///
-    /// TS: `Decorator.process` (`this.name = ast.name`, then one argument at
-    /// a time). A `DecoratorTypeReference` argument becomes
-    /// [`DecoratorArgument::TypeReference`]; anything else contributes its
-    /// `value` as the literal it already is (`DecoratorString`,
-    /// `DecoratorNumber` or `DecoratorBoolean`, by construction of the CTO
-    /// grammar and the AST codec).
+    /// TS: `Decorator.process`. A `DecoratorTypeReference` argument becomes
+    /// [`DecoratorArgument::TypeReference`]; any other contributes its literal
+    /// `value`.
     pub fn from_ast<N: AstNode>(ast: &N) -> Self {
         let name = ast.field("name");
         let arguments = ast
@@ -143,28 +139,14 @@ impl Decorator {
     }
 
     js_compat_pub! {
-        /// Semantic validation of the decorator: that its name and any type
-        /// reference argument resolve, and that its arguments match the count
-        /// and types of the properties of the type it names, if that type is
-        /// itself a declaration.
-        ///
-        /// Runs only when `manager`'s [`DecoratorValidationOptions`] enable it: TS
-        /// guards the whole body on `validationOptions.missingDecorator ||
-        /// validationOptions.invalidDecorator` and does nothing at all otherwise
-        /// (`DEFAULT_DECORATOR_VALIDATION` leaves both `undefined`).
-        ///
-        /// `context` is the fully qualified name of the decorated element, used
-        /// only to describe *where* an unresolved name was found; pass `None` for
-        /// a model file's own decorators, which have no such name in TS either.
-        ///
-        /// Every problem is reported through
-        /// [`DecoratorValidationOptions::invalid_decorator`], except the
-        /// decorator's own name failing to resolve
-        /// ([`DecoratorValidationOptions::missing_decorator`]); anything thrown
-        /// while checking arguments is caught and re-reported through
-        /// `missing_decorator`, as TS's one `try`/`catch` does. Reporting
-        /// throws only for the exact string `"error"`; any other level would
-        /// only log, and Rust has no logger, so it is accepted silently.
+        /// Semantic validation of the decorator: its name and any type-reference
+        /// argument resolve, and its arguments match the properties of the type it
+        /// names. Runs only when [`DecoratorValidationOptions`] enable it, as TS
+        /// guards its body. `context` (the decorated element's name, `None` for a
+        /// model file) only describes where a name failed. Problems go to
+        /// `invalid_decorator`, an unresolved own name and anything thrown while
+        /// checking arguments to `missing_decorator`, as TS's `try`/`catch` does;
+        /// only the level `"error"` throws (Rust has no logger for the others).
         ///
         /// TS: `Decorator.validate` (src/introspect/decorator.ts).
         pub fn validate(
@@ -256,13 +238,9 @@ impl Decorator {
         Ok(())
     }
 
-    /// `mf.resolveType(context, this.getName(), location)`: `this.getName()`
-    /// must be a primitive, a locally declared type, or an imported one.
-    ///
-    /// An imported name is not checked further through
-    /// `BaseModelManager.resolveType` as `ModelFile.resolveType` does: every
-    /// failure of [`ModelManager::resolve_type_name`] is reported as TS
-    /// reports an undeclared type.
+    /// `mf.resolveType(context, this.getName(), location)`: the name must be a
+    /// primitive, a local type or an imported one. Every failure of
+    /// [`ModelManager::resolve_type_name`] is reported as an undeclared type.
     ///
     /// TS: `ModelFile.resolveType` (src/introspect/modelfile.ts).
     fn resolve_own_name(
@@ -463,16 +441,11 @@ impl Decorator {
         Ok(())
     }
 
-    /// TS: the outer `catch (err) { this.handleError(validationOptions.missingDecorator, err); }`:
-    /// whatever the `try` block threw is reported again at the
-    /// `missingDecorator` level, so it is thrown only when that level is
-    /// `"error"`.
-    ///
-    /// BC-14: an `IllegalModelException` caught here, already carrying its
-    /// file, is thrown as it is; any other error becomes an
-    /// `IllegalModelException` with its own message and one file suffix. TS
-    /// 5.0.0 embedded the caught error's `"IllegalModelException: "` prefix
-    /// and file suffix, then added the suffix again (DV-016).
+    /// TS's outer `catch`: whatever the `try` block threw is reported again at
+    /// the `missingDecorator` level. BC-14: an `IllegalModelException` that
+    /// already carries its file is thrown as it is; any other error becomes one
+    /// with its own message and one file suffix (TS 5.0.0 nested the prefix and
+    /// suffix, DV-016).
     fn rethrow(
         &self,
         manager: &ModelManager,

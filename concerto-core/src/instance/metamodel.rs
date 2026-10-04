@@ -60,17 +60,12 @@ fn metamodel_model_manager() -> Result<ModelManager> {
     Ok(mm)
 }
 
-/// Runs `f` on a resident, per-thread `metamodel_model_manager`, built on
-/// the first call on each thread and kept with its caches warm. It is the
-/// crate's one resident metamodel manager: [`validate_metamodel`],
-/// [`validate_meta_model_instance`], `ModelManager::validate_ast_value`'s
-/// pre-check, the DCS validation manager (a [`ModelManager::fork`] of it)
-/// and the concerto-wasm binding `validateMetaModelInstance` (hence `pub`
-/// under `js-compat`) all use it.
-///
-/// The manager is only ever read, so every call gets the result and error a
-/// fresh manager would give. A build error is returned, not cached. Being
-/// per-thread, it adds no shared state.
+/// Runs `f` on the crate's one resident, per-thread metamodel manager, built
+/// on first use and kept warm. It is only ever read, so every call gets the
+/// result a fresh manager would; a build error is returned, not cached. Used
+/// by metamodel validation, `validate_ast_value`, the DCS validation manager
+/// and concerto-wasm's `validateMetaModelInstance` (hence `pub` under
+/// `js-compat`).
 pub fn with_resident_metamodel_manager<R>(
     f: impl FnOnce(&ModelManager) -> Result<R>,
 ) -> Result<R> {
@@ -229,20 +224,11 @@ pub fn validate_meta_model_instance(input: &Value) -> Result<()> {
     })
 }
 
-/// TS `modelManagerFromMetaModel(metaModel, validate = true)`
-/// (src/introspect/metamodel.ts):
-///
-/// 1. when `validate` is set, [`validate_meta_model_instance`] first;
-/// 2. a fresh [`ModelManager`] (`new ModelManager()`, no options);
-/// 3. for each entry of `metaModel.models`, in order, `new ModelFile(mm,
-///    model, null, null)` (which runs [`check_ast_shape`] on an object
-///    model, BC-19) and a validating `addModelFile(mf, null, null)`: a
-///    namespace already registered is the already-exists error, otherwise
-///    the new file alone is validated against the manager as it stands;
-/// 4. `validateModelFiles()` over the whole manager.
-///
-/// `metaModel.models.forEach` on something that is not an array is V8's
-/// `TypeError`, as in TS.
+/// TS `modelManagerFromMetaModel(metaModel, validate = true)`: with
+/// `validate`, [`validate_meta_model_instance`] first; then a fresh
+/// [`ModelManager`] gets each model in order, as `new ModelFile` (with
+/// [`check_ast_shape`], BC-19) and a validating `addModelFile`, then
+/// `validateModelFiles()`. A non-array `models` is V8's `TypeError`, as in TS.
 #[cfg_attr(not(feature = "js-compat"), expect(dead_code, reason = "js-compat seam only"))]
 pub fn model_manager_from_meta_model(meta_model: &Value, validate: bool) -> Result<ModelManager> {
     if validate {

@@ -605,12 +605,9 @@ pub fn deserialize_seed<'de, S: DeserializeSeed<'de>>(
 }
 
 /// The value `bytes` hold as the instance validator reads it, for the
-/// instance fast path (concerto-wasm `validate_resource.rs`, whose TS
-/// writer, src/engine/ wire.ts, is the AST's too): the one reader of the
-/// layout, with a double spelled as `instance::validate::js_number` spells
-/// a finite JS number (an integral one below `2^53` as an integer, any
-/// other as itself) rather than as `JSON.stringify`'s text of it reads.
-/// Everything else is [`to_value`]'s. An error for bytes not in the layout.
+/// instance fast path: as [`to_value`], except that a double is spelled as
+/// `instance::validate::js_number` spells a finite JS number. An error for
+/// bytes not in the layout.
 pub fn to_validator_value(bytes: &[u8]) -> Result<Value, Error> {
     let mut compact = Compact::new(bytes);
     compact.validator_numbers = true;

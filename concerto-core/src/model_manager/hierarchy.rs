@@ -405,16 +405,11 @@ impl ModelManager {
             })
     }
 
-    /// `fqn` itself, plus every declaration that (transitively) extends it,
-    /// in TS's pre-order: each declaration before its own direct
-    /// subclasses, which come in load order.
+    /// `fqn` and every declaration that transitively extends it, in TS's
+    /// pre-order (subclasses in load order). A cycle (only possible with
+    /// validation disabled) is the BC-11 `IllegalModelException` naming it.
     ///
-    /// A declaration met again below itself is a cyclic inheritance chain:
-    /// the BC-11 `IllegalModelException` naming the cycle. Only a model
-    /// loaded with validation disabled has one.
-    ///
-    /// TS: `ClassDeclaration.getAssignableClassDeclarations`, inherited
-    /// unchanged by `EnumDeclaration`.
+    /// TS: `ClassDeclaration.getAssignableClassDeclarations`
     pub(super) fn assignable_type_names(&self, fqn: &str) -> Result<Vec<String>> {
         Ok(match self.declaration_id(fqn) {
             Some(id) => self
@@ -497,13 +492,10 @@ impl ModelManager {
             .unwrap_or_else(|| Arc::from([])))
     }
 
-    /// The direct subclasses of `id` (`None`: of no declaration, only
-    /// resolving the population), from the cache, or from one pass that
-    /// builds TS's `subclassMap` and caches every declaration's bucket at
-    /// once: every loaded class-like declaration ([`Self::all_class_like`])
-    /// under the declaration its super type resolves to, in the order they
-    /// are met. A super type that does not resolve fails the pass, as it
-    /// fails TS's `getSuperType()`, and nothing is cached.
+    /// The direct subclasses of `id` (`None`: only resolve the population),
+    /// cached, or from one pass that builds TS's `subclassMap` and caches every
+    /// bucket. A super type that does not resolve fails the pass, as TS's
+    /// `getSuperType()` does, and nothing is cached.
     pub(super) fn direct_subclass_ids(&self, id: Option<DeclId>) -> Result<Option<Arc<[DeclId]>>> {
         if let Some(id) = id
             && let Some(found) = self.decl_cache.get(id, |facts| &facts.direct_subclasses)
@@ -683,14 +675,10 @@ impl ModelManager {
         self.property_with_owner(id)
     }
 
-    /// Works out the full name of a class's direct super type, resolved in the
-    /// namespace where the class is declared.
-    ///
-    /// TS keeps only the super type `TypeIdentifier`'s `name` and resolves it
-    /// through the declaring file's imports (an aliased import's
-    /// `TypeIdentifier` holds the target's namespace with the alias as
-    /// `name`), so this resolves `ti.name` through
-    /// [`ModelManager::resolve_type_name`].
+    /// The full name of a class's direct super type, resolved in its declaring
+    /// namespace. TS keeps only the `TypeIdentifier`'s `name` and resolves it
+    /// through the file's imports (an alias included), so this resolves
+    /// `ti.name` with [`ModelManager::resolve_type_name`].
     pub(super) fn super_type_fqn(
         &self,
         class: &ClassLike<'_>,

@@ -240,13 +240,11 @@ pub struct ClassPlan {
 }
 
 impl ClassPlan {
-    /// True when nothing in the plan was left unresolved or unplanned:
-    /// every property's kind resolved (a map's key and value too), and
-    /// every validator, including the identifier's, was built or is absent.
-    /// Such a plan reads only declarations that resolved, so adding a model
-    /// file to the manager cannot change it, and the plan cache keeps it
-    /// across an append (`ModelManager::keep_caches_for_append`); any other
-    /// plan is built again.
+    /// True when every property's kind (a map's key and value too) resolved
+    /// and every validator was built or is absent. Such a plan reads only
+    /// resolved declarations, so adding a model file cannot change it and the
+    /// plan cache keeps it across an append
+    /// (`ModelManager::keep_caches_for_append`).
     pub fn is_settled(&self) -> bool {
         self.settled
     }

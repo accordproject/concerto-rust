@@ -24,12 +24,9 @@ pub trait Named {
 }
 
 js_compat_pub! {
-    /// An element with a fully qualified name: the namespace of its model file,
-    /// then its own name.
-    ///
-    /// In TS the name is read through the element's collaborators (its model
-    /// file, or its parent), so computing it may fail with whatever those calls
-    /// raise.
+    /// An element with a fully qualified name: its model file's namespace, then
+    /// its own name. In TS the name is read through the element's
+    /// collaborators, so computing it may fail with whatever they raise.
     ///
     /// TS: Declaration.getFullyQualifiedName (src/introspect/declaration.ts),
     /// Property.getFullyQualifiedName (src/introspect/property.ts)

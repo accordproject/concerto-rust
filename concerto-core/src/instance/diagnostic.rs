@@ -414,19 +414,12 @@ pub struct Diagnosis {
     pub error: Option<Error>,
 }
 
-/// The entry point of the JS binding's `validateInstance`: validates
-/// `instance`, a plain JSON document, as `Serializer.fromJSON` does with
-/// `options` (and `validate: true`), as the type `fqn` when one is given
-/// (its own `$class` must then be `fqn` or a subtype) and as its own
-/// `$class` otherwise.
-///
-/// One read and one walk, collecting every violation (with `collect_all`)
-/// or the first, at the JSON Pointer it was found at. The first is the
-/// error `Serializer.fromJSON` throws ([`Diagnosis::error`]), so the
-/// instance is valid exactly when `fromJSON` would not throw, and the first
-/// diagnostic is that error's ([`diagnostics_of_error`]). Every diagnostic
-/// gets its [`expected`](Diagnostic::expected) type where the model gives
-/// one.
+/// The JS binding's `validateInstance`: validates `instance` as
+/// `Serializer.fromJSON` does with `options` and `validate: true`, as `fqn`
+/// (its `$class` must then be `fqn` or a subtype) or its own `$class`. One
+/// walk collects every violation (with `collect_all`) or the first, each at
+/// its JSON Pointer; the first is the error `fromJSON` throws
+/// ([`Diagnosis::error`]).
 #[cfg_attr(not(feature = "js-compat"), allow(dead_code))]
 pub fn diagnose(
     mm: &ModelManager,
@@ -465,12 +458,11 @@ pub fn diagnose(
     }
 }
 
-/// The diagnostics of `err`, an error `Serializer.fromJSON` (or
-/// [`diagnose`]) raised for `instance` with `options`, which the JS binding
-/// attaches to the exception as its `details` (accordproject/concerto#1325):
-/// one per accordproject/concerto#1273 detail, or one for the error, at the
-/// pointer the walk found it at (when its first violation is the same
-/// check), or where the error itself says, with its
+/// The diagnostics the JS binding attaches as `details`
+/// (accordproject/concerto#1325) to an error `Serializer.fromJSON` or
+/// [`diagnose`] raised for `instance`: one per
+/// accordproject/concerto#1273 detail, else one for the error, at the
+/// pointer the walk found it at or where the error says, with its
 /// [`expected`](Diagnostic::expected) type.
 #[cfg_attr(not(feature = "js-compat"), allow(dead_code))]
 pub fn diagnostics_of_error(
@@ -494,19 +486,11 @@ pub fn diagnostics_of_error(
     diagnostics
 }
 
-/// [`diagnose`] for a document that is not plain JSON (an `undefined`
-/// field, `-0`, `NaN`, a `Map`, a dayjs), whose verdict `read` gives (the
-/// JS binding reads it with `Serializer.fromJSON`, `validate: true`).
-/// `readings` are the document in the validator's tagged form
-/// (`JsValue::to_validator_value`), as many ways as JSON can spell it, the
-/// first used to locate an error none of them gives.
-///
-/// With `fqn`, the document's `$class` is first checked to be `fqn` or a
-/// subtype, as [`diagnose`] checks it; `read` then decides, so the error is
-/// always `read`'s (the exception class `fromJSON` throws). The
-/// diagnostics are [`diagnose`]'s over the first reading whose walk raises
-/// that same error (kind, code, parameters and details), else the error's
-/// own ([`diagnostics_of_error`]); either way the first is the error's.
+/// [`diagnose`] for a document that is not plain JSON (`undefined`, `-0`,
+/// `NaN`, a `Map`, a dayjs), whose verdict `read` gives (the JS binding's
+/// `Serializer.fromJSON`), so the error is always `read`'s. `readings` are
+/// the document's tagged forms; the diagnostics are [`diagnose`]'s over the
+/// first reading whose walk raises the same error, else the error's own.
 ///
 /// # Panics
 ///

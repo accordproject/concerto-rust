@@ -35,15 +35,11 @@ pub enum Action {
     ExtractNonVocab,
 }
 
-/// One AST node's collected decorators, keyed in the extraction dictionary
-/// ([`ExtractionDictionary`]) by the namespace they were found in.
-/// `ExtractedDecorator` (`src/decoratorextractor.ts`), borrowed from the
-/// models being walked: the names are the AST's own strings (empty where
-/// TS's field is unset) and `decorators` is the AST `decorators` array
-/// itself, read before any of it is stripped — TS's `dcs` field is a
-/// `JSON.stringify`'d copy taken at the same point (`obj.dcs`, later
-/// `JSON.parse`'d back in `transformDecoratorsAndVocabularies`), which a
-/// borrow of the unchanged array reads the same as.
+/// One AST node's collected decorators (TS `ExtractedDecorator`), keyed in
+/// [`ExtractionDictionary`] by namespace, borrowed from the models: names
+/// are the AST's own strings (empty where TS's field is unset), and
+/// `decorators` is the AST array read before stripping, which reads the
+/// same as TS's `JSON.stringify`'d `dcs` copy.
 #[derive(Debug, Clone, Copy, Default)]
 struct ExtractedDecorators<'a> {
     declaration: &'a str,
@@ -184,13 +180,10 @@ impl<'a> DecoratorExtractor<'a> {
         }
     }
 
-    /// `DecoratorExtractor.transformDecoratorsAndVocabularies`
-    /// (`src/decoratorextractor.ts`), over the borrowed dictionary
-    /// [`collect_models`] built, without any intermediate [`Value`]: the
-    /// command sets as the JSON text of the `DecoratorCommandSet` array,
-    /// serialised through borrowed views of the AST nodes
-    /// ([`CommandSetView`]), and the vocabularies from a borrowed tree
-    /// ([`VocabTree`]) in place of TS's `vocabObject`.
+    /// `DecoratorExtractor.transformDecoratorsAndVocabularies` over the borrowed
+    /// dictionary, with no intermediate [`Value`]: the command sets as JSON text
+    /// through borrowed views ([`CommandSetView`]), and the vocabularies from a
+    /// borrowed tree ([`VocabTree`]).
     fn encode_decorators_and_vocabularies(
         &self,
         extraction_dictionary: &ExtractionDictionary<'_>,
@@ -273,13 +266,10 @@ impl<'a> DecoratorExtractor<'a> {
         }
     }
 
-    /// The model-changing half of `DecoratorExtractor.processModels`
-    /// (`processDeclarations`, `processMapDeclaration`, `processProperties`,
-    /// `src/decoratorextractor.ts`), run after [`collect_models`] has read
-    /// every decorator: each node's decorators filtered
-    /// ([`Self::filter_out_decorators`]), and a model with no `declarations`
-    /// given an empty array, as TS's `model.declarations = ...map(...)`
-    /// leaves it.
+    /// The model-changing half of `DecoratorExtractor.processModels`, after
+    /// [`collect_models`] has read every decorator: filters each node's
+    /// decorators, and gives a model without `declarations` an empty array, as
+    /// TS does.
     fn process_models(&self, models: &mut [Value]) {
         for model in models.iter_mut() {
             if has_decorators(model) {
@@ -318,36 +308,23 @@ impl<'a> DecoratorExtractor<'a> {
         }
     }
 
-    /// The command sets (as JSON text) and vocabularies that
-    /// [`Self::extract`] would return for `models`: the same walk and
-    /// the same transform, with the same first error, but no result
-    /// manager. `models` are the source models of an earlier
-    /// extraction ([`ExtractResult::source_models`]); this
-    /// extractor's own source AST is not read. The command sets and
-    /// vocabularies are read before any decorator is stripped, so
-    /// `removeDecoratorsFromModel` does not change them.
+    /// The command sets (JSON text) and vocabularies [`Self::extract`] would
+    /// return for `models` (an earlier extraction's
+    /// [`ExtractResult::source_models`]), with the same first error but no
+    /// result manager. Read before stripping, so `removeDecoratorsFromModel`
+    /// does not change them.
     pub(crate) fn encode_source(&self, models: &[Value]) -> Result<(String, Vec<String>)> {
         let mut extraction_dictionary = ExtractionDictionary::new();
         collect_models(&mut extraction_dictionary, models);
         self.encode_decorators_and_vocabularies(&extraction_dictionary)
     }
 
-    /// `DecoratorExtractor.extract` (`src/decoratorextractor.ts`), with the
-    /// command sets and vocabularies encoded directly from the borrowed AST
-    /// nodes ([`Self::encode_decorators_and_vocabularies`]), and a copy of
-    /// the source models kept in the result when `keep_source` is set.
-    ///
-    /// The models are walked twice rather than once. The first walk
-    /// ([`collect_models`]) only borrows them, recording where each
-    /// `decorators` array is; the command sets and vocabularies are built
-    /// from those borrows before the second walk ([`Self::process_models`])
-    /// strips the decorators in place, and the models are then moved, not
-    /// copied, into the result manager. Errors keep TS's order: a load or
-    /// validation failure of the result models is thrown ahead of a
-    /// vocabulary-key error from the transform.
-    ///
-    /// `models` are the source models, the `models` of an `IModels`
-    /// envelope (TS's `sourceModelAst.models`).
+    /// `DecoratorExtractor.extract` over `models` (TS `sourceModelAst.models`):
+    /// a borrowing walk ([`collect_models`]) builds the command sets and
+    /// vocabularies, then [`Self::process_models`] strips the decorators in
+    /// place and the models move into the result manager. With `keep_source`,
+    /// a copy of the source models is kept. Errors keep TS's order: a result
+    /// model's load or validation failure comes before a vocabulary-key error.
     pub(crate) fn extract(
         &self,
         mut models: Vec<Value>,

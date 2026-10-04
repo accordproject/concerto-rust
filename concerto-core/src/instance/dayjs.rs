@@ -154,14 +154,10 @@ impl Dayjs {
         self.instant.is_some()
     }
 
-    /// `valueOf()`, exposed for the Serializer fast path across the WASM
-    /// boundary (PORTING.md 3.3: "On the fast path Rust receives and
-    /// returns (epoch ms, utcOffset minutes)"). `NaN` for an invalid date.
-    ///
-    /// With an offset, dayjs keeps the local time (the instant shifted by
-    /// the offset, cut to whole milliseconds) and takes the shift back off,
-    /// so an offset that is not a whole number of milliseconds gives a
-    /// value a fraction away from the instant.
+    /// `valueOf()` for the Serializer fast path, which crosses a date as (epoch
+    /// ms, utcOffset minutes); `NaN` for an invalid date. With an offset, dayjs
+    /// cuts the shifted local time to whole milliseconds, so an offset that is
+    /// not a whole number of milliseconds gives a value a fraction away.
     pub fn epoch_ms(&self) -> f64 {
         match (self.instant, self.zone) {
             (None, _) => f64::NAN,

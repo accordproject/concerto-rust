@@ -46,13 +46,11 @@ fn lazy_location(range: Option<&mm::Range>) -> Option<serde_json::Value> {
 
 impl ModelManager {
     /// Validates every loaded model except the root model (`concerto@1.0.0`),
-    /// so user models and the built-in decorator model are checked. Returns
-    /// `Ok(())` if every model is semantically valid, otherwise the first
-    /// problem found.
+    /// returning the first problem found.
     ///
-    /// TS: `validateModelFiles` (basemodelmanager.ts), over the files in the
-    /// order they were added: a subclass's pass also checks the properties
-    /// it inherits, so the order decides which error comes first.
+    /// TS: `validateModelFiles` (basemodelmanager.ts), in the order the files
+    /// were added: a subclass also checks the properties it inherits, so the
+    /// order decides which error comes first.
     pub fn validate_models(&self) -> Result<()> {
         self.validate_models_naming_file().map_err(|(_, err)| err)
     }
@@ -85,22 +83,12 @@ impl ModelManager {
         }
     }
 
-    /// TS `ModelFile.validate()` (modelfile.ts), with `self` as the file's
-    /// owning model manager.
+    /// TS `ModelFile.validate()` (modelfile.ts), with `self` as the owning manager.
     ///
     /// **`model_file` must be the file `self` has registered under its
-    /// namespace**: import, super-type and property-type lookups resolve a
-    /// namespace through `self`, so an unregistered copy would report its own
-    /// types as undeclared. A caller that cannot guarantee registration must
-    /// check first (or use [`ModelManager::validate_detached_model_file`]).
-    ///
-    /// In order: (1) the file's own decorators (`Decorated.validate`); (2)
-    /// the `getImports()` loop; (3) the duplicate-class-name scan
-    /// (`check_unique_declaration_names`), which `ModelFile::from_json`
-    /// leaves to this pass as TS's constructor does; (4) each declaration, in
-    /// file order, starting with its import-clash check. Every error but
-    /// step (3)'s names `model_file`; TS constructs step (3)'s with no model
-    /// file at all.
+    /// namespace**, or its own types report as undeclared; otherwise use
+    /// [`ModelManager::validate_detached_model_file`]. Checks run in TS order;
+    /// the duplicate-class-name error carries no model file, as in TS.
     pub fn validate_model_file(&self, model_file: &ModelFile) -> Result<()> {
         self.validate_model_file_with_import_scope(model_file, self, None)
     }
@@ -130,20 +118,12 @@ impl ModelManager {
     }
 
     js_compat_pub! {
-        /// TS `modelFile.validate()` for a `ModelFile` whose manager is `self`
-        /// but which `self` may not have registered (`new ModelFile(mm, ast)`
-        /// then `validate()`, or `addModelFile`'s validate-before-register).
-        /// When `self` holds exactly this file under its namespace, this is
-        /// [`ModelManager::validate_model_file`]; otherwise it validates
-        /// against a scratch copy of `self` with `model_file` registered in
-        /// place, so its local types resolve to itself. `self` is never
-        /// changed. `check_imports` runs against `self`, so a self-import
-        /// fails as any unloaded namespace does.
-        ///
-        /// One divergence remains, which no oracle fixture reaches: a file an
-        /// imported declaration reaches back into, in `model_file`'s
-        /// namespace, is `model_file` here, where TS sees the file `self`
-        /// holds.
+        /// TS `modelFile.validate()` for a file whose manager is `self` but which
+        /// `self` may not have registered: validates against a scratch copy of
+        /// `self` with `model_file` in place, leaving `self` unchanged. One
+        /// divergence no oracle fixture reaches: a file an imported declaration
+        /// reaches back into, in `model_file`'s namespace, is `model_file` here,
+        /// where TS sees the file `self` holds.
         pub fn validate_detached_model_file(&self, model_file: &ModelFile) -> Result<()> {
             let registered = self.model_file(model_file.namespace());
             if let Some(registered) = registered
@@ -161,17 +141,11 @@ impl ModelManager {
         }
     }
 
-    /// TS `BaseModelManager.addModelFile`'s validate-then-register: the same
-    /// checks, first error and result as
-    /// [`ModelManager::validate_detached_model_file`] followed by
-    /// [`ModelManager::add_model_file`], returning the new file's handle.
-    ///
-    /// When the manager does not hold the namespace, the file is registered
-    /// first, validated in place with its namespace hidden from
-    /// `check_imports`, and taken out again on failure; otherwise the
-    /// two-step path runs. On a validation error the manager is as it was
-    /// (its caches aside) and the file is handed back (boxed) with the error;
-    /// a registration error consumes it.
+    /// TS `BaseModelManager.addModelFile`'s validate-then-register, with the
+    /// same checks, first error and result as validating then
+    /// [`ModelManager::add_model_file`]; returns the new file's handle. On a
+    /// validation error the manager is unchanged (caches aside) and the file is
+    /// handed back with the error; a registration error consumes it.
     #[cfg(feature = "js-compat")]
     pub fn validate_and_add_model_file(
         &mut self,
@@ -455,13 +429,10 @@ impl Validate for ClassDeclaration {
 }
 
 /// TS: one iteration of `ClassDeclaration.validate`'s property loop for
-/// `class`, over a property declared by `owner_fqn`.
-///
-/// `field.validate(classDecl)` runs against `class` when the field is
-/// primitive or declared in `class`'s namespace, else against the
-/// declaration of the field's type; that declaration's file resolves the
-/// type name and is named in the errors. The property's own decorators and
-/// `RelationshipDeclaration.validate`'s lookups use the declaring file.
+/// `class`, over a property declared by `owner_fqn`. The field validates
+/// against `class` when primitive or in `class`'s namespace, else against
+/// its type's declaration, whose file resolves the name and is named in the
+/// errors.
 fn validate_property(
     manager: &ModelManager,
     namespace: &str,
@@ -918,15 +889,11 @@ fn resolve(manager: &ModelManager, namespace: &str, name: &str) -> Option<String
     manager.resolve_type_name_at(namespace, name, None).ok()
 }
 
-/// TS `ModelFile.validate`'s loop over `this.getImports()`, once per imported
-/// name: the source namespace must be loaded; no earlier import may name a
-/// different version of the same bare namespace (`concerto` is exempt); and
-/// the name must be declared there. No `location`, as in TS.
-///
-/// TS runs `ModelUtil.parseNamespace(importNamespace)` before its `!modelFile`
-/// check, so an unregistered namespace that also fails `parseNamespace`
-/// raises `parseNamespace`'s plain `Error`; [`model_util::parse_namespace`] runs first
-/// here too.
+/// TS `ModelFile.validate`'s loop over `getImports()`: the namespace must be
+/// loaded, no earlier import may name another version of the same bare
+/// namespace (`concerto` exempt), and the name must be declared there. As in
+/// TS, [`model_util::parse_namespace`] runs before the loaded check, and no
+/// `location` is set.
 fn check_imports(
     manager: &ModelManager,
     hidden: Option<&str>,

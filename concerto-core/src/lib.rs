@@ -49,12 +49,10 @@ macro_rules! js_compat_pub {
 }
 
 /// Declares a module that is `pub` with the `js-compat` feature and
-/// crate-private without it (docs/public-api.md section 4.6). Its items are
-/// plain `pub`: the module's visibility is the seam, so they need no
-/// [`js_compat_pub!`] of their own. The crate-private arm allows no dead
-/// code: a seam item that the native build doesn't use carries its own
-/// `#[cfg_attr(not(feature = "js-compat"), expect(dead_code, ...))]`, so one
-/// that the JS layer stops using too is reported.
+/// crate-private without it (docs/public-api.md section 4.6); the module's
+/// visibility is the seam. The crate-private arm allows no dead code: a seam
+/// item the native build doesn't use carries its own
+/// `cfg_attr(not(feature = "js-compat"), expect(dead_code, ...))`.
 macro_rules! js_compat_mod {
     ($name:ident) => {
         #[cfg(feature = "js-compat")]

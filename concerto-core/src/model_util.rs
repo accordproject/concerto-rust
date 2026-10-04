@@ -201,13 +201,11 @@ pub(crate) fn is_strict_semver(version: &str) -> bool {
     semver::Version::parse(version).is_ok()
 }
 
-/// node-semver 7.6.3's `parse` (the version concerto-core 5.0.0 resolves)
-/// restricted to strict SemVer 2.0.0 ([`is_strict_semver`]): the `SemVer`
-/// TS `ModelUtil.parseNamespace` returns as `versionParsed`. `None` also for
-/// a strict version beyond node-semver's limits (a component above
-/// `Number.MAX_SAFE_INTEGER`, or over 256 UTF-16 units), where
-/// `semver.parse` returns `null`; such a version is still valid (BC-41).
-/// `tests/semver/node-semver-7.6.3.json` checks this against node-semver.
+/// node-semver 7.6.3's `parse` restricted to strict SemVer 2.0.0
+/// ([`is_strict_semver`]): TS `parseNamespace`'s `versionParsed`. `None` also
+/// for a strict version beyond node-semver's limits (a component above
+/// `Number.MAX_SAFE_INTEGER`, or over 256 UTF-16 units), which is still
+/// valid (BC-41). Checked by `tests/semver/node-semver-7.6.3.json`.
 pub(crate) fn semver_parse(version: &str) -> Option<SemVer> {
     // A string has no more UTF-16 units than UTF-8 bytes.
     if version.len() > SEMVER_MAX_LENGTH && version.encode_utf16().count() > SEMVER_MAX_LENGTH {

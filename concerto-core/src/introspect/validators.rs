@@ -57,16 +57,11 @@ impl Validator {
     }
 }
 
-/// Builds the error `Validator.reportError` throws: the message with the
-/// instance identifier and the element's fully qualified name in front. The
-/// name is read only here, as TS reads it only when it reports.
-///
-/// `kind` is the exception class (BC-39): [`ErrorKind::IllegalModel`] for a check
-/// the constructor makes while the model loads (bad bounds, an invalid
-/// regex, a default value outside the validator), and
-/// [`ErrorKind::Validation`] for an instance value that fails the validator.
-/// Both keep the `errorType` and the `Validator error for field …` message.
-/// TS 5.0.0 threw a plain `BaseException` for both.
+/// Builds the error `Validator.reportError` throws, the instance identifier
+/// and the element's name (read only here, as in TS) in front. `kind` is
+/// the class (BC-39): [`ErrorKind::IllegalModel`] for a check at model
+/// load, [`ErrorKind::Validation`] for an instance value; both keep the
+/// `errorType` (TS 5.0.0 threw a plain `BaseException`).
 ///
 /// TS: Validator.reportError (src/introspect/validator.ts)
 fn report_error<F: ValidatedElement>(

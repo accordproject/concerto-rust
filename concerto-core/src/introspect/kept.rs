@@ -1295,21 +1295,12 @@ impl Decorators {
 /// The metamodel's `Decorator` `$class`.
 const DECORATOR_CLASS: &str = "concerto.metamodel@1.0.0.Decorator";
 
-/// Reads a node's `decorators` value into its [`Decorators`]. An array of
-/// decorator nodes as the reference parser and `JSON.stringify` write them
-/// (each a `$class` string, a `name` string and, if any, an `arguments`
-/// array of `DecoratorString`, `DecoratorNumber` or `DecoratorBoolean`
-/// nodes, each a `$class` and then a `value` of its type, every key in that
-/// order and no other key) is read straight into the generated and the
-/// processed decorators, each string read once. Any other value, from the
-/// first node or key that is not so, is read on as a [`Kept`] (what
-/// [`KeptSeed`] reads from the same text, with what has been read so far
-/// put back as it was given, but that a number is put back as the `f64` it
-/// was read as), and decoded from it ([`Decorators::from_kept`]). Either
-/// way the decorators are those [`Decorators::from_kept`] gives for the
-/// value as [`KeptSeed`] reads it: each decorator read here is a
-/// [`plain_decorator`], and a decorator argument's number is only ever
-/// read as an `f64`.
+/// Reads a node's `decorators` into its [`Decorators`]. The canonical form
+/// the reference parser writes (each node `$class`, `name`, then optional
+/// `arguments` of literal nodes, in that key order) is read straight into
+/// the decorators. Anything else, from the first node or key that departs
+/// from it, is read on as a [`Kept`] and decoded by
+/// [`Decorators::from_kept`], so the result is always that function's.
 #[derive(Clone, Copy)]
 pub(crate) struct DecoratorsSeed;
 

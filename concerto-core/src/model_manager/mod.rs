@@ -541,12 +541,9 @@ impl ModelManager {
     }
 
     /// Registers `model_file` in place for
-    /// [`ModelManager::validate_and_add_model_file`], when this manager does
-    /// not hold its namespace and every file is registered under its own
-    /// namespace: then [`ModelManager::with_model_file_registered`]'s scratch
-    /// copy would be this arena with the file appended. Returns the file's
-    /// handle and what [`ModelManager::undo_append`] needs, or `None`
-    /// (nothing changed; the file is still the caller's).
+    /// [`ModelManager::validate_and_add_model_file`], when its namespace is free
+    /// and every file is under its own namespace. Returns the handle and what
+    /// [`ModelManager::undo_append`] needs, or `None`, changing nothing.
     #[cfg(feature = "js-compat")]
     pub(crate) fn append_for_validation(
         &mut self,
@@ -588,17 +585,11 @@ impl ModelManager {
         )
     }
 
-    /// A scratch copy of this manager (same options, same model files in the
-    /// same order) with `model_file` registered under its namespace in place
-    /// of this manager's file there, or appended: for validating a file this
-    /// manager never registered ([`ModelManager::validate_detached_model_file`]),
-    /// whose local types must resolve to itself through the manager.
-    ///
-    /// The copy shares this manager's files (`Arc`). Without a file under
-    /// that namespace, it is this arena with `model_file` appended;
-    /// otherwise the tables after the replaced file are rebuilt. Either way
-    /// it starts with empty caches, at the state version a copy built file
-    /// by file would have.
+    /// A scratch copy of this manager, sharing its files, with `model_file`
+    /// registered under its namespace (replacing or appended), so a detached
+    /// file's local types resolve to itself
+    /// ([`ModelManager::validate_detached_model_file`]). It starts with empty
+    /// caches, at the state version a file-by-file copy would have.
     pub(crate) fn with_model_file_registered(&self, model_file: Arc<ModelFile>) -> Result<Self> {
         let namespace = model_file.namespace().to_string();
         let namespace = namespace.as_str();
@@ -694,14 +685,12 @@ impl ModelManager {
         ModelManagerBuilder::default()
     }
 
-    /// Loads a model from its JSON AST (a `concerto.metamodel@1.0.0.Model`
-    /// document), named `file_name`, and returns its handle. The model is
-    /// checked for structure only: run [`ModelManager::validate_models`] once
-    /// every model is loaded. Loading two models with the same namespace is
-    /// an error.
+    /// Loads a model from its JSON AST, named `file_name`, and returns its
+    /// handle. Only the structure is checked: run
+    /// [`ModelManager::validate_models`] once every model is loaded. A second
+    /// model with the same namespace is an error.
     ///
-    /// TS: `ModelManager.addModel` with an AST (`AstModelManager`), without
-    /// the validation it runs.
+    /// TS: `ModelManager.addModel` with an AST, without its validation.
     pub fn add_model_ast(
         &mut self,
         ast: &serde_json::Value,
@@ -749,14 +738,11 @@ impl ModelManager {
         )
     }
 
-    /// Replaces the loaded model with the same namespace as `ast`, in place,
-    /// and returns the new model's handle. As with
-    /// [`ModelManager::add_model_ast`], only the structure is checked. Every
-    /// handle this manager handed out before the call is invalid after it.
-    /// It is an error when no model with that namespace is loaded; the
-    /// manager is then unchanged.
+    /// Replaces the loaded model with `ast`'s namespace and returns the new
+    /// handle; only the structure is checked. Every earlier handle is invalid
+    /// after the call. An error, changing nothing, when no such model is loaded.
     ///
-    /// TS: `BaseModelManager.updateModelFile`, without the validation it runs.
+    /// TS: `BaseModelManager.updateModelFile`, without its validation.
     pub fn update_model_ast(
         &mut self,
         ast: &serde_json::Value,
@@ -862,18 +848,11 @@ impl ModelManager {
     }
 
     js_compat_pub! {
-        /// [`ModelManager::validate_ast`] over the AST itself (for the
-        /// `validateAstValue` binding): building a `ModelFile` first would
-        /// reject some ASTs with the constructor's own error before the check
-        /// could throw TS's `MetamodelException`.
-        ///
-        /// When this manager does not hold the metamodel, the check first
-        /// runs on the resident metamodel manager. Its answer is used only
-        /// when it passes and this manager's system model files are the
-        /// resident's own (every type it resolves is then in a namespace
-        /// whose file is the same in both); anything else runs the check in
-        /// `self`, so the error, and the metamodel left registered by a
-        /// failure, are TS's.
+        /// [`ModelManager::validate_ast`] over the AST itself (`validateAstValue`),
+        /// since building a `ModelFile` first could throw the constructor's error
+        /// instead of TS's `MetamodelException`. The resident metamodel manager's
+        /// passing answer is used only when this manager's system files are its
+        /// own; anything else runs in `self`, so errors and end state are TS's.
         pub fn validate_ast_value(&mut self, ast: &Value) -> Result<()> {
             use crate::instance::metamodel::{
                 METAMODEL_NAMESPACE, check_version, deserialize_ast, metamodel_model_file,
@@ -944,14 +923,10 @@ impl ModelManager {
     }
 
     /// TS `new ModelManager({ addMetamodel: true })`: registers the cached
-    /// metamodel file under its namespace through `addModelFile`'s validating
-    /// path. A caller replaying the option calls this after construction and
-    /// the other options, as TS adds the file last.
-    ///
-    /// A namespace already registered is the already-exists error, without
-    /// validation; otherwise, with [`Self::metamodel_validation`], the file
-    /// is checked with [`Self::validate_ast`], then validated semantically,
-    /// then registered.
+    /// metamodel file through `addModelFile`'s validating path, called after
+    /// the other options, as TS adds it last. A taken namespace is the
+    /// already-exists error; otherwise, with [`Self::metamodel_validation`],
+    /// [`Self::validate_ast`] runs, then semantic validation.
     pub fn add_metamodel(&mut self) -> Result<()> {
         let model_file = crate::instance::metamodel::metamodel_model_file()?;
         if self.model_file(model_file.namespace()).is_none() {
@@ -986,12 +961,10 @@ impl ModelManager {
         }
     }
 
-    /// A new manager with only the declarations `keep` accepts, given each
-    /// declaration's fully-qualified name and the declaration itself. A model
-    /// file left with no declaration is dropped, and each file's imports are
-    /// filtered the same way. The built-in decorator and root models are kept
-    /// whole (BC-53). The new manager has this one's options, and its files
-    /// are validated together.
+    /// A new manager with only the declarations `keep` accepts (by fqn and
+    /// declaration), dropping emptied files and filtering imports alike. The
+    /// decorator and root models are kept whole (BC-53). Same options; the
+    /// files are validated together.
     ///
     /// TS: `BaseModelManager.filter(predicate)`.
     pub fn filter(&self, keep: impl Fn(&str, &Declaration) -> bool) -> Result<Self> {
@@ -1174,13 +1147,11 @@ impl ModelManager {
     }
 
     /// The batch core of [`ModelManager::load_models`] and
-    /// [`ModelManager::insert_models`]: registers each file in turn (with
-    /// its [`ValidityProof`], if any), stopping at the first that fails to
-    /// build or whose namespace is taken, then, unless `validate` is false,
-    /// runs [`ModelManager::validate_models`] once over the whole manager.
-    /// Any failure undoes the whole batch ([`ModelManager::rollback`], with
-    /// the validated marks restored). This call is the arena's only writer
-    /// while it runs, so its files sit in a contiguous tail of each table.
+    /// [`ModelManager::insert_models`]: registers each file (with its
+    /// [`ValidityProof`]), stopping at the first failure, then validates once
+    /// unless `validate` is false. Any failure undoes the whole batch
+    /// ([`ModelManager::rollback`]). As the arena's only writer meanwhile, its
+    /// files sit in a contiguous tail of each table.
     fn register_batch(
         &mut self,
         files: impl IntoIterator<Item = Result<(Arc<ModelFile>, Option<Arc<ValidityProof>>)>>,

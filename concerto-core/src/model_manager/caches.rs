@@ -4,14 +4,12 @@
 use super::*;
 
 js_compat_pub! {
-    /// Why a model file shared from one manager into another
+    /// Why a model file shared into another manager
     /// ([`ModelManager::add_shared_model_file_with_proof`]) is valid there
-    /// without validating it again: it passed validation in the source
-    /// manager, with these options, and these are every namespace it reaches
-    /// (its own, the system models and its transitive imports), each with
-    /// the file (`Arc`) the source held. Validity reads nothing else, so it
-    /// holds in any manager with the same options and the same files under
-    /// those namespaces, which [`ModelManager::validate_models`] checks.
+    /// without validating it again: it passed validation with these options,
+    /// and these are every namespace it reaches with the file the source held.
+    /// Validity reads nothing else, which [`ModelManager::validate_models`]
+    /// checks.
     #[derive(Debug)]
     pub struct ValidityProof {
         options: ManagerOptions,
@@ -238,16 +236,11 @@ impl ModelManager {
         )
     }
 
-    /// The caches an append ([`ModelManager::insert_shared`]) leaves valid.
-    /// An append adds a namespace no file held and changes no registered
-    /// file or handle, so only a resolution that failed can change. The
-    /// caches keep only answers built from successful resolutions, so they
-    /// stay: an inheritance chain once every super type resolved; field
-    /// defaults when every field type resolved; a validation plan only when
-    /// settled ([`crate::instance::plan::ClassPlan::is_settled`]). The direct
-    /// subclasses are dropped: the appended file can declare new ones. So a
-    /// fork of a warmed base manager keeps every warmed answer as it adds
-    /// files. Any other change drops everything
+    /// The caches an append ([`ModelManager::insert_shared`]) leaves valid: an
+    /// append changes no registered file, so only answers built from
+    /// successful resolutions are kept (inheritance chains, field defaults,
+    /// settled validation plans); direct subclasses are dropped. So a fork of
+    /// a warmed manager stays warm. Any other change drops everything
     /// ([`ModelManager::invalidate_caches`]).
     pub(super) fn keep_caches_for_append(&mut self) {
         for facts in self.decl_cache.facts_mut() {

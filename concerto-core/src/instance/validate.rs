@@ -1024,12 +1024,10 @@ pub fn is_js_undefined(value: &Value) -> bool {
 }
 
 /// What the instance validator reads of the value it walks, so
-/// `concerto-core-js` can validate its own values in place rather than
-/// deep-copy them into the tagged plain-JSON shape. Each method answers what
-/// that shape would, so the verdict and error are the same either way; the
-/// [`serde_json::Value`] implementation is the shape itself. Only a message
-/// that prints a value builds the shape, for that value
-/// ([`Self::to_value`]).
+/// `concerto-core-js` can validate its values in place instead of
+/// deep-copying them into the tagged plain-JSON shape. Each method answers
+/// as that shape would ([`serde_json::Value`] is the shape itself); only a
+/// message that prints a value builds it ([`Self::to_value`]).
 pub trait ValidatorInput: Sized {
     /// A JS object's view ([`ValidatorObject`]).
     type Object<'a>: ValidatorObject<'a, Self>

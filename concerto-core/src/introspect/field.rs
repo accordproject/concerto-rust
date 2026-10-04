@@ -96,13 +96,9 @@ impl<E: From<ContractError>> ValidatedElement for FieldElement<'_, E> {
     }
 }
 
-/// Computes the field's validator and default value from its AST, in the TS
-/// order: the validator (whose constructor may fail), then the default
-/// value.
-///
-/// `property_type` is `this.getType()`, already computed by
-/// `Property.process`; `fully_qualified_name` is `this.getFullyQualifiedName()`,
-/// called only if the validator reports an error.
+/// The field's validator and default value from its AST, in TS order.
+/// `property_type` is `Property.process`'s `getType()`;
+/// `fully_qualified_name` is called only if the validator reports an error.
 ///
 /// TS: Field.process (src/introspect/field.ts)
 #[cfg(feature = "js-compat")]
@@ -163,21 +159,11 @@ pub fn to_string(
     )
 }
 
-/// TS: the `switch (type.ast.$class)` inside `Field.getScalarField`
-/// (src/introspect/field.ts), after `isTypeScalar()` has already confirmed
-/// `type` is a scalar declaration. Builds the synthetic field's AST from the
-/// scalar's own AST (`JSON.parse(JSON.stringify(type.ast))`, here a clone),
-/// with `$class` swapped for the matching `*Property` class and `name` set
-/// to `field_name` (`this.ast.name`, the original field's own name). An
-/// unrecognised `$class` — unreachable for a real scalar declaration, since
-/// `ScalarDeclaration` only ever holds one of these six — errors exactly as
-/// the TS `default` branch's `Unrecognized scalar type ${type.ast.$class}`
-/// does, by way of the catalogue's `field-getscalarfield-unrecognizedtype`
-/// entry.
-///
-/// `array` is not set here: the view sets it from `this.isArray()`, exactly
-/// as the TS body's own `this.scalarField.array = this.isArray();` does,
-/// after constructing the `Field` from this AST.
+/// TS: `Field.getScalarField`'s `switch (type.ast.$class)`, once `type` is
+/// known to be a scalar: a clone of the scalar's AST with `$class` the
+/// matching `*Property` class and `name` the field's. An unrecognised
+/// `$class` (unreachable) is `field-getscalarfield-unrecognizedtype`, as TS's
+/// `default` branch. The view sets `array`, as TS does after construction.
 #[cfg(feature = "js-compat")]
 pub fn scalar_to_field_ast<E: From<ContractError>>(
     scalar_ast: &Value,

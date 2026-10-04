@@ -60,13 +60,9 @@ const MAP_DECLARATION_CLASS: &str = metamodel_class!("MapDeclaration");
 const IMPORT_TYPE_CLASS: &str = metamodel_class!("ImportType");
 
 /// `falsyOrEqual(test, values)` (`src/decoratormanager.ts`): `true` when
-/// `test` is JS-falsy (`None` for `undefined`, `null`, `false`, `0`, `""`),
-/// an array intersecting `values`, or a string `values` contains. Any other
-/// truthy `test` (a number, `true`, an object) is never in the string array
-/// `values` (`Array.prototype.includes` is strict equality).
-///
-/// The array case is TS's `intersect(test, values).length > 0`: some string
-/// element of `test` is in `values`.
+/// `test` is JS-falsy (`None` for `undefined` and `null`), an array with a
+/// string element in `values`, or a string in `values`. Any other truthy
+/// `test` is never in `values` (`includes` is strict equality).
 pub fn falsy_or_equal(test: Option<&Value>, values: &[&str]) -> bool {
     match test {
         Some(Value::Array(arr)) => arr
@@ -817,18 +813,12 @@ fn dcs_model_file(file_name: &'static str) -> Result<Arc<ModelFile>> {
     Ok(mf)
 }
 
-/// The validation model manager `DecoratorManager.validate` and
-/// `migrateAndValidate` build: `new ModelManager({ metamodelValidation: true,
-/// addMetamodel: true })`, then `addModelFiles(model_files)` when there are
-/// any, then `addCTOModel(DCS_MODEL, dcs_file_name)`, each step validated as
-/// TS validates it.
-///
-/// Built from shared files, as TS shares the `ModelFile` objects: a
-/// [`ModelManager::fork`] of the resident metamodel manager, the caller's
-/// files (each with its [`crate::model_manager::ValidityProof`], if any),
-/// and the per-thread DCS model file ([`dcs_model_file`]). Every file not
-/// known to be valid is validated in the same order, so the errors are the
-/// same. The per-model metamodel check is not run.
+/// The validation manager `DecoratorManager.validate` and
+/// `migrateAndValidate` build: a [`ModelManager::fork`] of the resident
+/// metamodel manager, then the caller's files, then the DCS model, sharing
+/// files as TS shares `ModelFile`s. Every file not known valid is validated
+/// in TS's order, so the errors are the same; the per-model metamodel check
+/// is not run.
 fn validation_model_manager(
     model_files: Vec<(
         Arc<ModelFile>,
@@ -1032,19 +1022,12 @@ pub struct DecorateOptions {
     pub disable_metamodel_validation: Option<bool>,
 }
 
-/// `DecoratorManager.decorateModels`: applies every command of every set in
-/// `decorator_command_sets`, in order, across `model_manager`'s models, and
-/// returns a new [`ModelManager`] built from the result as `fromAst` builds
-/// one (every model but the system ones, validated unless
-/// `disable_metamodel_validation`).
-///
-/// Like TS, this mutates its arguments: migration rewrites the command sets
-/// in place, and `skip_validation_and_resolution` sets `options`' two
-/// `disable_*` flags. An empty `decorator_command_sets` returns a manager
-/// over the same model files, shared and not validated again (TS returns
-/// the same instance). Unless `disableMetamodelResolution`, the models are
-/// `getAst(true, true)`'s, resolved ([`ModelManager::get_ast`]), which fails
-/// as TS does for an import that does not resolve.
+/// `DecoratorManager.decorateModels`: applies every command of every set,
+/// in order, and returns a new [`ModelManager`] built as `fromAst` builds
+/// one. Like TS, it mutates its arguments (migration rewrites the command
+/// sets; `skip_validation_and_resolution` sets `options`' `disable_*`
+/// flags). An empty `decorator_command_sets` shares the model files without
+/// validating them again.
 pub fn decorate_models(
     model_manager: &ModelManager,
     decorator_command_sets: &mut [Value],
@@ -1420,21 +1403,12 @@ impl Default for ExtractOptions {
     }
 }
 
-/// `DecoratorManager.extractDecorators`, `extractVocabularies` or
-/// `extractNonVocabDecorators(modelManager, options)`, by `action`, with the
-/// command sets as JSON text (`extractor::DecoratorExtractor::extract`).
-///
-/// - [`extractor::Action::ExtractAll`] (`extractDecorators`): every
-///   decorator of every model, the system models included.
-/// - [`extractor::Action::ExtractVocab`] (`extractVocabularies`): the
-///   vocabulary (`Term`/`Term_*`) decorators only; no command sets.
-/// - [`extractor::Action::ExtractNonVocab`] (`extractNonVocabDecorators`):
-///   the non-vocabulary decorators of the user's models only; no
-///   vocabularies.
-///
-/// With `keep_source`, the result also holds the source models its walk
-/// read ([`extractor::ExtractResult::source_models`]), for
-/// [`encode_extract_source`] while `model_manager` is unchanged.
+/// `DecoratorManager.extractDecorators` (`ExtractAll`: every model),
+/// `extractVocabularies` (`ExtractVocab`: vocabulary decorators, no command
+/// sets) or `extractNonVocabDecorators` (`ExtractNonVocab`: the user's
+/// models, no vocabularies), by `action`, with the command sets as JSON
+/// text. With `keep_source`, the result keeps the source models for
+/// [`encode_extract_source`].
 pub fn extract(
     model_manager: &ModelManager,
     options: &ExtractOptions,

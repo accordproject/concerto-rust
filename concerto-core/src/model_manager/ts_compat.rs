@@ -39,13 +39,10 @@ impl ModelManager {
         Ok(self.declaration_id(&super_fqn))
     }
 
-    /// TS `BaseModelManager.isAssignableTo(fqn, baseFqn)`, not
-    /// [`ModelManager::is_assignable_to`]: `fqn` must resolve to a concrete
-    /// type before [`ModelManager::derives_from`] is asked (an abstract
-    /// `fqn`, a scalar included, is `false` even against itself), and a
-    /// lookup failure is caught. A map declaration answers as
-    /// [`ModelManager::derives_from`] does, where TS 5.0.0 throws a
-    /// `TypeError` (DV-022).
+    /// TS `BaseModelManager.isAssignableTo(fqn, baseFqn)`: `fqn` must resolve to
+    /// a concrete type before [`ModelManager::derives_from`] is asked (an
+    /// abstract `fqn` is `false` even against itself), and a lookup failure is
+    /// caught. A map declaration answers, where TS 5.0.0 throws (DV-022).
     #[cfg(feature = "js-compat")]
     pub fn is_type_assignable_to(&self, fqn: &str, base_fqn: &str) -> bool {
         let Ok(id) = self.get_type_declaration(fqn) else {
@@ -179,13 +176,10 @@ impl ModelManager {
         self.filter_declarations(|fqn, _| keep_fqn(fqn), disable_validation)
     }
 
-    /// The engine half of TS `BaseModelManager.updateExternalModels`, after
-    /// the download: each external model is built as `new ModelFile(this,
-    /// ast, definitions, fileName)` and registered without validation (an
-    /// update when its namespace is already registered, by `self` or an
-    /// earlier download, an add otherwise), then every file is validated.
-    /// The model files are returned in order, as TS's `externalModelFiles`.
-    /// Any error leaves `self` as it was.
+    /// The engine half of TS `BaseModelManager.updateExternalModels`: each
+    /// downloaded model is built and registered unvalidated (updating a taken
+    /// namespace), then every file is validated. Returns the files in order
+    /// (TS `externalModelFiles`); any error leaves `self` as it was.
     #[cfg(feature = "js-compat")]
     pub fn update_external_models(
         &mut self,

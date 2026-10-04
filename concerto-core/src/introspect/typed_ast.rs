@@ -830,17 +830,11 @@ impl<'de> Visitor<'de> for PropertySeed<'_> {
 }
 
 /// One property of a class-like or enum declaration, read into the
-/// generated struct its full metamodel `$class` names. The name checks
-/// (identifier, reserved system name) are the loader's, after the read
-/// ([`crate::introspect::Declaration`]).
-///
-/// The keys almost every property node has (`name`, `isArray`,
-/// `isOptional`, an object or relationship property's `type`, `decorators`
-/// and `location`) are read here, each through the call the generated
-/// struct would make (so with the same result and error). From the first
-/// other key, the generated struct reads on, with the values read so far
-/// handed back first ([`Resume`]), so it accepts and rejects what it always
-/// does.
+/// generated struct its `$class` names. The common keys are read here
+/// through the calls the generated struct would make; from the first other
+/// key, the struct reads on with the values so far handed back
+/// ([`Resume`]), so it accepts and rejects what it always does. Name checks
+/// are the loader's.
 fn read_property<'de, A: MapAccess<'de, Error = Error>>(
     mut map: A,
     out: PropertySeed<'_>,
@@ -1280,20 +1274,12 @@ enum Pending {
     Other,
 }
 
-/// The entries of a node after its `$class`, handed to a generated struct,
-/// with some keys intercepted on the way (the struct is handed `null` or
-/// `[]` for each, and the caller sets the node's):
-/// - `properties`, when `properties` is set: read as [`Property`]s;
-/// - `decorators`: read by [`DecoratorsSeed`] into its generated and
-///   processed decorators and BC-19's verdict;
-/// - `location`: kept as a [`Location`], for an error's location, and
-///   decoded by [`read_location`];
-/// - `identified`, when `identified` is set: decoded strictly once, with
-///   BC-19's verdict;
-/// - every key in `take`: read as a `Value` into `taken` (a repeated key
-///   replaces the earlier value), kept from the struct for the loader.
-///
-/// Every other value goes through [`Strict`].
+/// The entries of a node after its `$class`, handed to a generated struct
+/// with some keys intercepted (the struct gets `null` or `[]` for each):
+/// `properties` (as [`Property`]s), `decorators` ([`DecoratorsSeed`]),
+/// `location` ([`read_location`]), `identified` (with BC-19's verdict), and
+/// each key in `take`, kept as a `Value` for the loader. Every other value
+/// goes through [`Strict`].
 struct Intercept<'a, A> {
     inner: A,
     /// Where the properties go, or `None` to pass `properties` through.

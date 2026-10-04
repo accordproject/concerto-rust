@@ -21,15 +21,12 @@ use crate::introspect::validators;
 use crate::introspect::{FullyQualified, METAMODEL_NAMESPACE, Named, Typed};
 use crate::model_util::{is_system_property, is_valid_identifier};
 
-/// What `Property.process` computes, after `super.process()` (which belongs
-/// to `Decorated`).
+/// What `Property.process` computes, after `super.process()`.
 ///
-/// TS: `Property.process` (src/introspect/property.ts). `property_type` is
-/// `this.type`; `type_set` says whether TS assigns `this.type` at all —
-/// the `EnumProperty` arm of the source switch falls through without an
-/// assignment, so `this.type` is left `undefined` there, which the WASM view
-/// tells apart from the explicit `null` an `ObjectProperty` with no `type`
-/// AST node gets.
+/// TS: `Property.process` (src/introspect/property.ts). `type_set` says
+/// whether TS assigns `this.type` at all: the `EnumProperty` arm leaves it
+/// `undefined`, which the WASM view tells apart from the `null` of an
+/// `ObjectProperty` with no `type`.
 #[cfg(feature = "js-compat")]
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProcessedProperty {
@@ -45,14 +42,12 @@ pub struct ProcessedProperty {
     pub optional: bool,
 }
 
-/// Computes `Property.process`'s fields directly from the AST, in the TS
-/// order: the identifier check, the name, the `$class` switch for `type`,
-/// then `array` and `optional`. `this.sizeValidator` is left to the WASM
-/// view, which constructs a `CollectionSizeValidator` as TS does.
+/// `Property.process`'s fields from the AST, in TS order: the identifier
+/// check, the name, the `$class` switch for `type`, `array`, `optional`.
+/// The WASM view builds `sizeValidator`. `ID_REGEX.test` applies
+/// `ToString` to a non-string `name` (DV-002), so `name: true` is `"true"`.
 ///
-/// TS: `Property.process` (src/introspect/property.ts). `ID_REGEX.test`
-/// applies `ToString` to a non-string `name` (`ecma::to_js_string`, DV-002),
-/// so `name: true` is the valid identifier `"true"`, as in TS.
+/// TS: `Property.process` (src/introspect/property.ts)
 #[cfg(feature = "js-compat")]
 pub fn process<E: From<ContractError>>(ast: &Value) -> std::result::Result<ProcessedProperty, E> {
     // TS interpolates the raw `this.ast.name` into a template literal and
@@ -142,17 +137,11 @@ pub fn process<E: From<ContractError>>(ast: &Value) -> std::result::Result<Proce
     })
 }
 
-/// DV-017: a `RelationshipProperty` node whose `type` is missing or `null`.
-///
-/// TS `Property.process` reads `this.ast.type.name` unguarded there, so V8
-/// throws a `TypeError` from the `ModelFile` constructor. Rust raises
-/// `IllegalModelException: Relationship <name> must have a type`
-/// (`property-process-relationshipnotype`) with this property's AST
-/// `location`; the caller attaches the model file. Any other `type` value
-/// does not crash TS, so it is not this check's.
-///
-/// Returns `None` when the node is not a `RelationshipProperty` or has a
-/// non-null `type`. `name` is the (already validated) property name.
+/// DV-017: a `RelationshipProperty` whose `type` is missing or `null`, where
+/// TS reads `this.ast.type.name` unguarded and V8 throws a `TypeError`.
+/// Rust raises `property-process-relationshipnotype` (an
+/// `IllegalModelException`) at the property's `location`. `None` for any
+/// other node; `name` is the validated property name.
 #[cfg(feature = "js-compat")]
 pub(crate) fn relationship_without_type(ast: &Value, name: &str) -> Option<ContractError> {
     let class = ast.get("$class").and_then(Value::as_str)?;
@@ -336,11 +325,8 @@ const PROPERTY_KINDS: [&str; 9] = [
 ];
 
 /// A property node's kind (its `$class` short name), when its `$class` is
-/// one of the nine full metamodel property classes; `None` otherwise.
-///
-/// TS: `ClassDeclaration.process`'s properties loop
-/// (src/introspect/classdeclaration.ts) compares `thing.$class` with each
-/// `` `${MetaModelNamespace}.<Kind>Property` `` by `===`, and throws
+/// one of the nine full metamodel property classes. TS
+/// `ClassDeclaration.process` compares `$class` by `===` and throws
 /// "Unrecognised model element" for anything else, such as a bare short
 /// name or another namespace's (BC-25).
 pub(crate) fn property_kind(class: &str) -> Option<&str> {
@@ -413,12 +399,9 @@ impl crate::model_manager::ValidatedElement for BoundElement<'_> {
 
 impl Property {
     /// Checks a collection size validator's own bounds, as TS's
-    /// `CollectionSizeValidator` constructor does while the property is
-    /// processed. Whether the property may carry one at all (an array, or a
-    /// map-typed property) is not checked here: TS checks that only in
-    /// `Property.validate` (property.ts), once the property's type can be
-    /// resolved — `check_property_type` in [`crate::validation`] (a
-    /// `ModelFile` with such a property must still construct).
+    /// `CollectionSizeValidator` constructor does during `process`. Whether the
+    /// property may carry one at all is `Property.validate`'s check, once types
+    /// resolve (`check_property_type`), so such a file still constructs.
     fn check_size_validator(
         fqn: &str,
         name: &str,
@@ -449,19 +432,12 @@ impl Property {
     }
 
     js_compat_pub! {
-        /// Rebuilds and discards this property's own numeric, string and
-        /// collection-size validators, to surface the `IllegalModelException`
-        /// their constructors raise (BC-39) for a bound out of order, a
-        /// negative size, an uncompilable regex, or a default value out of
-        /// range. Called by the class declaration's loader once the property's
-        /// fully qualified name is known, never from `try_from`: a property
-        /// whose validator does not check out must still parse, as in TS's
-        /// two-phase load.
-        ///
-        /// TS: `Property.process`/`Field.process` (property.ts, field.ts) build
-        /// the size validator first, then, for a non-array
-        /// Integer/Long/Double/String, its domain or length-and-regex
-        /// validator, the same order as this method's `match`.
+        /// Rebuilds and discards this property's validators to surface the
+        /// `IllegalModelException` their constructors raise (BC-39). Called by the
+        /// class declaration's loader once the fully qualified name is known, never
+        /// from `try_from`, so a property with a bad validator still parses, as in
+        /// TS's two-phase load. The size validator comes first, then the domain or
+        /// length-and-regex validator, as in `Property.process`/`Field.process`.
         pub fn check_bound_validators(&self, class_fqn: &str) -> Result<()> {
             // A property with no validator to rebuild (most) returns before
             // its fully-qualified name is built; every arm below is then a

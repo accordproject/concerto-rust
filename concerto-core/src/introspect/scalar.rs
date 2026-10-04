@@ -127,13 +127,9 @@ pub struct ScalarDeclaration {
 }
 
 impl ScalarDeclaration {
-    /// Computes the scalar's type, validator and default value from its AST,
-    /// in the TS order: the primitive-name check, the type, the validator
-    /// (whose constructor may fail), then the default value.
-    ///
-    /// `model_file_name` is `modelFile.getName()` of the file TS passes to the
-    /// exception; `fully_qualified_name` is `this.getFullyQualifiedName()`,
-    /// called only if the validator reports an error.
+    /// The scalar's type, validator and default value from its AST, in TS
+    /// order: primitive-name check, type, validator, default value.
+    /// `fully_qualified_name` is called only if the validator reports an error.
     ///
     /// TS: ScalarDeclaration.process (src/introspect/scalardeclaration.ts)
     #[cfg(feature = "js-compat")]
@@ -228,15 +224,11 @@ impl ScalarDeclaration {
         })
     }
 
-    /// [`ScalarDeclaration::process`] on the model-file load path: over the
-    /// strictly read typed `node`, with `kept` (the node as the typed read
-    /// keeps it) only for what TS reads off the raw AST: its `location`,
-    /// the element's `defaultValue` and the raw `lengthValidator` bounds TS
-    /// compares. The checks, their order and their errors are `process`'s;
-    /// the validators are built from the typed nodes, as a property's are,
-    /// instead of re-reading the raw AST untyped, and the result holds them
-    /// as built. `process` stays for an AST that never went through the
-    /// loader (`build_standalone`, the WASM standalone bindings).
+    /// [`ScalarDeclaration::process`] on the model-file load path, over the
+    /// typed `node`, with `kept` only for what TS reads off the raw AST
+    /// (`location`, `defaultValue`, raw `lengthValidator` bounds). Checks,
+    /// order and errors are `process`'s; the validators are built from the
+    /// typed nodes.
     pub(crate) fn process_loaded(
         node: &mm::ScalarDeclaration,
         kept: &Kept,
@@ -327,23 +319,11 @@ impl ScalarDeclaration {
         &self.decorators
     }
 
-    /// Validates a scalar declaration's AST the way TS
-    /// `new ScalarDeclaration(modelFile, ast)` does, and returns its fully
-    /// qualified name (`Declaration`'s constructor: `super(ast); this.modelFile
-    /// = modelFile; this.process();`, where `super(ast)` only stores the AST
-    /// and reads `ast.name`).
-    ///
-    /// This does not build a [`ScalarDeclaration`]: unlike the loader
-    /// (`introspect::declaration`), which only ever sees an AST the metamodel
-    /// crate's generated `mm::ScalarDeclaration` accepts, this runs over
-    /// whatever AST the caller has, including one with no `$class` a real
-    /// scalar carries (PORTING.md 1.2, "a member that TS runs over any JS
-    /// object reads the AST as `serde_json::Value`", exactly like
-    /// [`ScalarDeclaration::process`]) — the oracle harness replays
-    /// `ScalarDeclaration.new` fixtures recorded from a `ModelFile` built
-    /// directly, before `ModelManager.addModelFiles` runs, and several unit
-    /// tests build the AST by hand (PORTING.md 6.2: "a recipe the pre-port
-    /// loader cannot replay is the unit's problem").
+    /// Validates a scalar declaration's AST as TS `new
+    /// ScalarDeclaration(modelFile, ast)` does, and returns its fully qualified
+    /// name. Unlike the loader, it reads any AST as `serde_json::Value`
+    /// (PORTING.md 1.2), for the oracle's `ScalarDeclaration.new` fixtures and
+    /// hand-built test ASTs.
     #[cfg(feature = "js-compat")]
     pub fn validate_new(
         namespace: &str,
@@ -353,13 +333,10 @@ impl ScalarDeclaration {
         Self::build_standalone(namespace, file_name, ast).map(|(fqn, _)| fqn)
     }
 
-    /// The same construction as [`ScalarDeclaration::validate_new`], but
-    /// returning what [`ScalarDeclaration::process`] computed as well as the
-    /// fully qualified name, for callers that need `getType`, `getValidator`
-    /// or `getDefaultValue` on a scalar built this way (the oracle harness's
-    /// `declnew` fixtures: a later call on a `new ScalarDeclaration(modelFile,
-    /// ast)` receiver never added to its model file, so it re-encodes the
-    /// same recipe rather than a `declref`).
+    /// [`ScalarDeclaration::validate_new`], also returning what
+    /// [`ScalarDeclaration::process`] computed, for `getType`, `getValidator` or
+    /// `getDefaultValue` on a scalar never added to its model file (the
+    /// oracle's `declnew` fixtures).
     #[cfg(feature = "js-compat")]
     pub fn build_standalone(
         namespace: &str,
