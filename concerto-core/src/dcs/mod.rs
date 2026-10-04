@@ -851,10 +851,7 @@ fn dcs_model_file(file_name: &'static str) -> Result<Arc<ModelFile>> {
 /// in TS's order, so the errors are the same; the per-model metamodel check
 /// is not run.
 fn validation_model_manager(
-    model_files: Vec<(
-        Arc<ModelFile>,
-        Option<Arc<crate::model_manager::ValidityProof>>,
-    )>,
+    model_files: Vec<crate::model_manager::SharedFile>,
     dcs_file_name: &'static str,
 ) -> Result<ModelManager> {
     let mut model_manager =
@@ -862,7 +859,12 @@ fn validation_model_manager(
     if !model_files.is_empty() {
         model_manager.insert_models(model_files, true)?;
     }
-    model_manager.insert_models(vec![(dcs_model_file(dcs_file_name)?, None)], true)?;
+    model_manager.insert_models(
+        vec![crate::model_manager::SharedFile::new(dcs_model_file(
+            dcs_file_name,
+        )?)],
+        true,
+    )?;
     Ok(model_manager)
 }
 
@@ -950,7 +952,7 @@ pub fn validate(
     let files = model_files
         .unwrap_or_default()
         .iter()
-        .map(|mf| (Arc::clone(mf), None))
+        .map(|mf| crate::model_manager::SharedFile::new(Arc::clone(mf)))
         .collect();
     let validation_model_manager = validation_model_manager(files, VALIDATE_DCS_FILE_NAME)?;
     from_json_against(&validation_model_manager, decorator_command_set)?;

@@ -1614,7 +1614,9 @@ impl Replayed {
             .model_files()
             .filter(|mf| !EXCLUDE_NS.contains(&mf.namespace()))
             .map(|mf| Entry {
-                ast: mf.ast().clone(),
+                // As TS's `getAst()` reads it: a file `filter` kept whole in
+                // TS 5.0.0's filtered form (R2A-4).
+                ast: ts_ast(&derived.mm, mf).clone(),
                 file_name: mf.file_name().map(str::to_string),
                 nullish_name: undefined(),
                 definitions: mf.definitions().map(str::to_string),
@@ -1731,7 +1733,7 @@ impl Replayed {
     fn file_arg(&self, ns: &str) -> Option<FileArg> {
         let mf = self.mm.model_file(ns)?;
         Some(FileArg {
-            ast: mf.ast().clone(),
+            ast: ts_ast(&self.mm, mf).clone(),
             file_name: mf.file_name().map(str::to_string),
             nullish_name: self.nullish_name(ns),
             definitions: mf.definitions().map(str::to_string),
@@ -1773,7 +1775,7 @@ impl Replayed {
             M: "ModelFile",
             "namespace": mf.namespace(),
             "name": mf.file_name().map_or_else(|| self.nullish_name(ns), |n| json!(n)),
-            "ast": mf.ast(),
+            "ast": ts_ast(&self.mm, mf),
         }))
     }
 
@@ -2586,9 +2588,16 @@ pub fn ast_of(mm: &ModelManager, include_concerto_namespaces: bool) -> Value {
     let models: Vec<Value> = mm
         .model_files()
         .filter(|mf| include_concerto_namespaces || !EXCLUDE_NS.contains(&mf.namespace()))
-        .map(|mf| mf.ast().clone())
+        .map(|mf| ts_ast(mm, mf).clone())
         .collect();
     json!({ "$class": "concerto.metamodel@1.0.0.Models", "models": models })
+}
+
+/// TS `ModelFile.getAst()` for `mf`, registered in `mm`
+/// ([`ModelManager::model_file_ast`]: a file `filter` kept whole is read in
+/// TS 5.0.0's filtered form, R2A-4).
+fn ts_ast<'a>(mm: &'a ModelManager, mf: &'a ModelFile) -> &'a Value {
+    mm.model_file_ast(mf.namespace()).unwrap_or(mf.ast())
 }
 
 /// TS `Object.values(MetaModelUtil.getExternalImports(ast))`

@@ -1887,6 +1887,7 @@ pub fn concerto_core::model_manager::ModelManager::builder() -> concerto_core::m
 pub fn concerto_core::model_manager::ModelManager::decorator_validation(&self) -> &concerto_core::introspect::decorator::DecoratorValidationOptions
 pub fn concerto_core::model_manager::ModelManager::filter(&self, impl core::ops::function::Fn(&str, &concerto_core::introspect::declaration::Declaration) -> bool) -> concerto_core::error::Result<Self>
 pub fn concerto_core::model_manager::ModelManager::metamodel_validation(&self) -> bool
+pub fn concerto_core::model_manager::ModelManager::model_file_ast(&self, &str) -> core::option::Option<&concerto_core::json::Value>
 pub fn concerto_core::model_manager::ModelManager::new() -> concerto_core::error::Result<Self>
 pub fn concerto_core::model_manager::ModelManager::remove_model(&mut self, &str) -> concerto_core::error::Result<()>
 pub fn concerto_core::model_manager::ModelManager::update_model_ast(&mut self, &concerto_core::json::Value, core::option::Option<&str>) -> concerto_core::error::Result<concerto_core::model_manager::ModelFileId>
@@ -2471,6 +2472,7 @@ pub fn concerto_core::model_manager::ModelManager::builder() -> concerto_core::m
 pub fn concerto_core::model_manager::ModelManager::decorator_validation(&self) -> &concerto_core::introspect::decorator::DecoratorValidationOptions
 pub fn concerto_core::model_manager::ModelManager::filter(&self, impl core::ops::function::Fn(&str, &concerto_core::introspect::declaration::Declaration) -> bool) -> concerto_core::error::Result<Self>
 pub fn concerto_core::model_manager::ModelManager::metamodel_validation(&self) -> bool
+pub fn concerto_core::model_manager::ModelManager::model_file_ast(&self, &str) -> core::option::Option<&concerto_core::json::Value>
 pub fn concerto_core::model_manager::ModelManager::new() -> concerto_core::error::Result<Self>
 pub fn concerto_core::model_manager::ModelManager::remove_model(&mut self, &str) -> concerto_core::error::Result<()>
 pub fn concerto_core::model_manager::ModelManager::update_model_ast(&mut self, &concerto_core::json::Value, core::option::Option<&str>) -> concerto_core::error::Result<concerto_core::model_manager::ModelFileId>

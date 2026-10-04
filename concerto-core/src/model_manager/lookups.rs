@@ -524,14 +524,18 @@ impl ModelManager {
         } else {
             None
         };
+        // Each file's AST as TS's `ModelFile.getAst()` reads it: a file
+        // `filter` kept whole in its filtered form (`model_file_ast`).
         let mut models = Vec::new();
-        for mf in self.model_files() {
-            if !include_concerto_namespaces && EXCLUDE_NS.contains(&mf.namespace()) {
+        for slot in &self.files {
+            if !include_concerto_namespaces && EXCLUDE_NS.contains(&slot.model_file.namespace()) {
                 continue;
             }
             models.push(match &prior_models {
-                Some(prior_models) => metamodel_util::resolve_local_names(prior_models, mf.ast())?,
-                None => mf.ast().clone(),
+                Some(prior_models) => {
+                    metamodel_util::resolve_local_names(prior_models, slot.ast())?
+                }
+                None => slot.ast().clone(),
             });
         }
         Ok(models)
@@ -551,8 +555,8 @@ impl ModelManager {
     /// `Array.find` does.
     pub(super) fn prior_models(&self) -> metamodel_util::PriorModels<'_> {
         let mut prior_models = metamodel_util::PriorModels::default();
-        for mf in self.model_files() {
-            let ast = mf.ast();
+        for slot in &self.files {
+            let ast = slot.ast();
             if let Some(namespace) = ast.get("namespace").and_then(Value::as_str) {
                 prior_models.entry(namespace).or_insert(ast);
             }

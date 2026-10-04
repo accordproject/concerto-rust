@@ -875,6 +875,31 @@ impl ModelFile {
             .filter(|d| d.is_scalar_declaration())
     }
 
+    /// Whether a declaration here may take the default super type TS 5.0.0
+    /// writes into a filtered file's AST (`Declaration` `ClassDeclaration`'s
+    /// `may_take_default_super_type`): when false, the file's filtered
+    /// form is its own AST.
+    pub(crate) fn may_take_default_super_types(&self) -> bool {
+        self.declarations.iter().any(
+            |decl| matches!(decl, Declaration::Class(class) if class.may_take_default_super_type()),
+        )
+    }
+
+    js_compat_pub! {
+        /// TS 5.0.0's AST of a filtered file that keeps every declaration and
+        /// import of this one ([`FilterOutcome::Unchanged`]): this file's AST
+        /// with the default super type TS writes into each asset,
+        /// participant, transaction or event declaration with none (R2A-4);
+        /// `None` when no declaration takes one, and it is [`ModelFile::ast`].
+        #[cfg_attr(not(feature = "js-compat"), expect(dead_code, reason = "js-compat seam only"))]
+        pub fn filtered_ast(&self) -> Option<crate::json::Value> {
+            if !self.may_take_default_super_types() {
+                return None;
+            }
+            filtered_form(self.ast())
+        }
+    }
+
     /// TS: `ModelFile.filter`: a new model file with only the declarations
     /// `predicate` accepts, or `None` (TS `null`) if none is left. An import
     /// is dropped when every declaration it brings in is rejected, an
@@ -888,8 +913,10 @@ impl ModelFile {
     ) -> Result<Option<Self>> {
         match self.filter_outcome(predicate, source_manager)? {
             FilterOutcome::Empty => Ok(None),
+            // A new file of its own, so it is built from TS 5.0.0's
+            // filtered form of the AST, default super types included.
             FilterOutcome::Unchanged => Self::from_json_with_definitions(
-                self.ast(),
+                &filtered_form(self.ast()).unwrap_or_else(|| self.ast().clone()),
                 self.definitions.clone(),
                 self.file_name.clone(),
             )
@@ -899,10 +926,13 @@ impl ModelFile {
     }
 
     js_compat_pub! {
-        /// [`ModelFile::filter`], telling apart a filter that keeps the file
-        /// exactly as it is ([`FilterOutcome::Unchanged`]), so a caller may
-        /// keep this file, shared. The predicate is called as `filter` calls
-        /// it, and the same errors are returned.
+        /// [`ModelFile::filter`], telling apart a filter that keeps every
+        /// declaration and import ([`FilterOutcome::Unchanged`]), so a caller
+        /// may keep this file, shared. Such a file's AST, read as TS 5.0.0's
+        /// filtered file, has the default super types TS writes into it,
+        /// which a caller sharing the file gives on read
+        /// ([`ModelManager::model_file_ast`](crate::model_manager::ModelManager::model_file_ast)). The predicate is called as
+        /// `filter` calls it, and the same errors are returned.
         pub fn filter_outcome(
             &self,
             predicate: impl Fn(&Declaration) -> bool,
@@ -937,8 +967,10 @@ impl ModelFile {
             return Ok(FilterOutcome::Empty);
         }
 
-        // The typed decision: every declaration kept, none given a default
-        // super type, and every import read verbatim. Then the AST's imports
+        // The typed decision: every declaration kept and every import read
+        // verbatim. A declaration TS gives a default super type does not
+        // stop the file being kept: its filtered form is built on read
+        // ([`filtered_form`]), so the file itself is shared. Then the AST's imports
         // are unchanged iff every name they import is kept, which the typed
         // imports answer with the same predicate calls `filter_import` makes,
         // in the same order. Those answers are recorded in call order, one
@@ -946,12 +978,7 @@ impl ModelFile {
         // and replayed in that order if the AST pass runs, so a pruned
         // import does not call the predicate again below.
         let mut answers: Vec<((*const u8, usize), bool)> = Vec::new();
-        if kept == self.declarations.len()
-            && self.imports_verbatim
-            && !self.declarations.iter().any(|decl| {
-                matches!(decl, Declaration::Class(class) if class.may_take_default_super_type())
-            })
-        {
+        if kept == self.declarations.len() && self.imports_verbatim {
             let mut recorded = |namespace: &str, index: usize, decl: &Declaration| {
                 let answer = predicate(namespace, index, decl);
                 answers.push(((namespace.as_ptr(), index), answer));
@@ -1002,19 +1029,13 @@ impl ModelFile {
             (Some(original), Some(kept)) => original == kept,
             _ => true,
         };
-        // A file is kept as it is only when no kept declaration is given a
-        // default super type, so the filtered AST is the source's.
-        if all_declarations_kept
-            && imports_unchanged
-            && ast_declarations
-                .iter()
-                .all(|ast| default_super_type(ast).is_none())
-        {
+        if all_declarations_kept && imports_unchanged {
             return Ok(FilterOutcome::Unchanged);
         }
 
-        // TS builds the filtered file from each kept declaration's own
-        // `ast`, which carries the default super type its view was given.
+        // A partial filter: TS builds the filtered file from each kept
+        // declaration's own `ast`, which carries the default super type its
+        // view was given.
         let declarations: Vec<crate::json::Value> = ast_declarations
             .iter()
             .zip(&keep)
@@ -1043,7 +1064,8 @@ js_compat_pub! {
         /// No declaration was kept: `filter` returns `None` (TS `null`).
         Empty,
         /// Every declaration was kept and every import is unchanged: the
-        /// filtered file is the file itself.
+        /// filtered file is the file itself, its AST read with the default
+        /// super types TS 5.0.0's filtered file has.
         Unchanged,
         /// The filtered file.
         Filtered(Box<ModelFile>),
@@ -1078,6 +1100,34 @@ fn with_default_super_type(ast: &crate::json::Value) -> Option<crate::json::Valu
     let mut ast = ast.clone();
     ast["superType"] = crate::json!({ "$class": DEFAULT_SUPER_TYPE_CLASS, "name": name });
     Some(ast)
+}
+
+/// TS 5.0.0's AST of a filtered file that keeps every declaration and
+/// import of the file whose AST is `ast` (`ModelFile.filter`, which builds
+/// it from the declarations' own ASTs): `ast` with the default super type
+/// ([`default_super_type`]) written into each asset, participant,
+/// transaction or event declaration with none; `None` when no declaration
+/// takes one, and the filtered AST is `ast`'s copy.
+pub(crate) fn filtered_form(ast: &crate::json::Value) -> Option<crate::json::Value> {
+    let declarations = ast.get("declarations")?.as_array()?;
+    if declarations
+        .iter()
+        .all(|decl| default_super_type(decl).is_none())
+    {
+        return None;
+    }
+    let mut filtered = ast.clone();
+    if let Some(declarations) = filtered
+        .get_mut("declarations")
+        .and_then(crate::json::Value::as_array_mut)
+    {
+        for decl in declarations.iter_mut() {
+            if let Some(with_default) = with_default_super_type(decl) {
+                *decl = with_default;
+            }
+        }
+    }
+    Some(filtered)
 }
 
 /// One import of [`ModelFile::filter_outcome`]: kept as it is, kept with

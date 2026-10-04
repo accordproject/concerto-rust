@@ -148,12 +148,16 @@ pub(crate) const DCS_EXCLUDE_NS: [&str; 3] =
 /// [`FlatStaged`]. The one helper [`stage_result`] and
 /// [`dcs_memo::DcsExtractKept::stage`] stage through; it never moves
 /// `target`'s epoch, and evicts as [`StagedModelFiles::insert_shared_in_batch`]
-/// does, sized to the batch.
+/// does, sized to the batch. Each file of `result` is staged with what
+/// `result` reads it as: a file read in TS's filtered form (one `filter`
+/// kept whole, shared on by an empty `decorateModels`) is read so once
+/// registered in `target`.
 pub(crate) fn stage_shared<'h, 'a: 'h>(
     target: &mut ModelManagerHandle,
-    files: impl Iterator<Item = (&'h Arc<ModelFile>, Option<&'h StagedHeader<'a>>)>,
+    result: &'h ModelManager,
+    headers: impl Iterator<Item = Option<&'h StagedHeader<'a>>>,
 ) -> Vec<Value> {
-    let files: Vec<_> = files.collect();
+    let files: Vec<_> = result.shared_model_files().zip(headers).collect();
     // Sized to the batch: a result with more files than the slot holds
     // still keeps every one of them staged.
     let batch = files
@@ -162,11 +166,17 @@ pub(crate) fn stage_shared<'h, 'a: 'h>(
         .count();
     files
         .into_iter()
-        .map(|(mf, header)| {
+        .enumerate()
+        .map(|(index, (mf, header))| {
             if DCS_EXCLUDE_NS.contains(&mf.namespace()) {
                 return Value::Null;
             }
             let id = target.staged.insert_shared_in_batch(Arc::clone(mf), batch);
+            let filtered = u32::try_from(index)
+                .is_ok_and(|index| result.is_read_in_filtered_form(ModelFileId::from_index(index)));
+            if filtered {
+                target.staged.filtered.insert(id);
+            }
             concerto_core::json::to_value(FlatStaged { id, header }).unwrap_or(Value::Null)
         })
         .collect()
@@ -180,12 +190,7 @@ pub(crate) fn stage_result(target: &mut ModelManagerHandle, result: &ModelManage
         .model_files()
         .map(|mf| staged_header_from_parts(mf.namespace(), mf.ast().get("imports")))
         .collect();
-    stage_shared(
-        target,
-        result
-            .shared_model_files()
-            .zip(headers.iter().map(Option::as_ref)),
-    )
+    stage_shared(target, result, headers.iter().map(Option::as_ref))
 }
 
 /// The input manager of the `DecoratorManager` operations, for a source

@@ -106,6 +106,63 @@ struct FileSlot {
     /// validated it ([`ModelManager::validity_proof`]): the namespaces the
     /// file reaches there, with their files, and that manager's options.
     proof: Option<Arc<ValidityProof>>,
+    /// Set for a file [`ModelManager::filter`] kept whole and shared, whose
+    /// AST TS 5.0.0 reads in its filtered form (R2A-4): built on first read
+    /// ([`ModelManager::model_file_ast`]), and shared with every manager
+    /// that shares the slot (a fork, a later filter).
+    filtered_ast: Option<Arc<FilteredAst>>,
+}
+
+/// TS 5.0.0's AST of a model file `filter` kept whole: TS builds the
+/// filtered file from its declarations' own ASTs, which carry the default
+/// super type (`Asset`, `Participant`, `Transaction` or `Event`) its
+/// declaration views were given, where the source file's AST has none. The
+/// engine shares the source's file instead, and builds this form once, on
+/// the first read of the AST; `None` inside when no declaration takes a
+/// default super type, and the AST is the file's own.
+#[derive(Debug, Default)]
+pub(crate) struct FilteredAst(std::sync::OnceLock<Option<Value>>);
+
+impl FilteredAst {
+    /// The AST `model_file` is read with in the slot that holds this.
+    fn ast<'a>(&'a self, model_file: &'a ModelFile) -> &'a Value {
+        self.0
+            .get_or_init(|| crate::introspect::model_file::filtered_form(model_file.ast()))
+            .as_ref()
+            .unwrap_or_else(|| model_file.ast())
+    }
+}
+
+/// A model file to register shared ([`ModelManager::insert_models`]), with
+/// what the manager it comes from knows of it there: its
+/// [`ValidityProof`], and its [`FilteredAst`] when it is read in TS's
+/// filtered form.
+pub(crate) struct SharedFile {
+    pub(crate) file: Arc<ModelFile>,
+    pub(crate) proof: Option<Arc<ValidityProof>>,
+    pub(crate) filtered_ast: Option<Arc<FilteredAst>>,
+}
+
+impl SharedFile {
+    /// `file`, with no proof, read as it is.
+    pub(crate) fn new(file: Arc<ModelFile>) -> Self {
+        Self {
+            file,
+            proof: None,
+            filtered_ast: None,
+        }
+    }
+}
+
+impl FileSlot {
+    /// The AST this slot's file is read with here: TS 5.0.0's filtered form
+    /// for a file `filter` kept whole, else the file's own.
+    fn ast(&self) -> &Value {
+        match &self.filtered_ast {
+            Some(filtered) => filtered.ast(&self.model_file),
+            None => self.model_file.ast(),
+        }
+    }
 }
 
 impl Clone for FileSlot {
@@ -117,6 +174,7 @@ impl Clone for FileSlot {
                 self.validated.load(std::sync::atomic::Ordering::Relaxed),
             ),
             proof: self.proof.clone(),
+            filtered_ast: self.filtered_ast.clone(),
         }
     }
 }
@@ -455,6 +513,7 @@ impl ModelManager {
         /// keeps them in: a model file never changes once registered, so
         /// another manager can register the same file
         /// ([`ModelManager::add_shared_model_file`]) without copying it.
+        #[cfg_attr(not(feature = "js-compat"), expect(dead_code, reason = "js-compat seam only"))]
         pub fn shared_model_files(&self) -> impl Iterator<Item = &Arc<ModelFile>> {
             self.files.iter().map(|slot| &slot.model_file)
         }
@@ -510,16 +569,21 @@ impl ModelManager {
     /// Each model file's AST as compact JSON text, in
     /// [`ModelManager::model_files`] order ([`ModelFile::compact_ast`]).
     /// A file only this manager holds keeps its AST as that text from then
-    /// on (a shared file is serialised and left as it is). Every
-    /// [`ModelFile::ast`] stays equal, so nothing a caller reads changes and
-    /// the caches stay valid.
+    /// on (a shared file, or one read in TS's filtered form
+    /// ([`ModelManager::model_file_ast`]), is serialised as it is read and
+    /// left as it is). Every [`ModelFile::ast`] stays equal, so nothing a
+    /// caller reads changes and the caches stay valid.
     #[cfg(feature = "js-compat")]
     pub fn compact_model_asts(&mut self) -> serde_json::Result<Vec<Arc<str>>> {
         self.files
             .iter_mut()
-            .map(|slot| match Arc::get_mut(&mut slot.model_file) {
-                Some(model_file) => model_file.compact_ast(),
-                None => Ok(Arc::from(serde_json::to_string(slot.model_file.ast())?)),
+            .map(|slot| {
+                if slot.filtered_ast.is_none()
+                    && let Some(model_file) = Arc::get_mut(&mut slot.model_file)
+                {
+                    return model_file.compact_ast();
+                }
+                Ok(Arc::from(serde_json::to_string(slot.ast())?))
             })
             .collect()
     }
@@ -619,7 +683,7 @@ impl ModelManager {
     ) -> Result<Vec<ModelFileId>> {
         self.register_batch(
             models.into_iter().map(|(value, file_name)| {
-                ModelFile::from_json(value, file_name).map(|mf| (Arc::new(mf), None))
+                ModelFile::from_json(value, file_name).map(|mf| SharedFile::new(Arc::new(mf)))
             }),
             true,
         )
@@ -655,7 +719,8 @@ impl ModelManager {
                 scratch.insert_shared(Arc::clone(&model_file))?;
                 placed = true;
             } else {
-                scratch.insert_shared(Arc::clone(&existing.model_file))?;
+                let id = scratch.insert_shared(Arc::clone(&existing.model_file))?;
+                scratch.files[id.slot()].filtered_ast = existing.filtered_ast.clone();
             }
         }
         if !placed {
@@ -713,6 +778,7 @@ impl ModelManager {
             declarations: first..end,
             validated: std::sync::atomic::AtomicBool::new(false),
             proof: None,
+            filtered_ast: None,
         });
         self.declarations.extend(declarations);
         self.properties.extend(properties);
@@ -1087,7 +1153,8 @@ impl ModelManager {
         };
 
         let mut filtered_files = Vec::new();
-        for model_file in self.shared_model_files() {
+        for slot in &self.files {
+            let model_file = &slot.model_file;
             // BC-53: skip every file `result` already holds from
             // `Self::new()`, the decorator model as well as the root model.
             if model_file.is_system_namespace()
@@ -1095,23 +1162,89 @@ impl ModelManager {
             {
                 continue;
             }
-            // A file kept exactly as it is is shared, not rebuilt, and is not
-            // validated again where its `ValidityProof` holds.
+            // A file that keeps every declaration and import is shared, not
+            // rebuilt, and is not validated again where its `ValidityProof`
+            // holds. Its AST is read in TS 5.0.0's filtered form (R2A-4),
+            // built on first read.
             match model_file.filter_outcome_at(is_kept, self)? {
                 crate::introspect::model_file::FilterOutcome::Empty => {}
                 crate::introspect::model_file::FilterOutcome::Unchanged => {
-                    filtered_files.push((
-                        Arc::clone(model_file),
-                        self.validity_proof(model_file.namespace()),
-                    ));
+                    filtered_files.push(SharedFile {
+                        file: Arc::clone(model_file),
+                        proof: self.validity_proof(model_file.namespace()),
+                        filtered_ast: Self::filtered_ast_of(slot),
+                    });
                 }
                 crate::introspect::model_file::FilterOutcome::Filtered(f) => {
-                    filtered_files.push((Arc::new(*f), None));
+                    filtered_files.push(SharedFile::new(Arc::new(*f)));
                 }
             }
         }
         result.insert_models(filtered_files, !disable_validation)?;
         Ok(result)
+    }
+
+    /// The [`FilteredAst`] a file `filter` keeps whole and shares from
+    /// `slot` is read with: `slot`'s own, when it is already read in the
+    /// filtered form (a filter of a filtered manager), else a new one, built
+    /// on first read, when a declaration may take a default super type; none
+    /// otherwise, and the file is read as it is.
+    fn filtered_ast_of(slot: &FileSlot) -> Option<Arc<FilteredAst>> {
+        slot.filtered_ast.clone().or_else(|| {
+            slot.model_file
+                .may_take_default_super_types()
+                .then(Arc::default)
+        })
+    }
+
+    js_compat_pub! {
+        /// Marks the file `id` names as one TS's `ModelFile.filter` kept whole
+        /// (every declaration and import) and this manager holds shared: it
+        /// is read here in TS 5.0.0's filtered form, built on first read, as
+        /// [`ModelManager::filter`]'s shared files are
+        /// ([`ModelManager::model_file_ast`]). Nothing else changes, so no
+        /// cache is touched; an unknown handle is ignored.
+        #[cfg_attr(not(feature = "js-compat"), expect(dead_code, reason = "js-compat seam only"))]
+        pub fn read_in_filtered_form(&mut self, id: ModelFileId) {
+            if let Some(slot) = self.files.get_mut(id.slot())
+                && slot.filtered_ast.is_none()
+                && slot.model_file.may_take_default_super_types()
+            {
+                slot.filtered_ast = Some(Arc::default());
+            }
+        }
+    }
+
+    js_compat_pub! {
+        /// Whether the file `id` names is read in TS 5.0.0's filtered form
+        /// here ([`ModelManager::read_in_filtered_form`]); false for an
+        /// unknown handle.
+        #[cfg_attr(not(feature = "js-compat"), expect(dead_code, reason = "js-compat seam only"))]
+        pub fn is_read_in_filtered_form(&self, id: ModelFileId) -> bool {
+            self.files
+                .get(id.slot())
+                .is_some_and(|slot| slot.filtered_ast.is_some())
+        }
+    }
+
+    /// TS `ModelFile.getAst()` for the model file registered under
+    /// `namespace`: its AST, or, for a file [`ModelManager::filter`] kept
+    /// whole and shared, TS 5.0.0's filtered form of it, with the default
+    /// super type written into each asset, participant, transaction or event
+    /// declaration that has none (R2A-4), built on first read. The shared
+    /// [`ModelFile::ast`] is the source file's own, unchanged. `None` when
+    /// no file has that namespace.
+    pub fn model_file_ast(&self, namespace: &str) -> Option<&Value> {
+        let id = self.model_file_id(namespace)?;
+        self.files.get(id.slot()).map(FileSlot::ast)
+    }
+
+    js_compat_pub! {
+        /// [`ModelManager::model_file_ast`] for the file `id` names.
+        #[cfg_attr(not(feature = "js-compat"), expect(dead_code, reason = "js-compat seam only"))]
+        pub fn file_ast(&self, id: ModelFileId) -> Option<&Value> {
+            self.files.get(id.slot()).map(FileSlot::ast)
+        }
     }
 
     /// A new manager with this one's options and the system models, holding
@@ -1120,11 +1253,7 @@ impl ModelManager {
     /// `filter`'s result and the empty-input result of
     /// `crate::dcs::decorate_models` share.
     #[cfg(feature = "js-compat")]
-    pub(crate) fn new_like_with(
-        &self,
-        files: Vec<(Arc<ModelFile>, Option<Arc<ValidityProof>>)>,
-        validate: bool,
-    ) -> Result<Self> {
+    pub(crate) fn new_like_with(&self, files: Vec<SharedFile>, validate: bool) -> Result<Self> {
         let mut result = self.empty_like()?;
         result.insert_models(files, validate)?;
         Ok(result)
@@ -1145,12 +1274,13 @@ impl ModelManager {
     /// same models without copying or, where the proof holds there,
     /// validating them again ([`ModelManager::insert_models`]).
     #[cfg(feature = "js-compat")]
-    pub(crate) fn user_files_with_proofs(
-        &self,
-    ) -> Vec<(Arc<ModelFile>, Option<Arc<ValidityProof>>)> {
+    pub(crate) fn user_files_with_proofs(&self) -> Vec<SharedFile> {
         self.user_file_slots()
-            .map(|slot| &slot.model_file)
-            .map(|mf| (Arc::clone(mf), self.validity_proof(mf.namespace())))
+            .map(|slot| SharedFile {
+                file: Arc::clone(&slot.model_file),
+                proof: self.validity_proof(slot.model_file.namespace()),
+                filtered_ast: slot.filtered_ast.clone(),
+            })
             .collect()
     }
 
@@ -1212,9 +1342,10 @@ impl ModelManager {
                 options: self.options.clone(),
                 ..Self::empty()
             };
-            for existing in self.shared_model_files() {
-                if existing.namespace() != namespace {
-                    scratch.insert_shared(Arc::clone(existing))?;
+            for existing in &self.files {
+                if existing.model_file.namespace() != namespace {
+                    let id = scratch.insert_shared(Arc::clone(&existing.model_file))?;
+                    scratch.files[id.slot()].filtered_ast = existing.filtered_ast.clone();
                 }
             }
             Ok(scratch)
@@ -1225,11 +1356,7 @@ impl ModelManager {
     /// [`ModelManager::filter`]: inserts every built file in order, then,
     /// unless `validate` is false, validates the whole manager once; either
     /// failure undoes every insert.
-    pub(crate) fn insert_models(
-        &mut self,
-        files: Vec<(Arc<ModelFile>, Option<Arc<ValidityProof>>)>,
-        validate: bool,
-    ) -> Result<()> {
+    pub(crate) fn insert_models(&mut self, files: Vec<SharedFile>, validate: bool) -> Result<()> {
         self.register_batch(files.into_iter().map(Ok), validate)
             .map(drop)
     }
@@ -1242,7 +1369,7 @@ impl ModelManager {
     /// files sit in a contiguous tail of each table.
     fn register_batch(
         &mut self,
-        files: impl IntoIterator<Item = Result<(Arc<ModelFile>, Option<Arc<ValidityProof>>)>>,
+        files: impl IntoIterator<Item = Result<SharedFile>>,
         validate: bool,
     ) -> Result<Vec<ModelFileId>> {
         let mark = self.mark();
@@ -1250,8 +1377,14 @@ impl ModelManager {
         let result = files
             .into_iter()
             .map(|file| {
-                let (mf, proof) = file?;
-                self.add_shared_model_file_with_proof(mf, proof)
+                let SharedFile {
+                    file,
+                    proof,
+                    filtered_ast,
+                } = file?;
+                let id = self.add_shared_model_file_with_proof(file, proof)?;
+                self.files[id.slot()].filtered_ast = filtered_ast;
+                Ok(id)
             })
             .collect::<Result<Vec<_>>>()
             .and_then(|ids| {
