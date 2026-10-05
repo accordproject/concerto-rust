@@ -5,7 +5,7 @@
   "license": "Apache-2.0",
   "scripts": {
     "build": "sh build.sh",
-    "smoke:node": "node scripts/node-smoke.cjs && node scripts/node-smoke.mjs && npm run smoke:hashdos",
+    "smoke:node": "node scripts/node-smoke.cjs && node scripts/node-smoke.mjs && node scripts/node-smoke.mjs concerto-engine.mjs && npm run smoke:hashdos",
     "smoke:hashdos": "node --expose-gc scripts/hashdos.mjs",
     "smoke:chromium": "node scripts/chromium-smoke.mjs",
     "smoke": "npm run smoke:node && npm run smoke:chromium"

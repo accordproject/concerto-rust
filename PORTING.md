@@ -1062,7 +1062,7 @@ concerto-wasm/      wasm-bindgen binding (P4-01): the ModelManagerHandle handle 
   src/lib.rs        the crate root and its module map (its module docs)
   src/*.rs          the bindings by area (handle, model_file, declarations, ...), argument coercion (js_values), error payloads (host)
   build.sh          cargo (wasm32) + wasm-bindgen-cli 0.2.128 (+ wasm-opt when present), 4 MiB size budget
-  scripts/inline.mjs  pkg/concerto-engine.cjs and .mjs, with the .wasm inlined, instantiated synchronously
+  scripts/inline.mjs  pkg/concerto-engine.cjs and .node.mjs (Node: the raw .wasm, read with readFileSync) and .mjs (browsers: the .wasm inlined), all instantiated synchronously
   scripts/*-smoke.*   the Node and headless-Chromium smokes (`npm run smoke`)
 ```
 

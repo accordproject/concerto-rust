@@ -1,12 +1,17 @@
 #!/bin/sh
 # Builds the concerto-wasm binding and writes the loaders into pkg/:
 #
-#   pkg/concerto-engine.cjs  CommonJS (Node `require`): the `nodejs` glue with
-#                            the .wasm inlined as base64
-#   pkg/concerto-engine.mjs  ESM (browsers, Node ESM): the `web` glue,
-#                            instantiated with `initSync` from inlined bytes
+#   pkg/concerto_wasm.wasm        the optimised module, a raw .wasm file
+#   pkg/concerto-engine.cjs       CommonJS (Node `require`): the `nodejs`
+#                                 glue, reading concerto_wasm.wasm
+#   pkg/concerto-engine.node.mjs  ESM for Node: the `web` glue, instantiated
+#                                 with `initSync` from concerto_wasm.wasm
+#   pkg/concerto-engine.mjs       ESM for browsers: the `web` glue,
+#                                 instantiated with `initSync` from the
+#                                 .wasm inlined as base64
 #
-# Both instantiate synchronously at load (spike REPORT §1). pkg/ is the npm
+# All three instantiate synchronously at load (spike REPORT §1); Node reads
+# the raw .wasm with readFileSync (P5-44). pkg/ is the npm
 # package @accordproject/concerto-engine, which the concerto checkout links
 # locally (packages/concerto-engine); it is not published (decision D9).
 #
