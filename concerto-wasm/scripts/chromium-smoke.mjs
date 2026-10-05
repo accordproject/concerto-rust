@@ -5,11 +5,12 @@
 //   1. probes the main thread's limit on a synchronous WebAssembly.Module
 //      compile, with padded valid modules around 8 MiB, and compares it with
 //      the size of pkg/concerto_wasm.wasm (spike REPORT §2);
-//   2. imports the ESM loader on the main thread (synchronous compile and
-//      instantiate from the inlined bytes) and runs the shared checks;
-//   3. does the same in a module Worker;
-//   4. runs the async fallback, WebAssembly.compile then initSync, on a fresh
-//      copy of the `web` glue;
+//   2. imports the browser loader on the main thread, checks nothing is
+//      instantiated before `await init()` (BC-32), that `init()` is
+//      idempotent and fetches the .wasm once, then runs the shared checks;
+//   3. does the same in a module Worker (the worker recipe);
+//   4. in another module Worker, calls `init({ module_or_path })` with a
+//      WebAssembly.Module compiled by the page's own code;
 //   5. times the handle API's calls on the main thread (spike REPORT §3).
 // Exits non-zero if any step or check fails.
 import { createServer } from 'node:http';
@@ -71,48 +72,65 @@ async function mainThread() {
     return { ok: false, error: `${e.name}: ${e.message}` };
   }
   const importMs = performance.now() - t0;
-  // Synchronous, straight after the import.
-  new engine.ModelManagerHandle().free();
+  const rows = [];
+  let before;
+  try { new engine.ModelManagerHandle().free(); } catch (e) { before = `${e.name}: ${e.message}`; }
+  rows.push({ name: 'an engine call before init() throws', ok: before !== undefined, detail: before });
+  const t1 = performance.now();
+  const first = engine.init();
+  rows.push({ name: 'init() is idempotent: every call returns the same promise', ok: first === engine.init() });
+  await first;
+  const initMs = performance.now() - t1;
   await engine.init();
+  const fetches = performance.getEntriesByType('resource').filter((r) => r.name.endsWith('/pkg/concerto_wasm.wasm')).length;
+  rows.push({ name: 'init() fetched the .wasm once', ok: fetches === 1, detail: { fetches } });
   const { runChecks } = await import('/scripts/checks.mjs');
-  const rows = runChecks(engine);
-  return { ok: rows.every((r) => r.ok), importMs, rows };
+  rows.push(...runChecks(engine));
+  return { ok: rows.every((r) => r.ok), importMs, initMs, rows: rows.filter((r) => !r.ok || r.name.includes('init()')) };
 }
 
 async function inWorker() {
-  const src = `
+  // Self-contained: page.evaluate serialises this function alone.
+  const run = async (src) => {
+    const url = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
+    const w = new Worker(url, { type: 'module' });
+    const res = await new Promise((r) => { w.onmessage = (m) => r(m.data); w.onerror = (e) => r({ ok: false, error: e.message }); w.postMessage(0); });
+    w.terminate();
+    return res;
+  };
+  return run(`
     self.onmessage = async () => {
       try {
         const engine = await import('${location.origin}/pkg/concerto-engine.mjs');
+        await engine.init();
         const { runChecks } = await import('${location.origin}/scripts/checks.mjs');
         const rows = runChecks(engine);
         self.postMessage({ ok: rows.every((r) => r.ok), rows: rows.filter((r) => !r.ok) });
       } catch (e) { self.postMessage({ ok: false, error: e.name + ': ' + e.message }); }
-    };`;
-  const url = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
-  const w = new Worker(url, { type: 'module' });
-  const res = await new Promise((r) => { w.onmessage = (m) => r(m.data); w.onerror = (e) => r({ ok: false, error: e.message }); w.postMessage(0); });
-  w.terminate();
-  return res;
+    };`);
 }
 
-async function asyncFallback() {
-  // What init() does when the main thread refuses the synchronous compile.
-  const bytes = new Uint8Array(await (await fetch('/pkg/concerto_wasm.wasm')).arrayBuffer());
-  const t0 = performance.now();
-  const module = await WebAssembly.compile(bytes);
-  const t1 = performance.now();
-  const glue = await import('/pkg/web/concerto_wasm.js?fresh');
-  try {
-    glue.initSync({ module });
-  } catch (e) {
-    return { ok: false, error: `${e.name}: ${e.message}` };
-  }
-  const t2 = performance.now();
-  const mm = new glue.ModelManagerHandle();
-  const ok = mm.modelFileId('concerto@1.0.0') === 0;
-  mm.free();
-  return { ok, compileMs: t1 - t0, instantiateMs: t2 - t1 };
+async function initWithModule() {
+  // Self-contained: page.evaluate serialises this function alone.
+  const run = async (src) => {
+    const url = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
+    const w = new Worker(url, { type: 'module' });
+    const res = await new Promise((r) => { w.onmessage = (m) => r(m.data); w.onerror = (e) => r({ ok: false, error: e.message }); w.postMessage(0); });
+    w.terminate();
+    return res;
+  };
+  return run(`
+    self.onmessage = async () => {
+      try {
+        const module = await WebAssembly.compileStreaming(fetch('${location.origin}/pkg/concerto_wasm.wasm'));
+        const engine = await import('${location.origin}/pkg/concerto-engine.mjs');
+        await engine.init({ module_or_path: module });
+        const mm = new engine.ModelManagerHandle();
+        const ok = mm.modelFileId('concerto@1.0.0') === 1;
+        mm.free();
+        self.postMessage({ ok });
+      } catch (e) { self.postMessage({ ok: false, error: e.name + ': ' + e.message }); }
+    };`);
 }
 
 async function timeCalls() {
@@ -156,10 +174,10 @@ for (const [label, opts] of [['headless shell (default)', {}], ['chromium, new h
   r.sizeCheck = { wasmBytes, largestSyncCompileAccepted: limit, ok: wasmBytes <= limit };
   r.mainThread = await page.evaluate(mainThread);
   r.worker = await page.evaluate(inWorker);
-  r.asyncFallback = await page.evaluate(asyncFallback);
+  r.initWithModule = await page.evaluate(initWithModule);
   r.nsPerCall = await page.evaluate(timeCalls);
   r.pageErrors = errors;
-  if (!r.sizeCheck.ok || !r.mainThread.ok || !r.worker.ok || !r.asyncFallback.ok || errors.length) failed = true;
+  if (!r.sizeCheck.ok || !r.mainThread.ok || !r.worker.ok || !r.initWithModule.ok || errors.length) failed = true;
   report.browsers.push(r);
   await browser.close();
 }

@@ -449,6 +449,12 @@ static getShortName(fqn) {
     identity with the public modules. A bundler does this at build time.
     `globalThis.module` must be set before concerto-core is first imported,
     because the shim reads it once.
+    Since BC-32, the engine's browser loader (`@accordproject/concerto-engine`
+    under the `browser` condition) instantiates nothing when it is loaded:
+    the page or worker calls its idempotent `await init()`, which fetches the
+    raw `.wasm`, before the first engine-backed call. concerto-core may be
+    imported before that: the loader keeps the error factory that
+    `src/engine/rust.ts` gives `setHost` and registers it once instantiated.
     `e2e/tests/wasm-engine.spec.ts` checks this path. It imports only the
     public `dist/esm-browser/index.mjs` and calls public API (`ModelUtil`,
     and `ModelManager`/`ModelFile`/`ScalarDeclaration` on a model with a
@@ -1062,7 +1068,7 @@ concerto-wasm/      wasm-bindgen binding (P4-01): the ModelManagerHandle handle 
   src/lib.rs        the crate root and its module map (its module docs)
   src/*.rs          the bindings by area (handle, model_file, declarations, ...), argument coercion (js_values), error payloads (host)
   build.sh          cargo (wasm32) + wasm-bindgen-cli 0.2.128 (+ wasm-opt when present), 4 MiB size budget
-  scripts/inline.mjs  pkg/concerto-engine.cjs and .node.mjs (Node: the raw .wasm, read with readFileSync) and .mjs (browsers: the .wasm inlined), all instantiated synchronously
+  scripts/inline.mjs  pkg/concerto-engine.cjs and .node.mjs (Node: the raw .wasm, read with readFileSync, instantiated synchronously) and .mjs (browsers: instantiated by an explicit, idempotent `await init()` that fetches the raw .wasm; BC-32)
   scripts/*-smoke.*   the Node and headless-Chromium smokes (`npm run smoke`)
 ```
 
