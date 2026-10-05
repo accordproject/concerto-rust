@@ -25,20 +25,43 @@ inside the budget, and 10-35% faster through the TS views). It writes:
 
 | File | For | Loads by |
 |---|---|---|
-| `pkg/concerto_wasm.wasm` | all three loaders | the optimised module, as a raw `.wasm` file |
+| `pkg/concerto_wasm.wasm` | all three loaders | the optimised module, as a raw `.wasm` file: the package's only copy |
 | `pkg/concerto-engine.cjs` | Node `require` | the `nodejs` glue, `readFileSync` of `concerto_wasm.wasm` |
 | `pkg/concerto-engine.node.mjs` | Node `import` | the `web` glue, `initSync` from `readFileSync` of `concerto_wasm.wasm` while the module is evaluated |
-| `pkg/concerto-engine.mjs` | browsers | the `web` glue, `initSync` from the `.wasm` inlined as base64 while the module is evaluated |
+| `pkg/concerto-engine.mjs` | browsers | the `web` glue, instantiated by `await init()`, which fetches `concerto_wasm.wasm` |
+| `pkg/web/concerto_wasm.js` | the two ESM loaders | wasm-bindgen's `web` glue, its default module URL pointed at `../concerto_wasm.wasm` |
 | `pkg/package.json` | `@accordproject/concerto-engine` | `exports`: `browser` → `.mjs`; `node` → `.node.mjs` (`import`) or `.cjs` (`require`); otherwise `import` → `.mjs`, `require` → `.cjs` |
 
-All three loaders instantiate **synchronously** when loaded. Node reads the
-raw `.wasm` (P5-44, accordproject/concerto-rust#365), so its loaders carry
-no base64. The browser loader keeps the inlined bytes until BC-32's
-explicit `await init()` loads the raw `.wasm` there (P5-45, #366). All
-three export an async `init()`. On a browser main thread that refuses a
-synchronous compile (Chromium's limit is 8 MiB), `init()` compiles
-asynchronously and then instantiates with `initSync`. Otherwise it resolves
-at once.
+The package holds the module once (`pkg/concerto_wasm.wasm`): `inline.mjs`
+removes the glue's unoptimised `pkg/web/concerto_wasm_bg.wasm`.
+
+**Node** loads synchronously (P5-44, accordproject/concerto-rust#365): both
+Node loaders read the raw `.wasm` with `readFileSync` and are ready on the
+line after `require` or `import`. Their `init()` resolves at once.
+
+**Browsers** call `await init()` before using the engine (BC-32, P5-45,
+#366). The browser loader does not instantiate anything when it is
+imported. `init()`:
+
+- loads `new URL('./concerto_wasm.wasm', import.meta.url)` through
+  wasm-bindgen's loader, which uses `WebAssembly.instantiateStreaming` when
+  the server sends `application/wasm`. Vite and webpack 5 see the
+  `new URL(..., import.meta.url)` pattern and emit the `.wasm` as an asset;
+  esbuild and plain Rollup leave the expression as written, so the `.wasm`
+  must be copied next to the bundle (or named with `module_or_path`);
+- takes `init({ module_or_path })` to load it from elsewhere: a URL or path,
+  a `Response`, the bytes, or a compiled `WebAssembly.Module` (for a CDN, a
+  bundler that does not follow the pattern, or a CSP setup);
+- is idempotent: every call returns the same promise, and the options of
+  later calls are ignored. A failed load is not remembered, so `init()` can
+  be called again;
+- registers an error factory given to `setHost` before it, so concerto-core
+  (which calls `setHost` when it loads the engine) can be imported before
+  `init()` runs. Any other engine call before `init()` resolves throws.
+
+The compile is asynchronous, so Chromium's 8 MiB limit on a synchronous
+main-thread compile no longer applies in browsers. The size budget still
+holds the module well under it.
 
 Lint with `cargo fmt -- --check` and
 `cargo clippy --target wasm32-unknown-unknown --all-targets -- -D warnings`.
@@ -48,11 +71,14 @@ Lint with `cargo fmt -- --check` and
 ## Linking from concerto (not published)
 
 The concerto checkout has a workspace package, `packages/concerto-engine`,
-named `@accordproject/concerto-engine`. It re-exports
-`../concerto-rust/concerto-wasm/pkg/concerto-engine.{cjs,mjs}` from a
-concerto-rust checkout **next to** the concerto checkout. `npm install` in
-concerto links it into `node_modules`, where the shim finds it.
+named `@accordproject/concerto-engine`. It re-exports the loaders in
+`../concerto-rust/concerto-wasm/pkg/` from a concerto-rust checkout **next
+to** the concerto checkout: `require` → `concerto-engine.cjs`, Node `import`
+→ `concerto-engine.node.mjs`, and the `browser` condition (and any other
+`import`) → `concerto-engine.mjs`. `npm install` in concerto links it into
+`node_modules`, where the shim finds it.
 `CONCERTO_ENGINE_MODULE=<path to concerto-engine.cjs>` still overrides it.
+Its README has the worker recipe for browser apps that need concerto-core.
 
 ## The exported surface
 
@@ -129,6 +155,11 @@ npm run smoke:chromium   # node scripts/chromium-smoke.mjs (Playwright's chromiu
   from the concerto checkout:
   `node ../concerto-rust/concerto-wasm/scripts/node-smoke.cjs @accordproject/concerto-engine`
   runs the checks through the workspace link.
+- `node-smoke.mjs concerto-engine.mjs` runs the browser loader in Node: an
+  engine call before `init()` throws, `init()` returns the same promise
+  every time, and an error factory set before `init()` is registered by it.
+  Node's `fetch` cannot read a `file:` URL, so it passes the bytes as
+  `init({ module_or_path })`; the Chromium smoke runs the default fetch.
 - `hashdos.mjs` is the WASM HashDoS check. It builds the engine with the
   `hashdos-probe` feature (src/hashdos_probe.rs, a key source; build.sh
   never enables it) for wasm32 with wasm-bindgen's Node glue, in its own
@@ -146,8 +177,12 @@ npm run smoke:chromium   # node scripts/chromium-smoke.mjs (Playwright's chromiu
   Chromium. In each, it:
   - probes the main thread's synchronous-compile limit and checks the module
     is under it;
-  - runs the checks on the main thread and in a module Worker;
-  - runs the async fallback;
+  - on the main thread, checks the browser loader instantiates nothing
+    before `init()`, that `init()` is idempotent and fetches the `.wasm`
+    once, then runs the checks;
+  - runs the checks in a module Worker after `await init()`;
+  - calls `init({ module_or_path })` with a compiled `WebAssembly.Module` in
+    another Worker;
   - times the handle API's calls.
 
 `results/` holds the output of the runs below.

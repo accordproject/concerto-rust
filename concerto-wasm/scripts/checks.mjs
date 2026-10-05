@@ -138,6 +138,15 @@ export function runChecks(engine) {
     assert(ast.declarations.length === 3, 'ast');
     const byName = mm.modelManagerGetModelFileByFileName('example.cto');
     assert(byName === 'org.example@1.0.0', `fileName lookup ${byName}`);
+    // The model file's version field, as ModelFile's constructor sets it
+    // from the loaded AST's header.
+    const view = {
+      ast, importShortNames: new Map(), importUriMap: {}, isSystemModelFile: () => false,
+      enforceImportVersioning: (imp) => engine.modelFileEnforceImportVersioning(imp),
+    };
+    engine.modelFileFromAstHeader(view, ast);
+    assert(view.version === '1.0.0', `version ${view.version}`);
+    assert(view.namespace === 'org.example@1.0.0', `header namespace ${view.namespace}`);
   });
 
   check('handles stay valid across a later load', () => {
