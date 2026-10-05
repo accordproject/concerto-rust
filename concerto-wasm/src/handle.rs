@@ -400,6 +400,20 @@ impl ModelManagerHandle {
         })
     }
 
+    /// TS `BaseModelManager.updateModelFile`'s validation and replacement of
+    /// a staged model file in one call: [`Self::model_file_validate_staged`]
+    /// then [`Self::update_staged_model_file`]. Returns the file's handle, or
+    /// `undefined` if the stage id is unknown. A validation error leaves the
+    /// file staged and the manager unchanged.
+    #[wasm_bindgen(js_name = validateAndUpdateStagedModelFile)]
+    pub fn validate_and_update_staged_model_file(&mut self, stage: u32) -> JsResult<Option<u32>> {
+        let Some(file) = self.staged.files.get(&stage) else {
+            return Ok(None);
+        };
+        run(|| Ok(self.manager.validate_detached_model_file(file)?))?;
+        self.update_staged_model_file(stage)
+    }
+
     /// [`Self::validate_ast_value`] over a staged model file's AST. Returns
     /// `true` once checked, `false` if the stage id is unknown; throws what
     /// [`Self::validate_ast_value`] throws. The file stays staged.
@@ -824,8 +838,10 @@ impl ModelManagerHandle {
     ///   [`concerto_core::model_manager::ValidityProof`], so `target`
     ///   registers it from the stage and validates it only where the proof
     ///   does not hold;
-    /// - `{"ast": <ast>}` otherwise: the filtered file's AST; nothing is
-    ///   added to `target`.
+    /// - `{"staged": [<id>, ...header], "ast": <ast>}` otherwise: the
+    ///   filtered file's AST, with the filtered file staged in `target` as
+    ///   [`Self::stage_model_file_bytes`] would stage that AST, and its header
+    ///   in the same flat layout.
     #[wasm_bindgen(js_name = modelFileFilterStaged)]
     pub fn model_file_filter_staged(
         &self,
@@ -912,7 +928,24 @@ impl ModelManagerHandle {
                 Ok(Some(format!("{{\"stage\":{stage}}}")))
             }
             FilterOutcome::Filtered(filtered) => {
-                snapshot(&json!({ "ast": filtered.ast() })).map(Some)
+                let Some(target) = target else {
+                    return snapshot(&json!({ "ast": filtered.ast() })).map(Some);
+                };
+                // Staged in `target` as built, with its header, so the view
+                // TS builds over the AST takes the stage instead of loading
+                // the AST again (the prestaged, trusted path of a
+                // DecoratorManager result). Validated when it is added.
+                let ast = snapshot(filtered.ast())?;
+                let header =
+                    staged_header_from_parts(filtered.namespace(), filtered.ast().get("imports"));
+                let flat = flat_staged_text(0, header.as_ref()).map_err(internal)?;
+                drop(header);
+                let stage = target.staged.insert(*filtered);
+                // `flat` was written for stage 0 (`[0` then `]` or `,...]`).
+                Ok(Some(format!(
+                    "{{\"staged\":[{stage}{},\"ast\":{ast}}}",
+                    &flat[2..]
+                )))
             }
         }
     }

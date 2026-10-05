@@ -914,31 +914,55 @@ impl ModelManagerHandle {
 /// wrapping is its caller's); an unknown `preset` is a plain `Error`.
 #[wasm_bindgen(js_name = validateMetaModelInstance)]
 pub fn validate_meta_model_instance(json_text: &str, preset: &str) -> JsResult<()> {
-    use concerto_core::instance::{MetaModelPreset, with_resident_metamodel_manager};
     run(|| {
-        let preset = match preset {
-            "strict" => MetaModelPreset::Strict,
-            "default" => MetaModelPreset::Default,
-            "serializer" => MetaModelPreset::Serializer,
-            other => {
-                return Err(CoreError::from(ContractError::pre_port(
-                    ErrorKind::InvalidArgument,
-                    format!("unknown metamodel preset: {other}"),
-                    None,
-                ))
-                .into());
-            }
-        };
-        let wire = serde_json::from_str::<Value>(json_text).map_err(wire_text_error)?;
-        let options = preset.from_json_options();
-        let serializer = Serializer::new(true, true, None)?;
-        let mut outcome = Ok(String::new());
-        with_resident_metamodel_manager(|mm| {
-            outcome = validate_wire(mm, &wire, &serializer, &options, &options, None, 0);
-            Ok(())
-        })?;
-        outcome.map(|_| ())
+        validate_meta_model_wire(preset, || {
+            serde_json::from_str::<Value>(json_text).map_err(wire_text_error)
+        })
     })
+}
+
+/// [`validate_meta_model_instance`] with the wire document in the compact
+/// binary layout the TS writer (src/engine/wire.ts) writes from the live
+/// object, as `validateInstanceBytes` takes it: the same result and errors
+/// as its JSON text. Bytes not in the layout are a fast path fallback
+/// (`fastPathUnsupported`).
+#[wasm_bindgen(js_name = validateMetaModelInstanceBytes)]
+pub fn validate_meta_model_instance_bytes(bytes: &[u8], preset: &str) -> JsResult<()> {
+    run(|| {
+        validate_meta_model_wire(preset, || {
+            concerto_core::introspect::compact_value(bytes)
+                .map_err(|e| wire_error(format!("a binary wire document: {e}")))
+        })
+    })
+}
+
+/// The body of [`validate_meta_model_instance`] and
+/// [`validate_meta_model_instance_bytes`]: the preset is read before the
+/// document (`read_wire`).
+fn validate_meta_model_wire(preset: &str, read_wire: impl FnOnce() -> Result<Value>) -> Result<()> {
+    use concerto_core::instance::{MetaModelPreset, with_resident_metamodel_manager};
+    let preset = match preset {
+        "strict" => MetaModelPreset::Strict,
+        "default" => MetaModelPreset::Default,
+        "serializer" => MetaModelPreset::Serializer,
+        other => {
+            return Err(CoreError::from(ContractError::pre_port(
+                ErrorKind::InvalidArgument,
+                format!("unknown metamodel preset: {other}"),
+                None,
+            ))
+            .into());
+        }
+    };
+    let wire = read_wire()?;
+    let options = preset.from_json_options();
+    let serializer = Serializer::new(true, true, None)?;
+    let mut outcome = Ok(String::new());
+    with_resident_metamodel_manager(|mm| {
+        outcome = validate_wire(mm, &wire, &serializer, &options, &options, None, 0);
+        Ok(())
+    })?;
+    outcome.map(|_| ())
 }
 
 /// The document `doc` (a wire encoding, module doc above "Serializer
